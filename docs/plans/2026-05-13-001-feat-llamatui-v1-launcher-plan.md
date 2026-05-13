@@ -194,7 +194,7 @@ Phased delivery. Within a phase units may be parallelisable; across phases they 
 
 ### Phase A — Foundations
 
-- [ ] **Unit 1: Project scaffold, CLI surface, config, themes**
+- [x] **Unit 1: Project scaffold, CLI surface, config, themes**
 
 **Goal:** Establish the Rust binary, `clap`-derived top-level command surface (with all subcommand stubs returning `unimplemented!`), the YAML config loader, XDG path resolution, theme palette + selection, and the panic/logging plumbing. No daemon or model logic yet.
 
