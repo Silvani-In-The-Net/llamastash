@@ -14,6 +14,7 @@ pub mod banner;
 pub mod cli;
 pub mod config;
 pub mod daemon;
+pub mod discovery;
 pub mod gguf;
 pub mod ipc;
 pub mod theme;

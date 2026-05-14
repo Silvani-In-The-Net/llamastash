@@ -3,10 +3,10 @@ name = "llamatui"
 version = "0.1.0-dev"
 authors = ["Deepu K Sasidharan <d4udts@gmail.com>"]
 description = "A fast, keyboard-driven TUI for launching local llama.cpp models"
-documentation = "https://github.com/kdash-rs/llamatui"
+documentation = "https://github.com/llamatui/llamatui"
 keywords = ["llamatui", "llama-cpp", "llm", "tui", "gguf"]
-repository = "https://github.com/kdash-rs/llamatui"
-homepage = "https://github.com/kdash-rs/llamatui"
+repository = "https://github.com/llamatui/llamatui"
+homepage = "https://github.com/llamatui/llamatui"
 readme = "README.md"
 license = "MIT"
 edition = "2021"
@@ -33,8 +33,14 @@ clap = { version = "4.6", default-features = false, features = [
 ] }
 crossterm = "0.29"
 directories = "6"
+ignore = "0.4"
 libc = "0.2"
 log = "0.4"
+regex = { version = "1.11", default-features = false, features = [
+  "std",
+  "perf",
+  "unicode-perl",
+] }
 ratatui = { version = "0.30", default-features = false, features = [
   "crossterm",
 ] }
