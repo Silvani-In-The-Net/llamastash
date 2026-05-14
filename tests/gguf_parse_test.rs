@@ -212,6 +212,98 @@ fn estimator_for_7b_q4km_in_realistic_range() {
 }
 
 #[test]
+fn estimator_for_phi_3_5_mini_q5_matches_closed_form() {
+  // Phi 3.5 mini Q5_K_M reference geometry: arch "phi3", 32 layers, 32 heads
+  // (32 KV heads), 3072 embedding → head_dim = 96, native ctx 131072. A single
+  // Q5_K body tensor stands in for the model weights, sized so storage cost
+  // approximates a real Phi 3.5 mini Q5_K_M file (~2.6 GiB for ~3.8B params).
+  // Q5_K bytes_per_elem = 176 / 256 = 0.6875.
+  let elem_count: u64 = 4_000_000_000;
+  let bytes = FixtureBuilder::new()
+    .with_arch("phi3")
+    .with_block_count(32)
+    .with_head_count(32)
+    .with_head_count_kv(32)
+    .with_embedding_length(3072)
+    .with_context_length(131_072)
+    .with_tensor("dummy.body.weight", &[elem_count], 13) // Q5_K
+    .build();
+  let tmp = TmpDir::new("phi3-est");
+  let path = tmp.write("phi3.gguf", &bytes);
+  let read = read_path(&path, HeaderReadOptions::default()).unwrap();
+  let est = estimate_memory(
+    &read.header,
+    EstimateOptions {
+      ctx_len: 4096,
+      ..EstimateOptions::default()
+    },
+  );
+
+  // Weights: row-aligned Q5_K geometry (256 elems/block, 176 bytes/block).
+  let expected_weights = elem_count.div_ceil(256) * 176;
+  assert_eq!(est.weights_ram, expected_weights);
+  // KV at 4096 ctx, f16 K + f16 V:
+  //   2 (K+V) * 32 layers * 32 kv_heads * 96 head_dim * 4096 ctx * 2 (f16) = 1.5 GiB.
+  let expected_kv: u64 = 2 * 32 * 32 * 96 * 4096 * 2;
+  assert_eq!(est.kv_cache_ram, expected_kv);
+  // CPU-only default: nothing offloaded to VRAM.
+  assert_eq!(est.weights_vram, 0);
+  assert_eq!(est.kv_cache_vram, 0);
+
+  // Sanity-check the human-facing band: ~2.6 GiB weights, ~1.5 GiB KV at 4k ctx.
+  let weights_gib = est.weights_ram as f64 / (1u64 << 30) as f64;
+  let kv_gib = est.kv_cache_ram as f64 / (1u64 << 30) as f64;
+  assert!(
+    (2.0..=3.2).contains(&weights_gib),
+    "weights {weights_gib} GiB outside expected Phi 3.5 mini Q5_K_M band"
+  );
+  assert!(
+    (1.0..=2.0).contains(&kv_gib),
+    "kv {kv_gib} GiB outside expected Phi 3.5 mini @ 4k ctx band"
+  );
+}
+
+#[test]
+fn estimator_for_synthetic_embedding_model_matches_closed_form() {
+  // BGE-small-style synthetic embedding model: BERT arch, 6 layers, 12 heads
+  // (12 KV heads), 384 embedding → head_dim = 32, 512 ctx, F16 weights. We use
+  // an attention tensor (no `output.weight`) so the mode heuristic stays
+  // Embedding rather than flipping to Chat.
+  let body_elems: u64 = 33_000_000; // ~66 MiB at F16 — typical BGE-small footprint.
+  let bytes = FixtureBuilder::new()
+    .with_arch("bert")
+    .with_block_count(6)
+    .with_head_count(12)
+    .with_head_count_kv(12)
+    .with_embedding_length(384)
+    .with_context_length(512)
+    .with_tensor("blk.0.attn_q.weight", &[body_elems], 1) // F16
+    .build();
+  let tmp = TmpDir::new("embed-est");
+  let path = tmp.write("embed.gguf", &bytes);
+  let read = read_path(&path, HeaderReadOptions::default()).unwrap();
+
+  let meta = summarise_metadata(&read.header);
+  assert_eq!(meta.mode_hint, ModeHint::Embedding);
+  assert_eq!(meta.quant, Quant::F16);
+
+  let est = estimate_memory(
+    &read.header,
+    EstimateOptions {
+      ctx_len: 512,
+      ..EstimateOptions::default()
+    },
+  );
+  // Weights: F16 = 2 bytes/elem.
+  assert_eq!(est.weights_ram, body_elems * 2);
+  // KV: 2 (K+V) * 6 layers * 12 kv_heads * 32 head_dim * 512 ctx * 2 (f16) = 4.5 MiB.
+  let expected_kv: u64 = 2 * 6 * 12 * 32 * 512 * 2;
+  assert_eq!(est.kv_cache_ram, expected_kv);
+  assert_eq!(est.weights_vram, 0);
+  assert_eq!(est.kv_cache_vram, 0);
+}
+
+#[test]
 fn small_header_cap_truncates_into_typed_error() {
   // A header with a single small KV pair would normally fit, but we set the
   // cap to 1 byte to force a truncation error.

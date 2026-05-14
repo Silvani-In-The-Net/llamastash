@@ -286,7 +286,7 @@ Phased delivery. Within a phase units may be parallelisable; across phases they 
 
 ---
 
-- [ ] **Unit 3: GGUF parser, metadata extraction, model identity**
+- [x] **Unit 3: GGUF parser, metadata extraction, model identity**
 
 **Goal:** Parse the GGUF header to extract architecture, parameter count, quantization, native context length, embedded chat template, embedded tokenizer hints, and any reasoning-format hint (R7). Provide a stable model identity (canonical path + BLAKE3 of header bytes) (R20). Provide a memory estimator for weights *and* KV cache as a function of chosen context length (R8).
 
