@@ -1,0 +1,93 @@
+//! Launch-mode enum shared by the CLI args layer, the supervisor, and
+//! the IPC protocol. Mirrors [`crate::cli::cli_args::LaunchMode`] but
+//! lives here so non-CLI consumers (supervisor, params composer)
+//! don't have to pull `clap` into their dep graph.
+
+use crate::cli::cli_args::LaunchMode as CliLaunchMode;
+use crate::gguf::metadata::ModeHint;
+use serde::{Deserialize, Serialize};
+
+/// Concrete launch mode chosen for a model. Distinct from
+/// [`ModeHint`] (which describes what discovery *thinks* the model is)
+/// — the user can override, and the supervisor records the resolved
+/// choice for IPC and `state.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LaunchMode {
+  Chat,
+  Embedding,
+  Rerank,
+}
+
+impl LaunchMode {
+  pub fn label(&self) -> &'static str {
+    match self {
+      LaunchMode::Chat => "chat",
+      LaunchMode::Embedding => "embedding",
+      LaunchMode::Rerank => "rerank",
+    }
+  }
+
+  /// Resolve the launch mode from an optional user-supplied override
+  /// (CLI `--mode`) plus the GGUF discovery hint. The plan's contract:
+  /// when the override is `None` and the hint is `Unknown`, callers
+  /// must error out rather than silently default to `Chat` — see
+  /// `cli_args.rs::StartArgs::mode` comment.
+  pub fn resolve(override_mode: Option<CliLaunchMode>, hint: ModeHint) -> Option<LaunchMode> {
+    if let Some(m) = override_mode {
+      return Some(m.into());
+    }
+    match hint {
+      ModeHint::Chat => Some(LaunchMode::Chat),
+      ModeHint::Embedding => Some(LaunchMode::Embedding),
+      ModeHint::Rerank => Some(LaunchMode::Rerank),
+      ModeHint::Unknown => None,
+    }
+  }
+}
+
+impl From<CliLaunchMode> for LaunchMode {
+  fn from(m: CliLaunchMode) -> Self {
+    match m {
+      CliLaunchMode::Chat => LaunchMode::Chat,
+      CliLaunchMode::Embedding => LaunchMode::Embedding,
+      CliLaunchMode::Rerank => LaunchMode::Rerank,
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn cli_override_wins_over_hint() {
+    let m = LaunchMode::resolve(Some(CliLaunchMode::Embedding), ModeHint::Chat);
+    assert_eq!(m, Some(LaunchMode::Embedding));
+  }
+
+  #[test]
+  fn hint_used_when_no_override() {
+    assert_eq!(
+      LaunchMode::resolve(None, ModeHint::Rerank),
+      Some(LaunchMode::Rerank)
+    );
+    assert_eq!(
+      LaunchMode::resolve(None, ModeHint::Embedding),
+      Some(LaunchMode::Embedding)
+    );
+  }
+
+  #[test]
+  fn unknown_hint_with_no_override_returns_none() {
+    assert!(LaunchMode::resolve(None, ModeHint::Unknown).is_none());
+  }
+
+  #[test]
+  fn json_round_trips_lowercase() {
+    let v = serde_json::to_string(&LaunchMode::Embedding).unwrap();
+    assert_eq!(v, "\"embedding\"");
+    let back: LaunchMode = serde_json::from_str(&v).unwrap();
+    assert_eq!(back, LaunchMode::Embedding);
+  }
+}

@@ -11,14 +11,49 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 /// Stable identifier for a single GGUF on disk.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Serialised in `state.json` (Unit 5) as `{ "path": "...",
+/// "header_blake3": "<hex>" }` so manual inspection is friendly and
+/// the diff against a renamed model is human-readable.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ModelId {
   /// Canonical absolute path (`std::fs::canonicalize`).
   pub path: PathBuf,
   /// BLAKE3 hash of the structural header bytes (the `raw` field returned
   /// by [`crate::gguf::header::read_path`]).
+  #[serde(with = "blake3_hex")]
   pub header_blake3: [u8; 32],
+}
+
+mod blake3_hex {
+  use serde::{Deserialize, Deserializer, Serializer};
+
+  pub fn serialize<S: Serializer>(bytes: &[u8; 32], ser: S) -> Result<S::Ok, S::Error> {
+    let mut hex = String::with_capacity(64);
+    for b in bytes {
+      hex.push_str(&format!("{b:02x}"));
+    }
+    ser.serialize_str(&hex)
+  }
+
+  pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<[u8; 32], D::Error> {
+    let s = String::deserialize(de)?;
+    if s.len() != 64 {
+      return Err(serde::de::Error::custom(format!(
+        "expected 64-char hex BLAKE3 digest, got {} chars",
+        s.len()
+      )));
+    }
+    let mut out = [0u8; 32];
+    for (i, chunk) in s.as_bytes().chunks_exact(2).enumerate() {
+      let pair = std::str::from_utf8(chunk).map_err(serde::de::Error::custom)?;
+      out[i] = u8::from_str_radix(pair, 16).map_err(serde::de::Error::custom)?;
+    }
+    Ok(out)
+  }
 }
 
 impl ModelId {
