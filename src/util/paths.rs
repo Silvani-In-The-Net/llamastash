@@ -9,7 +9,7 @@
 
 use std::{ffi::OsString, path::PathBuf};
 
-use directories::ProjectDirs;
+use directories::{BaseDirs, ProjectDirs};
 
 const QUALIFIER: &str = "";
 const ORGANIZATION: &str = "";
@@ -17,6 +17,15 @@ const APPLICATION: &str = "llamatui";
 
 pub fn project_dirs() -> Option<ProjectDirs> {
   ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
+}
+
+/// Best-effort home directory resolution. Returns `None` only when the
+/// platform can't supply one (i.e. broken `$HOME` and no equivalent in
+/// the password database) — every realistic developer machine has one.
+/// Discovery uses this to anchor `~/.cache/huggingface/hub`,
+/// `~/.ollama/models`, and `~/.lmstudio/models`.
+pub fn home_dir() -> Option<PathBuf> {
+  BaseDirs::new().map(|b| b.home_dir().to_path_buf())
 }
 
 pub fn state_dir() -> Option<PathBuf> {

@@ -21,10 +21,22 @@ pub use cli_args::{
 /// Dispatch the parsed CLI to its handler. The `config` argument carries
 /// the merged user-config (loaded with the `--config` override already
 /// applied) so handlers don't have to re-resolve the file path.
-pub async fn dispatch(cli: Cli, _config: LoadedConfig) -> Result<()> {
-  match cli.command {
+pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<()> {
+  // The `daemon` handler resolves scan roots from global flags + the
+  // loaded config; other handlers don't (yet) need either. Keep both
+  // bound here so future handlers can pick them up without re-shaping
+  // the dispatcher.
+  if let Some(warning) = &config.warning {
+    log::warn!("{warning}");
+  }
+  // Splitting `command` off lets later arms still borrow `cli` for its
+  // global flags (`model_paths`, `no_scan`) without fighting partial-
+  // move rules around the per-subcommand owned data.
+  let command = cli.command.take();
+  let resolved_config = &config.config;
+  match command {
     None => unimplemented!("TUI entry — Unit 6"),
-    Some(Command::Daemon(action)) => daemon::handle(action).await,
+    Some(Command::Daemon(action)) => daemon::handle(action, &cli, resolved_config).await,
     Some(Command::List(_)) => unimplemented!("list — Unit 8"),
     Some(Command::Start(_)) => unimplemented!("start — Unit 8"),
     Some(Command::Stop(_)) => unimplemented!("stop — Unit 8"),

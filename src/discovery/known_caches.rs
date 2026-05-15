@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::CachePathsConfig;
+use crate::discovery::lm_studio;
 use crate::discovery::scanner::ScanRoot;
 use crate::discovery::ModelSource;
 
@@ -86,6 +87,20 @@ pub fn default_set(res: RootResolution<'_>) -> Vec<ScanRoot> {
   }
   if !res.disable.lm_studio {
     for p in default_lm_studio_paths(home) {
+      push_unique(
+        &mut out,
+        &mut seen,
+        ScanRoot {
+          path: p,
+          source: ModelSource::LmStudio,
+        },
+      );
+    }
+    // Honour the GUI-configured `paths.models` override the user set
+    // in `~/.lmstudio/settings.json`. The resolver only returns
+    // *existing* directories, so this won't generate phantom roots
+    // when LM Studio isn't installed.
+    for p in lm_studio::resolve_models_dirs(home) {
       push_unique(
         &mut out,
         &mut seen,
@@ -238,5 +253,51 @@ mod tests {
     });
     assert_eq!(roots.len(), 1);
     assert_eq!(roots[0].source, ModelSource::UserPath);
+  }
+
+  #[test]
+  fn lm_studio_settings_override_surfaces_as_lm_studio_root() {
+    // Plan: when a real LM Studio install advertises a non-default
+    // `paths.models` in `~/.lmstudio/settings.json`, that directory
+    // must show up among the LM Studio roots — not get silently
+    // dropped in favour of the hard-coded `~/.lmstudio/models`.
+    use std::fs;
+    let home = std::env::temp_dir().join(format!(
+      "llamatui-known-caches-lmstudio-{}-{}",
+      std::process::id(),
+      std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+    ));
+    fs::create_dir_all(home.join(".lmstudio")).unwrap();
+    let custom = home.join("Models/LmStudio");
+    fs::create_dir_all(&custom).unwrap();
+    let settings = serde_json::json!({"paths": {"models": custom.to_string_lossy()}});
+    fs::write(
+      home.join(".lmstudio/settings.json"),
+      serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+
+    let user: Vec<PathBuf> = Vec::new();
+    let roots = default_set(RootResolution {
+      user_paths: &user,
+      disable: &disable_default(),
+      no_scan: false,
+      home: Some(&home),
+    });
+    let lm_paths: Vec<&Path> = roots
+      .iter()
+      .filter(|r| r.source == ModelSource::LmStudio)
+      .map(|r| r.path.as_path())
+      .collect();
+    assert!(
+      lm_paths.contains(&custom.as_path()),
+      "LM Studio override `{}` must appear among roots, got {:?}",
+      custom.display(),
+      lm_paths
+    );
+    fs::remove_dir_all(&home).ok();
   }
 }

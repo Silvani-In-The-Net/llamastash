@@ -10,19 +10,24 @@ use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 
-use crate::cli::cli_args::DaemonAction;
+use crate::cli::cli_args::{Cli, DaemonAction};
+use crate::config::Config;
+use crate::daemon::discovery_task::DiscoveryOptions;
 use crate::daemon::{run_foreground, start_detached, DaemonOptions, StartOutcome};
+use crate::discovery::known_caches::{default_set, RootResolution};
 use crate::ipc::{Client, ClientError};
-use crate::util::paths::runtime_socket_path;
+use crate::util::paths::{home_dir, runtime_socket_path};
 
-/// Top-level dispatch for `daemon <action>`.
-pub async fn handle(action: DaemonAction) -> Result<()> {
+/// Top-level dispatch for `daemon <action>`. The full `Cli` and merged
+/// `Config` flow through so `handle_start` can resolve discovery roots
+/// from user flags + config; status / stop ignore them.
+pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<()> {
   match action {
     DaemonAction::Start {
       detach,
       state_dir,
       socket_path,
-    } => handle_start(detach, state_dir, socket_path).await,
+    } => handle_start(detach, state_dir, socket_path, cli, config).await,
     DaemonAction::Stop => handle_stop().await,
     DaemonAction::Status => handle_status().await,
   }
@@ -32,8 +37,10 @@ async fn handle_start(
   detach: bool,
   state_dir: Option<PathBuf>,
   socket_path: Option<PathBuf>,
+  cli: &Cli,
+  config: &Config,
 ) -> Result<()> {
-  let opts = build_options(state_dir, socket_path)?;
+  let opts = build_options(state_dir, socket_path, cli, config)?;
   if detach {
     // `start_detached` blocks until the child reports socket bound.
     match start_detached(opts)? {
@@ -78,9 +85,19 @@ async fn handle_stop() -> Result<()> {
 /// fall back to the platform-default XDG paths. Centralised so the
 /// re-exec'd child of `start_detached` honours the same priority order
 /// as a hand-typed `llamatui daemon start --state-dir ...` invocation.
+///
+/// Discovery roots are resolved here so a real `llamatui daemon start`
+/// (not just tests) populates the catalog: global `--model-path` /
+/// `--no-scan` / `--config` plus `config.model_paths` /
+/// `config.disable_default_cache_paths` / `config.disable_scan` feed
+/// `known_caches::default_set`. An empty config + no flags still
+/// produces a working daemon — the daemon just operates with whichever
+/// HF/Ollama/LM Studio caches exist on disk.
 fn build_options(
   state_dir: Option<PathBuf>,
   socket_path: Option<PathBuf>,
+  cli: &Cli,
+  config: &Config,
 ) -> Result<DaemonOptions> {
   let mut opts = DaemonOptions::from_defaults()?;
   if let Some(p) = state_dir {
@@ -89,7 +106,32 @@ fn build_options(
   if let Some(p) = socket_path {
     opts.socket_path = p;
   }
+  let scan_roots = resolve_scan_roots(cli, config, home_dir().as_deref());
+  opts.discovery = DiscoveryOptions::new(scan_roots);
   Ok(opts)
+}
+
+/// Merge CLI + config + default-cache enumeration into the canonical
+/// scan-root list the daemon should walk. Exposed as a pure function
+/// so unit tests can drive it without a daemon.
+pub(crate) fn resolve_scan_roots(
+  cli: &Cli,
+  config: &Config,
+  home: Option<&std::path::Path>,
+) -> Vec<crate::discovery::scanner::ScanRoot> {
+  let mut user_paths: Vec<PathBuf> = config.model_paths.clone();
+  for p in &cli.model_paths {
+    if !user_paths.iter().any(|x| x == p) {
+      user_paths.push(p.clone());
+    }
+  }
+  let no_scan = cli.no_scan || config.disable_scan;
+  default_set(RootResolution {
+    user_paths: &user_paths,
+    disable: &config.disable_default_cache_paths,
+    no_scan,
+    home,
+  })
 }
 
 async fn handle_status() -> Result<()> {
@@ -108,5 +150,112 @@ async fn handle_status() -> Result<()> {
       Ok(())
     }
     Err(other) => Err(other).context("daemon status"),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::path::Path;
+
+  use clap::Parser;
+
+  use super::*;
+  use crate::cli::cli_args::Cli;
+  use crate::config::Config;
+  use crate::discovery::ModelSource;
+
+  fn parse_cli(args: &[&str]) -> Cli {
+    Cli::try_parse_from(std::iter::once("llamatui").chain(args.iter().copied())).expect("parse")
+  }
+
+  #[test]
+  fn resolve_uses_config_model_paths_and_cli_model_paths_together() {
+    let cli = parse_cli(&["--model-path", "/work/cli-only", "daemon", "start"]);
+    let config = Config {
+      model_paths: vec![PathBuf::from("/work/cfg-only")],
+      ..Config::default()
+    };
+    let home = PathBuf::from("/home/alice");
+    let roots = resolve_scan_roots(&cli, &config, Some(&home));
+    let user_paths: Vec<&Path> = roots
+      .iter()
+      .filter(|r| r.source == ModelSource::UserPath)
+      .map(|r| r.path.as_path())
+      .collect();
+    assert!(
+      user_paths.iter().any(|p| *p == Path::new("/work/cfg-only")),
+      "config path missing: {user_paths:?}"
+    );
+    assert!(
+      user_paths.iter().any(|p| *p == Path::new("/work/cli-only")),
+      "cli path missing: {user_paths:?}"
+    );
+  }
+
+  #[test]
+  fn no_scan_flag_suppresses_default_caches() {
+    let cli = parse_cli(&["--no-scan", "--model-path", "/work/keep", "daemon", "start"]);
+    let config = Config::default();
+    let home = PathBuf::from("/home/alice");
+    let roots = resolve_scan_roots(&cli, &config, Some(&home));
+    let cache_sources: Vec<_> = roots
+      .iter()
+      .filter(|r| r.source != ModelSource::UserPath)
+      .map(|r| r.source)
+      .collect();
+    assert!(
+      cache_sources.is_empty(),
+      "--no-scan must suppress default caches, got {cache_sources:?}"
+    );
+    assert_eq!(roots.len(), 1, "only --model-path remains");
+  }
+
+  #[test]
+  fn config_disable_scan_also_suppresses_default_caches() {
+    let cli = parse_cli(&["daemon", "start"]);
+    let config = Config {
+      disable_scan: true,
+      ..Config::default()
+    };
+    let home = PathBuf::from("/home/alice");
+    let roots = resolve_scan_roots(&cli, &config, Some(&home));
+    assert!(roots.is_empty(), "no user paths + disable_scan = empty");
+  }
+
+  #[test]
+  fn config_disable_default_cache_paths_honoured() {
+    let cli = parse_cli(&["daemon", "start"]);
+    let config = Config {
+      disable_default_cache_paths: crate::config::CachePathsConfig {
+        huggingface: true,
+        ollama: true,
+        lm_studio: false,
+      },
+      ..Config::default()
+    };
+    let home = PathBuf::from("/home/alice");
+    let roots = resolve_scan_roots(&cli, &config, Some(&home));
+    let sources: std::collections::BTreeSet<_> = roots.iter().map(|r| r.source).collect();
+    assert!(!sources.contains(&ModelSource::HuggingFace));
+    assert!(!sources.contains(&ModelSource::Ollama));
+    // LM Studio default is still enabled.
+    assert!(sources.contains(&ModelSource::LmStudio));
+  }
+
+  #[test]
+  fn duplicate_paths_across_cli_and_config_collapse() {
+    let cli = parse_cli(&["--model-path", "/shared", "daemon", "start"]);
+    let config = Config {
+      model_paths: vec![PathBuf::from("/shared")],
+      ..Config::default()
+    };
+    let home = PathBuf::from("/home/alice");
+    let roots = resolve_scan_roots(&cli, &config, Some(&home));
+    let matches: Vec<&Path> = roots
+      .iter()
+      .filter(|r| r.path == Path::new("/shared"))
+      .map(|r| r.path.as_path())
+      .collect();
+    assert_eq!(matches.len(), 1, "duplicate must collapse, got {matches:?}");
   }
 }

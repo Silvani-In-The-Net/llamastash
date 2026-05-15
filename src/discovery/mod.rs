@@ -14,12 +14,14 @@
 pub mod catalog;
 pub mod known_caches;
 pub mod lm_studio;
+pub mod metadata_cache;
 pub mod ollama;
 pub mod scanner;
 pub mod split_gguf;
 pub mod watcher;
 
 pub use catalog::ModelCatalog;
+pub use metadata_cache::MetadataCache;
 
 use std::path::PathBuf;
 

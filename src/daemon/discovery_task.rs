@@ -14,14 +14,13 @@
 //! within ~1 second of the file landing (per the plan's integration
 //! verification).
 
-use std::path::PathBuf;
-
 use tokio::sync::mpsc;
 
 use crate::discovery::catalog::ModelCatalog;
+use crate::discovery::metadata_cache::MetadataCache;
 use crate::discovery::ollama;
 use crate::discovery::scanner::{scan, ScanOptions, ScanRoot};
-use crate::discovery::watcher::{self, WatchEvent, WatcherOptions};
+use crate::discovery::watcher::{self, WatchEvent, WatchMode, WatchRoot, WatcherOptions};
 use crate::discovery::{DiscoveredModel, ModelSource};
 
 /// Inputs the daemon hands to [`spawn`]. Anything that needs config
@@ -36,9 +35,18 @@ pub struct DiscoveryOptions {
 
 impl DiscoveryOptions {
   pub fn new(roots: Vec<ScanRoot>) -> Self {
+    // Production builds default to the standard-capacity metadata
+    // cache so successive watcher-driven rescans don't re-parse
+    // headers for unchanged files. Tests that want a no-cache or
+    // small-cache configuration can replace this on the returned
+    // value.
+    let scan = ScanOptions {
+      metadata_cache: Some(MetadataCache::default_capacity()),
+      ..ScanOptions::default()
+    };
     Self {
       scan_roots: roots,
-      scan: ScanOptions::default(),
+      scan,
       watcher: WatcherOptions::default(),
     }
   }
@@ -58,11 +66,22 @@ async fn run(catalog: ModelCatalog, opts: DiscoveryOptions) {
   // Initial scan: drain every scanner row into the catalog.
   full_rescan(&catalog, &opts).await;
 
-  // Spawn the watcher on the union of every root's filesystem
-  // location. We pass the bare paths; the watcher does its own
-  // recursive recursion.
-  let watch_paths: Vec<PathBuf> = opts.scan_roots.iter().map(|r| r.path.clone()).collect();
-  let (handle, mut rx) = match watcher::start(watch_paths, opts.watcher) {
+  // Build per-root watcher descriptors. HuggingFace's hub layout is
+  // deeply nested (`models--<owner>--<repo>/snapshots/<rev>/blobs/`
+  // plus a `refs/` tree), so a recursive watch would burn through
+  // inotify slots and tank steady-state memory. Use a `Shallow`
+  // watch on HF roots: new top-level `models--*` dirs still fire
+  // events; deeper changes are caught by the 5-minute periodic
+  // rescan backstop. Other sources stay recursive.
+  let watch_roots: Vec<WatchRoot> = opts
+    .scan_roots
+    .iter()
+    .map(|r| WatchRoot {
+      path: r.path.clone(),
+      mode: watch_mode_for(r.source),
+    })
+    .collect();
+  let (handle, mut rx) = match watcher::start(watch_roots, opts.watcher) {
     Ok(v) => v,
     Err(e) => {
       log::warn!(
@@ -131,11 +150,21 @@ async fn full_rescan(catalog: &ModelCatalog, opts: &DiscoveryOptions) {
   catalog.replace_all(new_models).await;
 }
 
+/// Choose the watcher depth for a scan root based on its provenance.
+/// HF hub trees go non-recursive; everything else stays recursive.
+fn watch_mode_for(source: ModelSource) -> WatchMode {
+  match source {
+    ModelSource::HuggingFace => WatchMode::Shallow,
+    ModelSource::Ollama | ModelSource::LmStudio | ModelSource::UserPath => WatchMode::Recursive,
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
 
   use std::fs;
+  use std::path::PathBuf;
   use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
   use crate::gguf::test_fixtures::build_minimal_gguf;

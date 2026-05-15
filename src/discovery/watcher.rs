@@ -36,6 +36,57 @@ pub enum WatchEvent {
   PeriodicRescan,
 }
 
+/// How deeply to watch a given root. Two-mode shape because that's
+/// what `notify` exposes; deeper depth-limiting (e.g., "two levels
+/// down only") happens at the discovery-task layer by enumerating
+/// child paths up-front and registering each as a `Shallow` watch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchMode {
+  /// Recursive watch — recommended for user-managed model
+  /// directories that aren't deeply nested.
+  Recursive,
+  /// Non-recursive watch — used for HuggingFace's `hub/` cache, where
+  /// a recursive watch would register thousands of inotify slots for
+  /// every `models--<owner>--<repo>/snapshots/<rev>/blobs/` subtree.
+  /// Direct children of the watched path still fire events; deeper
+  /// changes are caught by the 5-minute periodic rescan backstop.
+  Shallow,
+}
+
+impl From<WatchMode> for RecursiveMode {
+  fn from(m: WatchMode) -> Self {
+    match m {
+      WatchMode::Recursive => RecursiveMode::Recursive,
+      WatchMode::Shallow => RecursiveMode::NonRecursive,
+    }
+  }
+}
+
+/// One root to watch plus the depth policy for that root. Caller-
+/// constructed so the discovery layer (which knows source labels)
+/// can pick a sensible mode per provenance.
+#[derive(Debug, Clone)]
+pub struct WatchRoot {
+  pub path: PathBuf,
+  pub mode: WatchMode,
+}
+
+impl WatchRoot {
+  pub fn recursive(path: impl Into<PathBuf>) -> Self {
+    Self {
+      path: path.into(),
+      mode: WatchMode::Recursive,
+    }
+  }
+
+  pub fn shallow(path: impl Into<PathBuf>) -> Self {
+    Self {
+      path: path.into(),
+      mode: WatchMode::Shallow,
+    }
+  }
+}
+
 /// Tunables. Production defaults match the plan: 500 ms debounce,
 /// 5-minute periodic backstop. Tests shorten them for responsiveness.
 #[derive(Debug, Clone, Copy)]
@@ -75,7 +126,7 @@ pub struct WatcherHandle {
 /// produces [`WatchEvent::PeriodicRescan`] ticks, which is the
 /// degenerate "no scan paths configured" shape.
 pub fn start(
-  roots: Vec<PathBuf>,
+  roots: Vec<WatchRoot>,
   opts: WatcherOptions,
 ) -> Result<(WatcherHandle, mpsc::Receiver<WatchEvent>), notify_debouncer_mini::notify::Error> {
   let (tx, rx) = mpsc::channel(opts.channel_capacity);
@@ -100,12 +151,18 @@ pub fn start(
   })?;
 
   for root in &roots {
-    if !root.exists() {
-      log::warn!("watcher: root does not exist, skipping: {}", root.display());
+    if !root.path.exists() {
+      log::warn!(
+        "watcher: root does not exist, skipping: {}",
+        root.path.display()
+      );
       continue;
     }
-    if let Err(e) = debouncer.watcher().watch(root, RecursiveMode::Recursive) {
-      log::warn!("watcher: cannot watch {}: {e}", root.display());
+    if let Err(e) = debouncer
+      .watcher()
+      .watch(&root.path, RecursiveMode::from(root.mode))
+    {
+      log::warn!("watcher: cannot watch {}: {e}", root.path.display());
     }
   }
 
@@ -186,7 +243,8 @@ mod tests {
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn changed_event_fires_when_gguf_lands_in_watched_root() {
     let root = temp_root("change");
-    let (_handle, mut rx) = start(vec![root.clone()], fast_opts()).expect("start watcher");
+    let (_handle, mut rx) =
+      start(vec![WatchRoot::recursive(root.clone())], fast_opts()).expect("start watcher");
 
     // Drop a file *after* the watcher is wired up.
     let gguf = root.join("dropped.gguf");
@@ -225,7 +283,8 @@ mod tests {
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn periodic_rescan_fires_on_its_own() {
     let root = temp_root("periodic");
-    let (_handle, mut rx) = start(vec![root.clone()], fast_opts()).expect("start watcher");
+    let (_handle, mut rx) =
+      start(vec![WatchRoot::recursive(root.clone())], fast_opts()).expect("start watcher");
 
     // Wait long enough that at least one periodic tick must arrive.
     let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
@@ -240,9 +299,79 @@ mod tests {
   async fn missing_root_is_logged_and_skipped_without_failure() {
     let alive = temp_root("alive");
     let dead = PathBuf::from("/nonexistent/llamatui/watcher/root");
-    let (_handle, _rx) =
-      start(vec![dead, alive.clone()], fast_opts()).expect("missing root must not error");
+    let (_handle, _rx) = start(
+      vec![
+        WatchRoot::recursive(dead),
+        WatchRoot::recursive(alive.clone()),
+      ],
+      fast_opts(),
+    )
+    .expect("missing root must not error");
     fs::remove_dir_all(&alive).ok();
+  }
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn shallow_root_does_not_observe_deep_descendant_writes() {
+    // The HF-style scope: watch the root non-recursively so a
+    // deeply-nested write (a blob land in `models--*/snapshots/...`)
+    // does NOT trip an instant event. The periodic-rescan backstop
+    // is the safety net for those.
+    let root = temp_root("shallow");
+    std::fs::create_dir_all(root.join("nested/two/three")).unwrap();
+    // Drain the post-create events the kernel may emit, then attach
+    // the watcher.
+    let (_handle, mut rx) =
+      start(vec![WatchRoot::shallow(root.clone())], fast_opts()).expect("start watcher");
+    // Write into a *deep* descendant. With Shallow mode, this must
+    // not produce a `Changed` event — only the eventual periodic
+    // tick will surface it.
+    fs::write(root.join("nested/two/three/deep.gguf"), b"GGUF\x03").unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+    match first {
+      Ok(Some(WatchEvent::Changed { paths })) => {
+        // Some platforms report the directory-level modify on the
+        // *immediate* parent the watcher sees, which is fine — what
+        // matters is no event for the deep file path itself.
+        assert!(
+          !paths.iter().any(|p| p.ends_with("deep.gguf")),
+          "shallow watch must not surface deep descendant writes, got {paths:?}"
+        );
+      }
+      // No event within 1s and no periodic tick within 1s is the
+      // expected behaviour — shallow watch ignored the deep write.
+      Ok(Some(WatchEvent::PeriodicRescan)) | Ok(None) | Err(_) => {}
+    }
+    fs::remove_dir_all(&root).ok();
+  }
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn shallow_root_still_observes_immediate_child_writes() {
+    // A new direct child (e.g., a new `models--owner--repo` dir
+    // appearing in `~/.cache/huggingface/hub/`) must still trip a
+    // `Changed` event — that's the watch surface that keeps the
+    // HF root reactive even with depth-limiting.
+    let root = temp_root("shallow-child");
+    let (_handle, mut rx) =
+      start(vec![WatchRoot::shallow(root.clone())], fast_opts()).expect("start watcher");
+    fs::create_dir(root.join("models--owner--repo")).unwrap();
+    let mut saw_child = false;
+    for _ in 0..3 {
+      let event = match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+        Ok(Some(e)) => e,
+        _ => break,
+      };
+      if let WatchEvent::Changed { paths } = event {
+        if paths.iter().any(|p| p.ends_with("models--owner--repo")) {
+          saw_child = true;
+          break;
+        }
+      }
+    }
+    assert!(
+      saw_child,
+      "immediate child creation must fire a Changed event"
+    );
+    fs::remove_dir_all(&root).ok();
   }
 
   #[test]
