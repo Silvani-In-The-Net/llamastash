@@ -340,39 +340,59 @@ pub async fn run(args: DoctorArgs, _cli: &Cli, _config: &Config) -> CliResult {
 }
 
 fn render_human(report: &DoctorReport) {
-  use crate::cli::colors;
+  print!("{}", format_human(report));
+}
+
+/// Pure renderer for the doctor human-readable surface. Returns the
+/// composed string so unit tests can assert byte shape without
+/// capturing stdout. `render_human` is the thin wrapper that prints it.
+fn format_human(report: &DoctorReport) -> String {
+  use crate::cli::{colors, format};
+  use std::fmt::Write as _;
+  let mut out = String::new();
   if report.findings.is_empty() {
-    println!(
-      "{}",
-      colors::success("llamastash doctor: 0 findings — everything looks healthy.")
-    );
+    // Empty-clean state reads as the same shape as a populated one:
+    // bold section header, count suffix, then a single success line.
+    out.push_str(&format::section_header(
+      "llamastash doctor",
+      Some((0, "findings")),
+    ));
+    let _ = writeln!(out, "{}", colors::success("everything looks healthy"));
     if let Some(date) = &report.baseline.init_date {
-      println!("  {}", colors::dim(&format!("last init: {date}")));
+      let _ = writeln!(out, "  {}", colors::dim(&format!("last init: {date}")));
     }
-    return;
+    return out;
   }
-  println!(
-    "{}",
-    colors::header(&format!(
-      "llamastash doctor: {} finding(s).",
-      report.findings.len()
-    ))
-  );
+  out.push_str(&format::section_header(
+    "llamastash doctor",
+    Some((report.findings.len(), "findings")),
+  ));
   for f in &report.findings {
-    let line = format!("[{}] {}", f.id, f.message);
-    let coloured = match f.severity {
-      Severity::Error => colors::error(&line),
-      Severity::Warning => colors::warning(&line),
-      // Info findings need a leading glyph too so agents that classify
-      // severity by the first character of each line don't lose them.
-      Severity::Info => format!("{} {}", colors::dim("•"), colors::dim(&line)),
+    // Per-finding block:
+    //   • severity glyph (sentinel for byte-classifying parsers),
+    //   • bold `[finding_id]` (stable scannable token),
+    //   • severity-tinted message,
+    //   • indented `→ fix with: <bold hint>` second line.
+    let id_styled = console::style(format!("[{}]", f.id)).bold().to_string();
+    let glyph = match f.severity {
+      Severity::Error => console::style("✗").red().bold().to_string(),
+      Severity::Warning => console::style("!").yellow().to_string(),
+      Severity::Info => colors::dim("•"),
     };
-    println!("\n  {coloured}");
-    println!(
-      "    {}",
-      colors::dim(&format!("→ fix with: {}", f.fix_hint))
+    let message_styled = match f.severity {
+      Severity::Error => console::style(&f.message).red().to_string(),
+      Severity::Warning => console::style(&f.message).yellow().to_string(),
+      Severity::Info => colors::dim(&f.message),
+    };
+    let _ = writeln!(out, "\n  {glyph} {id_styled} {message_styled}");
+    let _ = writeln!(
+      out,
+      "    {} {}",
+      colors::dim("→ fix with:"),
+      console::style(f.fix_hint).bold(),
     );
   }
+  out
 }
 
 #[cfg(test)]
@@ -535,5 +555,71 @@ mod tests {
     // Smoke test: no panic on rendering, the function returns ().
     let report = build_report(None, &cpu_hw());
     render_human(&report);
+  }
+
+  #[test]
+  fn format_human_empty_report_shape() {
+    // The colors-disabled (piped) shape is byte-stable so an agent or
+    // CI script parsing the human output sees the same string across
+    // releases. The section header carries the (0 findings) suffix
+    // even on the healthy branch so the surface stays uniform.
+    let _g = crate::cli::test_lock::serialize();
+    let prior_colors = console::colors_enabled();
+    console::set_colors_enabled(false);
+    let report = build_report(None, &cpu_hw());
+    let out = format_human(&report);
+    assert_eq!(
+      out,
+      "llamastash doctor (0 findings)\n✓ everything looks healthy\n"
+    );
+    console::set_colors_enabled(prior_colors);
+  }
+
+  #[test]
+  fn format_human_non_empty_report_renders_each_finding_block() {
+    // Non-empty path: section header with the actual finding count,
+    // then per-finding block with severity glyph, [bracketed id], and
+    // an indented "→ fix with: <hint>" line. Plain-bytes assertions
+    // catch silent shape drift on this critical visual surface.
+    let _g = crate::cli::test_lock::serialize();
+    let prior_colors = console::colors_enabled();
+    console::set_colors_enabled(false);
+    let snap = InitSnapshot {
+      llama_server_path: Some("/nonexistent/llama-server".into()),
+      gpu_vendor: Some("nvidia".into()),
+      ..Default::default()
+    };
+    let report = build_report(Some(&snap), &cpu_hw());
+    assert!(
+      report.findings.len() >= 2,
+      "expected at least 2 findings, got: {:?}",
+      report.findings.iter().map(|f| f.id).collect::<Vec<_>>()
+    );
+    let out = format_human(&report);
+    // Section header carries the count suffix.
+    assert!(
+      out.starts_with(&format!(
+        "llamastash doctor ({} findings)\n",
+        report.findings.len()
+      )),
+      "section header drift: {out:?}"
+    );
+    // Every finding's id appears bracketed.
+    for f in &report.findings {
+      assert!(
+        out.contains(&format!("[{}]", f.id)),
+        "missing [{}] in: {out:?}",
+        f.id
+      );
+    }
+    // The "→ fix with:" arrow appears once per finding.
+    let arrow_count = out.matches("→ fix with:").count();
+    assert_eq!(
+      arrow_count,
+      report.findings.len(),
+      "one fix-with arrow per finding; got {arrow_count} for {} findings",
+      report.findings.len()
+    );
+    console::set_colors_enabled(prior_colors);
   }
 }

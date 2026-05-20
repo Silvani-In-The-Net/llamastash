@@ -97,7 +97,7 @@ fn resolve_mode(
   override_mode: Option<CliLaunchMode>,
 ) -> Result<&'static str, CliExit> {
   if let Some(m) = override_mode {
-    return Ok(mode_label(m));
+    return Ok(m.as_label());
   }
   match row.mode_hint.as_deref() {
     Some("chat") => Ok("chat"),
@@ -114,14 +114,6 @@ fn resolve_mode(
       USAGE,
       format!("unrecognised mode hint `{other}` from daemon; please file a bug"),
     )),
-  }
-}
-
-fn mode_label(m: CliLaunchMode) -> &'static str {
-  match m {
-    CliLaunchMode::Chat => "chat",
-    CliLaunchMode::Embedding => "embedding",
-    CliLaunchMode::Rerank => "rerank",
   }
 }
 
@@ -237,15 +229,25 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
   let preset_label = preset
     .map(|p| format!(" (preset: {p})"))
     .unwrap_or_default();
-  let line = format!(
-    "started {name}{preset} → launch_id={lid} port={port} pid={pid}",
-    name = row.name(),
-    preset = preset_label,
-    lid = lid.unwrap_or("?"),
-    port = port.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
-    pid = pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+  // The headline ("started <name> ...") keeps the standard green
+  // success style. Trailing tokens (launch_id / port / pid) pick up
+  // semantic value colors so the actionable IDs stand out against the
+  // green prose.
+  use crate::cli::colors;
+  let head = colors::success(&format!("started {name}{preset_label}", name = row.name()));
+  let lid_token = lid
+    .map(colors::launch_id)
+    .unwrap_or_else(|| colors::dim("?"));
+  let port_token = port
+    .map(|p| colors::port(p as u16))
+    .unwrap_or_else(|| colors::dim("?"));
+  let pid_token = pid
+    .map(|p| console::style(p.to_string()).bold().to_string())
+    .unwrap_or_else(|| colors::dim("?"));
+  println!(
+    "{head} {arrow} launch_id={lid_token} port={port_token} pid={pid_token}",
+    arrow = colors::dim("→"),
   );
-  println!("{}", crate::cli::colors::success(&line));
 }
 
 #[cfg(test)]

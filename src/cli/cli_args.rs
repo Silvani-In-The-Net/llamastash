@@ -174,7 +174,15 @@ pub enum DaemonAction {
   /// Stop the running daemon. Running models keep running.
   Stop,
   /// Print daemon PID, uptime, and connected-client count.
-  Status,
+  Status {
+    /// Emit the raw `version` IPC response as pretty-printed JSON
+    /// instead of the human key/value block. Byte-stable contract:
+    /// agents that previously parsed `daemon status` as JSON (before
+    /// the v0.0.2 kv-block rewrite) should now pass `--json` to keep
+    /// the same shape.
+    #[arg(long)]
+    json: bool,
+  },
 }
 
 #[derive(Args, Debug)]
@@ -669,6 +677,19 @@ pub enum LaunchMode {
   Rerank,
 }
 
+impl LaunchMode {
+  /// Wire-shape label sent to the daemon's `start_model` / `presets_save`
+  /// methods. Identical to `clap`'s `rename_all = "lower"` form, but
+  /// callers don't have to round-trip through clap's value-enum machinery.
+  pub fn as_label(self) -> &'static str {
+    match self {
+      Self::Chat => "chat",
+      Self::Embedding => "embedding",
+      Self::Rerank => "rerank",
+    }
+  }
+}
+
 /// `llamadash uat` arguments (Unit 3 / R4 / R5). Only compiled when
 /// the `uat` Cargo feature is enabled — the release binary on
 /// crates.io and Homebrew bottles never carries this subcommand.
@@ -1142,7 +1163,12 @@ mod tests {
     let cli_status = parse(&["daemon", "status"]);
     assert!(matches!(
       cli_status.command,
-      Some(Command::Daemon(DaemonAction::Status))
+      Some(Command::Daemon(DaemonAction::Status { json: false }))
+    ));
+    let cli_status_json = parse(&["daemon", "status", "--json"]);
+    assert!(matches!(
+      cli_status_json.command,
+      Some(Command::Daemon(DaemonAction::Status { json: true }))
     ));
   }
 

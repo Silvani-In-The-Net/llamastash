@@ -30,7 +30,7 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
       socket_path,
     } => handle_start(detach, state_dir, socket_path, cli, config).await,
     DaemonAction::Stop => handle_stop().await,
-    DaemonAction::Status => handle_status().await,
+    DaemonAction::Status { json } => handle_status(json).await,
   }
 }
 
@@ -53,10 +53,7 @@ async fn handle_start(
         Ok(())
       }
       StartOutcome::AlreadyRunning(pid) => {
-        println!(
-          "{}",
-          crate::cli::colors::dim(&format!("daemon: already running (pid {pid})"))
-        );
+        print_already_running(pid);
         Ok(())
       }
     }
@@ -64,14 +61,24 @@ async fn handle_start(
     match run_foreground(opts).await? {
       StartOutcome::RanToCompletion => Ok(()),
       StartOutcome::AlreadyRunning(pid) => {
-        println!(
-          "{}",
-          crate::cli::colors::dim(&format!("daemon: already running (pid {pid})"))
-        );
+        print_already_running(pid);
         Ok(())
       }
     }
   }
+}
+
+/// "daemon: already running (pid N)" — emitted from both the `--detach`
+/// and the foreground branches of `handle_start` when the daemon is
+/// already up. "daemon: already running" stays dim; the pid lifts to
+/// bold so it's the scannable token in the otherwise dim line.
+fn print_already_running(pid: i32) {
+  println!(
+    "{} ({} {})",
+    crate::cli::colors::dim("daemon: already running"),
+    crate::cli::colors::dim("pid"),
+    console::style(pid.to_string()).bold(),
+  );
 }
 
 async fn handle_stop() -> Result<()> {
@@ -192,7 +199,7 @@ pub(crate) fn resolve_scan_roots(
   })
 }
 
-async fn handle_status() -> Result<()> {
+async fn handle_status(json: bool) -> Result<()> {
   let socket = runtime_socket_path();
   // Short timeout for status — agents shouldn't sit on a dead socket.
   match Client::connect(&socket).await {
@@ -200,15 +207,93 @@ async fn handle_status() -> Result<()> {
       let result = client
         .call_with_timeout("version", None, Duration::from_secs(2))
         .await?;
-      println!("{}", serde_json::to_string_pretty(&result)?);
+      if json {
+        // Machine contract: the raw `version` IPC response, byte-stable
+        // across releases. Agents that previously piped `daemon status`
+        // to `jq` should pass `--json` to keep their parser working.
+        println!(
+          "{}",
+          serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
+        );
+      } else {
+        print!("{}", render_daemon_status(&result));
+      }
       Ok(())
     }
     Err(ClientError::Connect(_)) => {
-      println!("{}", crate::cli::colors::dim("daemon: not running"));
+      if json {
+        // Surface a stable "not running" envelope in --json mode so
+        // agents see a parseable object instead of a colored dim line.
+        println!("{}", serde_json::json!({"daemon": "not_running"}));
+      } else {
+        println!("{}", crate::cli::colors::dim("daemon: not running"));
+      }
       Ok(())
     }
     Err(other) => Err(other).context("daemon status"),
   }
+}
+
+/// Render the daemon's `version` IPC response as a labelled key/value
+/// block. Falls back to pretty-JSON when the response doesn't carry the
+/// expected fields so we never lose info on an unrecognised schema.
+///
+/// Fields surfaced (from `version` IPC): `name`, `version`,
+/// `protocol_version`, `pid`, `uptime_seconds`, `connections`. Missing
+/// fields render as a dim `-`.
+fn render_daemon_status(body: &serde_json::Value) -> String {
+  use crate::cli::{colors, format};
+  use serde_json::Value;
+
+  let Some(obj) = body.as_object() else {
+    // Unexpected shape: emit a dim warning and the raw pretty-JSON so
+    // the user still sees what came back. Avoids silently swallowing
+    // info on an out-of-band response.
+    let mut out = colors::dim("daemon: unexpected version response shape; raw body follows");
+    out.push('\n');
+    out.push_str(&serde_json::to_string_pretty(body).unwrap_or_else(|_| body.to_string()));
+    out.push('\n');
+    return out;
+  };
+
+  let dim_dash = || colors::dim("-");
+  let str_field = |key: &str| {
+    obj
+      .get(key)
+      .and_then(Value::as_str)
+      .map(str::to_string)
+      .unwrap_or_else(dim_dash)
+  };
+  let u64_field = |key: &str| {
+    obj
+      .get(key)
+      .and_then(Value::as_u64)
+      .map(|n| n.to_string())
+      .unwrap_or_else(dim_dash)
+  };
+
+  let pid = obj
+    .get("pid")
+    .and_then(Value::as_u64)
+    .map(|n| console::style(n.to_string()).bold().to_string())
+    .unwrap_or_else(dim_dash);
+  let uptime = obj
+    .get("uptime_seconds")
+    .and_then(Value::as_u64)
+    .map(format::format_uptime)
+    .unwrap_or_else(dim_dash);
+
+  let mut out = String::new();
+  out.push_str(&format::section_header("daemon", None));
+  out.push_str(&format::kv_block(&[
+    ("name", str_field("name")),
+    ("version", str_field("version")),
+    ("protocol", u64_field("protocol_version")),
+    ("pid", pid),
+    ("uptime", uptime),
+    ("connections", u64_field("connections")),
+  ]));
+  out
 }
 
 #[cfg(test)]
@@ -359,5 +444,52 @@ mod tests {
   fn propagated_cli_args_is_empty_when_no_global_flags_set() {
     let cli = parse_cli(&["daemon", "start"]);
     assert!(propagated_cli_args(&cli).is_empty());
+  }
+
+  #[test]
+  fn render_daemon_status_emits_labelled_fields_for_well_formed_response() {
+    let body = serde_json::json!({
+      "name": "llamastash",
+      "version": "0.0.1",
+      "protocol_version": 1,
+      "pid": 4242,
+      "uptime_seconds": 90,
+      "connections": 3,
+    });
+    let rendered = render_daemon_status(&body);
+    let plain = console::strip_ansi_codes(&rendered);
+    // section header + 6 kv rows.
+    assert!(
+      plain.starts_with("daemon\n"),
+      "missing section header: {plain:?}"
+    );
+    assert!(plain.contains("name  llamastash"));
+    assert!(plain.contains("version  0.0.1"));
+    assert!(plain.contains("protocol  1"));
+    assert!(plain.contains("pid  4242"));
+    assert!(plain.contains("uptime  1m 30s"));
+    assert!(plain.contains("connections  3"));
+  }
+
+  #[test]
+  fn render_daemon_status_renders_missing_fields_as_dim_dash() {
+    let body = serde_json::json!({"name": "llamastash"});
+    let rendered = render_daemon_status(&body);
+    let plain = console::strip_ansi_codes(&rendered);
+    // pid / uptime / etc. all fall back to the "-" sentinel.
+    assert!(plain.contains("name  llamastash"));
+    assert!(plain.contains("pid  -"));
+    assert!(plain.contains("uptime  -"));
+    assert!(plain.contains("protocol  -"));
+    assert!(plain.contains("connections  -"));
+  }
+
+  #[test]
+  fn render_daemon_status_falls_back_to_raw_json_for_non_object_body() {
+    let body = serde_json::json!([1, 2, 3]);
+    let rendered = render_daemon_status(&body);
+    let plain = console::strip_ansi_codes(&rendered);
+    assert!(plain.contains("unexpected version response shape"));
+    assert!(plain.contains("[\n  1,"));
   }
 }

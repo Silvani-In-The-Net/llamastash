@@ -177,6 +177,8 @@ These work on every subcommand (clap marks them `global`):
 
 The colored-output policy OR-es three off-conditions: `--no-colors`, `NO_COLOR` env (non-empty), or non-TTY stdout. Any one silences colors. `--json` output is byte-stable regardless — pin agents against `--json`, not against the human form.
 
+Report-style commands (`list`, `status`, `presets list`, `favorites list`, `last-params`, `daemon status`) render padded + colored tables on a TTY and plain tab-separated rows when piped. The padded form is purely a human affordance; the TSV path stays byte-stable so existing `awk -F\t` / `column -t` pipelines keep working unchanged. Action-style commands (`daemon start/stop`, `start`, `stop`) keep their single-line shape but pick up value-color highlights on launch-id / port / pid / state when colors are enabled.
+
 ## Subcommands
 
 ### `llamastash list`
@@ -272,10 +274,12 @@ llamastash last-params [<ref>] [--json]
 ```
 llamastash daemon start [--detach]
 llamastash daemon stop
-llamastash daemon status        # PID + uptime + connections + managed launches
+llamastash daemon status [--json]   # PID + uptime + connections + managed launches
 ```
 
 `start --detach` double-forks into the background; without it the daemon stays in the foreground.
+
+`daemon status --json` emits the raw `version` IPC response (the same `{name, version, protocol_version, pid, uptime_seconds, connections}` object an agent would get by hitting the UDS directly). The plain form is a human key/value block and is not a stable machine contract — agents should always use `--json`.
 
 ## Setup subcommands
 
