@@ -586,18 +586,23 @@ pub enum InitStep {
 }
 
 /// Convert the `recommend` subcommand's args into the equivalent
-/// `init --only models --recommended` invocation. Centralised so the
-/// `recommend` surface and `init` stay in lock-step.
+/// `init --only models` invocation. The picker (top-10 ranked
+/// candidates from `init::recommender`) is shown interactively
+/// unless the caller passes `--model` to short-circuit it. We do
+/// NOT set `recommended: true` here — that would auto-pick the
+/// top entry and skip the prompt, which is `init --recommended`'s
+/// job, not `recommend`'s. The user-facing contract for `recommend`
+/// is "let me choose from the top picks for my hardware".
 pub fn recommend_to_init_args(args: RecommendArgs) -> InitArgs {
   InitArgs {
-    recommended: true,
+    recommended: false,
     yes: false,
     json: args.json,
     offline: args.offline,
     only: vec![InitStep::Models],
     skip: Vec::new(),
     install: None,
-    model: args.model.or(Some(ModelOverride::Recommended)),
+    model: args.model,
     config_choice: None,
     revision: args.revision,
   }

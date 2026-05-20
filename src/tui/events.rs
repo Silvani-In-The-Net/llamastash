@@ -74,9 +74,9 @@ pub enum WriterCmd {
   /// `shutdown` — ask the daemon itself to exit. Dispatched by
   /// the `Q` hotkey after the user confirms the popup.
   Shutdown,
-  /// `R:restart daemon` — shut the running daemon down and re-spawn
-  /// a fresh one with the same options. Dispatched by the `R` hotkey
-  /// after the user confirms the popup.
+  /// `Ctrl+R:restart daemon` — shut the running daemon down and
+  /// re-spawn a fresh one with the same options. Dispatched by
+  /// the `Ctrl+R` hotkey after the user confirms the popup.
   RestartDaemon,
   /// `favorite_add` for the supplied model path. The TUI flips its
   /// local view optimistically; an RPC failure is surfaced via the
@@ -1923,9 +1923,9 @@ mod tests {
   }
 
   #[test]
-  fn capital_r_stages_restart_daemon_confirm() {
+  fn ctrl_r_stages_restart_daemon_confirm() {
     let mut app = App::new(Default::default());
-    pump_input(&mut app, key(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    pump_input(&mut app, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
     assert!(matches!(
       app.confirm_dialog,
       Some(crate::tui::app::ConfirmAction::RestartDaemon)
@@ -1938,7 +1938,7 @@ mod tests {
     let (tx, mut rx) = mpsc::channel::<WriterCmd>(4);
     pump_input_with_writer(
       &mut app,
-      key(KeyCode::Char('R'), KeyModifiers::SHIFT),
+      key(KeyCode::Char('r'), KeyModifiers::CONTROL),
       Some(&tx),
     );
     pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
@@ -2073,30 +2073,31 @@ mod tests {
   }
 
   #[test]
-  fn shift_e_is_alias_for_shift_c() {
-    // A model only ever exposes one of Chat/Embed/Rerank — `C` and
-    // `E` both map through `apply_focus_chat_tab` and land on
-    // whichever mode tab is reachable. (`R` used to be a third
-    // alias but moved to `RestartDaemon` — see
-    // `capital_r_stages_restart_daemon_confirm`.)
+  fn shift_r_and_shift_e_are_aliases_for_shift_c() {
+    // A model only ever exposes one of Chat/Embed/Rerank — `C`,
+    // `R`, and `E` all map through `apply_focus_chat_tab` and land
+    // on whichever mode tab is reachable. (Daemon restart lives on
+    // `Ctrl+R` — see `ctrl_r_stages_restart_daemon_confirm`.)
     use crate::tui::tabs::RightTab;
-    let mut app = App::new(Default::default());
-    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
-    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
-    app.go_top();
-    app.focus = Focus::List;
-    app.right_tab = RightTab::Settings;
-    pump_input(&mut app, key(KeyCode::Char('E'), KeyModifiers::SHIFT));
-    assert_eq!(
-      app.focus,
-      Focus::RightPane,
-      "Shift+E should park focus on the right pane"
-    );
-    assert_eq!(
-      app.right_tab,
-      RightTab::Chat,
-      "Shift+E should land on whichever mode tab is live"
-    );
+    for letter in ['R', 'E'] {
+      let mut app = App::new(Default::default());
+      app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+      app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+      app.go_top();
+      app.focus = Focus::List;
+      app.right_tab = RightTab::Settings;
+      pump_input(&mut app, key(KeyCode::Char(letter), KeyModifiers::SHIFT));
+      assert_eq!(
+        app.focus,
+        Focus::RightPane,
+        "Shift+{letter} should park focus on the right pane"
+      );
+      assert_eq!(
+        app.right_tab,
+        RightTab::Chat,
+        "Shift+{letter} should land on whichever mode tab is live"
+      );
+    }
   }
 
   #[test]

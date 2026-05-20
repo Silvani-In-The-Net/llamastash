@@ -189,7 +189,7 @@ pub enum ConfirmAction {
   StopModel { launch_id: String, name: String },
   /// `Q:kill daemon` — issues a `shutdown` RPC to the daemon.
   KillDaemon,
-  /// `R:restart daemon` — shuts the daemon down and re-spawns
+  /// `Ctrl+R:restart daemon` — shuts the daemon down and re-spawns
   /// a fresh one. All managed launches are stopped in the process.
   RestartDaemon,
   /// `Enter:launch` on a model that already has a managed launch
@@ -386,9 +386,10 @@ impl App {
         self.managed.iter().map(|m| m.launch_id.clone()).collect();
       // Detect transitions into `Error` so we can auto-jump the
       // right pane to Logs — the user explicitly wants to see the
-      // failure tail, not the static Settings form. Compare against
-      // the previous snapshot's state map (path-keyed because a
-      // failed re-launch may have a fresh launch_id).
+      // failure tail, not the static Settings form. Keyed by
+      // launch_id: each launch carries the same id across state
+      // transitions, so a managed row going Running → Error is
+      // matched on the same key.
       let prev_state_by_id: BTreeMap<String, SurfaceState> = self
         .managed
         .iter()

@@ -126,7 +126,7 @@ Override semantics mirror kdash: the action's existing default binding(s) are re
 | `cycle_theme` | `t` | List |
 | `toggle_help` | `?` | List, right pane |
 | `stop_model` | `s` | List |
-| `restart_daemon` | `R` (shift+r) | List, right pane — shuts the daemon down and re-spawns; triggers a confirmation popup |
+| `restart_daemon` | `Ctrl+R` | List, right pane — shuts the daemon down and re-spawns; triggers a confirmation popup |
 | `kill_daemon` | `Q` (shift+q) | List — triggers a confirmation popup |
 | `focus_list` | `Esc`, `Shift+M` | Right pane / tab inputs |
 | `focus_logs_tab` | `Shift+L` | List, right pane — gated on a running model |
@@ -326,7 +326,7 @@ Each `--json` finding carries `{id, severity, message, fix_hint, safe_to_log}`. 
 
 ### `llamastash recommend`
 
-Shortcut for `init --only models --recommended` that downloads the best-fit GGUF for this hardware without walking the full first-run wizard. Useful when `llama-server` is already installed and the user just wants weights.
+Shortcut for `init --only models` that ranks the top picks for this hardware and lets the user choose from them interactively. Useful when `llama-server` is already installed and the user just wants weights. The picker shows up to 10 ranked candidates from the `init::recommender` (default `DEFAULT_TOP_N`); pass `--model recommended` if you want it to short-circuit to the top entry without prompting.
 
 ```
 llamastash recommend [--json] [--offline] [--model <CHOICE>] [--revision <SHA>]
@@ -335,7 +335,7 @@ llamastash recommend [--json] [--offline] [--model <CHOICE>] [--revision <SHA>]
 | Flag | Effect |
 |---|---|
 | `--json` | Same `{"steps_ran": ["detect","models"], "model": {...}, "recommendations": [...], ...}` shape as `init --only models --json`. |
-| `--model <CHOICE>` | Override the recommender. Values: `recommended` (default), `none`, `<owner>/<repo>`. |
+| `--model <CHOICE>` | Pre-answer the picker. Values: `recommended` (auto-pick top entry), `none`, `<owner>/<repo>`. Omit to get the interactive top-10 picker. |
 | `--revision <SHA>` | Pin the HF revision; honored only on `<owner>/<repo>` paste branch. |
 | `--offline` | Refused — recommend always needs network. Kept for `init` parity. |
 

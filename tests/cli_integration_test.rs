@@ -53,10 +53,7 @@ fn unique_temp(label: &str) -> PathBuf {
   } else {
     std::env::temp_dir()
   };
-  let p = root.join(format!(
-    "lts-{label}-{}-{nanos}",
-    std::process::id()
-  ));
+  let p = root.join(format!("lts-{label}-{}-{nanos}", std::process::id()));
   std::fs::create_dir_all(&p).expect("temp");
   p
 }

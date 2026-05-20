@@ -111,7 +111,8 @@ pub enum Action {
   KillDaemon,
   /// Restart the daemon (after a confirmation popup): shut the
   /// current daemon down and re-spawn a fresh one with the same
-  /// options. Bound to `R` (Shift+r) in the model list focus.
+  /// options. Bound to `Ctrl+R` in the model list focus so the
+  /// `Shift+R` mnemonic stays free for the Rerank tab alias.
   RestartDaemon,
   /// Jump focus to the Logs tab in the right pane. No-op (with a
   /// toast) when the focused model isn't running, since Logs is
@@ -193,10 +194,10 @@ const LIST_BINDINGS: &[Binding] = &[
     description: "quit",
   },
   Binding {
-    key: KeyCode::Char('R'),
-    mods: KeyModifiers::SHIFT,
+    key: KeyCode::Char('r'),
+    mods: KeyModifiers::CONTROL,
     action: Action::RestartDaemon,
-    label: "R",
+    label: "Ctrl+R",
     description: "restart daemon",
   },
   Binding {
@@ -416,12 +417,19 @@ const LIST_BINDINGS: &[Binding] = &[
     // description has to mirror that so the help pane doesn't lie.
     description: "chat/embed/rerank",
   },
-  // `E` mirrors `C`: a model only ever exposes one of
-  // Chat/Embed/Rerank at a time, so both keys map to the same
-  // "jump to mode tab" action. `R` used to be a third alias here
-  // but moved to `Action::RestartDaemon` (the global daemon hotkey
-  // lives in `LIST_BINDINGS`); rerank-tab users still reach it via
-  // `C` / `E` or Tab.
+  // R / E mirror C: a model only ever exposes one of
+  // Chat/Embed/Rerank at a time, so all three keys map to the same
+  // "jump to mode tab" action. Lets a user with muscle memory for
+  // "press R for rerank" or "press E for embed" land on the right
+  // tab without thinking. The daemon-restart hotkey lives on Ctrl+R
+  // so this mnemonic stays free.
+  Binding {
+    key: KeyCode::Char('R'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusChatTab,
+    label: "R",
+    description: "chat/embed/rerank",
+  },
   Binding {
     key: KeyCode::Char('E'),
     mods: KeyModifiers::SHIFT,
@@ -681,15 +689,21 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     // overlay's `resolve_one` lifts a consistent string.
     description: "chat/embed/rerank",
   },
-  // `E` aliases C — mirrors LIST_BINDINGS so the user can press the
-  // mnemonic from the right pane too. `R` is the daemon-restart
-  // hotkey (mirrors LIST_BINDINGS); rerank-tab users still reach it
-  // via `C` / `E` or Tab.
+  // R / E aliases for C — mirrors LIST_BINDINGS so the user can
+  // press the mnemonic for Rerank / Embed from the right pane too.
+  // Daemon restart is on Ctrl+R (handled in LIST_BINDINGS).
   Binding {
     key: KeyCode::Char('R'),
     mods: KeyModifiers::SHIFT,
-    action: Action::RestartDaemon,
+    action: Action::FocusChatTab,
     label: "R",
+    description: "chat/embed/rerank",
+  },
+  Binding {
+    key: KeyCode::Char('r'),
+    mods: KeyModifiers::CONTROL,
+    action: Action::RestartDaemon,
+    label: "Ctrl+R",
     description: "restart daemon",
   },
   Binding {

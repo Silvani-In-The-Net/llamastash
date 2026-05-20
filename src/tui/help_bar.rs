@@ -272,11 +272,11 @@ mod tests {
       !text.contains(":focus"),
       "stale `focus` chip must not reappear: {text}"
     );
-    assert!(text.contains("R:restart"), "got: {text}");
+    assert!(text.contains("Ctrl+R:restart"), "got: {text}");
     assert!(text.contains("Q:kill daemon"), "got: {text}");
-    // R:restart must appear before Q:kill daemon so the user sees
+    // Ctrl+R:restart must appear before Q:kill daemon so the user sees
     // the non-destructive option first.
-    let restart_idx = text.find("R:restart").expect("restart chip");
+    let restart_idx = text.find("Ctrl+R:restart").expect("restart chip");
     let kill_idx = text.find("Q:kill daemon").expect("kill chip");
     assert!(
       restart_idx < kill_idx,
