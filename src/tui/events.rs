@@ -198,41 +198,47 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
 
 /// Open the inline edit on the focused Settings row. Numeric / enum
 /// knob rows seed the buffer with the current effective value;
-/// `extras` opens the free-text horizontal-scroll buffer.
+/// `extras` opens the free-text horizontal-scroll buffer. Boolean
+/// rows have no editable buffer (cycle handles them) so this is a
+/// no-op there — gated by [`PickerField::is_editable`].
 fn open_focused_inline_edit(app: &mut App) {
+  use crate::launch::flag_aliases::KnobField;
   use crate::tui::launch_picker::PickerField;
   let Some(picker) = app.launch_picker.as_mut() else {
     return;
   };
+  if !picker.field.is_editable() {
+    return;
+  }
   match picker.field {
     PickerField::Knob(field) => {
       // Seed from the resolved effective value so the user types from
       // the current row content, not from blank.
       let initial = match field {
-        crate::launch::flag_aliases::KnobField::Ctx
-        | crate::launch::flag_aliases::KnobField::NGpuLayers
-        | crate::launch::flag_aliases::KnobField::Threads
-        | crate::launch::flag_aliases::KnobField::Parallel
-        | crate::launch::flag_aliases::KnobField::BatchSize
-        | crate::launch::flag_aliases::KnobField::UbatchSize
-        | crate::launch::flag_aliases::KnobField::Keep => picker
+        KnobField::Ctx
+        | KnobField::NGpuLayers
+        | KnobField::Threads
+        | KnobField::Parallel
+        | KnobField::BatchSize
+        | KnobField::UbatchSize
+        | KnobField::Keep => picker
           .effective_u32(field)
           .map(|v| v.to_string())
           .unwrap_or_default(),
-        crate::launch::flag_aliases::KnobField::RopeFreqScale => picker
+        KnobField::RopeFreqScale => picker
           .effective_f32(field)
           .map(|v| format!("{v}"))
           .unwrap_or_default(),
-        crate::launch::flag_aliases::KnobField::CacheTypeK
-        | crate::launch::flag_aliases::KnobField::CacheTypeV => {
+        KnobField::CacheTypeK | KnobField::CacheTypeV => {
           picker.effective_str(field).unwrap_or_default()
         }
-        // Booleans (reasoning, flash_attn, mlock, no_mmap) don't
-        // need a buffer — cycle handles them.
-        crate::launch::flag_aliases::KnobField::Reasoning
-        | crate::launch::flag_aliases::KnobField::FlashAttn
-        | crate::launch::flag_aliases::KnobField::Mlock
-        | crate::launch::flag_aliases::KnobField::NoMmap => return,
+        // Booleans are filtered out by the `is_editable` guard above.
+        // The match has to stay exhaustive on `KnobField`; reaching
+        // this arm means `is_editable` and `KnobField` drifted apart.
+        KnobField::Reasoning | KnobField::FlashAttn | KnobField::Mlock | KnobField::NoMmap => {
+          debug_assert!(false, "boolean knob {field:?} reached open_focused_inline_edit despite is_editable() guard");
+          return;
+        }
       };
       picker.inline_edit.open(PickerField::Knob(field), initial);
     }

@@ -257,17 +257,24 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<String> {
         // `Focus::ChatInput` because `handle_settings_inline_edit`
         // resolves the cancel key through the same focus — keep the
         // chip and the handler in lockstep so rebinds flow through.
-        let inline_editing = app
-          .launch_picker
-          .as_ref()
+        //
+        // The chip only appears when the focused row is *actually*
+        // editable. Boolean rows (reasoning, flash_attn, mlock,
+        // no_mmap) are cycled with ←/→ and `e` is a no-op there —
+        // showing `e:edit` on those rows would be a lying affordance.
+        // `PickerField::is_editable` is the shared rule with
+        // `open_focused_inline_edit`.
+        let picker_ref = app.launch_picker.as_ref();
+        let inline_editing = picker_ref
           .map(|p| p.inline_edit.is_open() || p.extras_input.is_editing())
           .unwrap_or(false);
+        let focused_editable = picker_ref.map(|p| p.field.is_editable()).unwrap_or(false);
         if inline_editing {
           push(
             &mut chips,
             app.hint_with(Focus::ChatInput, Action::ExitEdit, "clear"),
           );
-        } else {
+        } else if focused_editable {
           push(
             &mut chips,
             app.hint_with(Focus::RightPane, Action::EnterEdit, "edit"),
@@ -669,6 +676,45 @@ mod tests {
     assert!(chips.contains(&"p:path".to_string()));
     assert!(!chips.iter().any(|c| c.contains("u:url")));
     assert!(!chips.iter().any(|c| c.contains("c:curl")));
+  }
+
+  #[test]
+  fn settings_bottom_chips_hide_e_edit_when_focused_row_is_a_boolean() {
+    // `e:edit` opens an inline buffer on numeric / enum / extras rows
+    // but is a no-op on booleans (which are cycled with ←/→). The
+    // chip must hide on boolean rows so the affordance doesn't lie —
+    // `PickerField::is_editable` is the shared rule.
+    use crate::tui::keybindings::Focus;
+    use crate::tui::launch_picker::PickerField;
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake_model()];
+    app.list_cursor = 2;
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    app.open_launch_picker();
+    // Default focus lands on Ctx (editable) — baseline chip visible.
+    let baseline = bottom_hint_chips(&app);
+    assert!(baseline.contains(&"e:edit".to_string()));
+    // Move focus onto a boolean knob — chip disappears.
+    {
+      let picker = app.launch_picker.as_mut().unwrap();
+      picker.field = PickerField::Knob(crate::launch::flag_aliases::KnobField::FlashAttn);
+    }
+    let on_bool = bottom_hint_chips(&app);
+    assert!(
+      !on_bool.contains(&"e:edit".to_string()),
+      "e:edit must hide on boolean row: {on_bool:?}"
+    );
+    // Move to the extras row (editable) — chip is back.
+    {
+      let picker = app.launch_picker.as_mut().unwrap();
+      picker.field = PickerField::Extras;
+    }
+    let on_extras = bottom_hint_chips(&app);
+    assert!(
+      on_extras.contains(&"e:edit".to_string()),
+      "e:edit must reappear on the editable Extras row: {on_extras:?}"
+    );
   }
 
   #[test]

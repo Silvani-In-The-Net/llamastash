@@ -49,6 +49,40 @@ impl PickerField {
   pub fn all() -> &'static [PickerField] {
     &ALL_FIELDS
   }
+
+  /// Whether `e:edit` opens an inline buffer on this row.
+  ///
+  /// - Numeric / float / enum knobs and the free-text `Extras` row
+  ///   open an `InputField` for typing.
+  /// - Boolean knobs (reasoning, flash_attn, mlock, no_mmap) don't —
+  ///   they're cycled with ←/→. Surfacing `e:edit` on a boolean row
+  ///   would be a no-op chip and a misleading affordance.
+  ///
+  /// Shared between [`crate::tui::events::open_focused_inline_edit`]
+  /// (which early-returns on booleans) and the right-pane hint strip
+  /// (which hides the chip on those rows) so the chip and the
+  /// handler stay in lockstep.
+  pub fn is_editable(self) -> bool {
+    match self {
+      PickerField::Extras => true,
+      PickerField::Knob(k) => match k {
+        KnobField::Reasoning
+        | KnobField::FlashAttn
+        | KnobField::Mlock
+        | KnobField::NoMmap => false,
+        KnobField::Ctx
+        | KnobField::NGpuLayers
+        | KnobField::Threads
+        | KnobField::Parallel
+        | KnobField::BatchSize
+        | KnobField::UbatchSize
+        | KnobField::Keep
+        | KnobField::RopeFreqScale
+        | KnobField::CacheTypeK
+        | KnobField::CacheTypeV => true,
+      },
+    }
+  }
 }
 
 /// Inline-edit state owned by [`LaunchPickerState`].
