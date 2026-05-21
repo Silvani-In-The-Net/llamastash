@@ -537,11 +537,49 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       }
     }
     Action::YankUrl | Action::YankCurl | Action::YankPath => {
+      // `c` doubles up on the Logs tab: copy the full log buffer
+      // instead of the curl one-liner. Mirrors the tab-aware
+      // dispatch already in place for `s` (ToggleAutoScroll). Any
+      // other tab (Settings / Chat / Embed / Rerank) falls through
+      // to the original yank handler.
+      if matches!(action, Action::YankCurl)
+        && app.focus == Focus::RightPane
+        && app.right_tab == RightTab::Logs
+      {
+        let lines = &app.logs_state.lines;
+        if lines.is_empty() {
+          app.show_toast("no log lines yet");
+        } else {
+          let n = lines.len();
+          let text = lines.join("\n");
+          match clipboard::write(&text) {
+            Ok(backend) => app.show_toast(format!("copied logs ({n} lines) via {backend}")),
+            Err(e) => app.show_toast(format!("clipboard unavailable: {e}")),
+          }
+        }
+        return;
+      }
       let text = build_yank_text(app, action);
       if let Some(text) = text {
+        let label = match action {
+          Action::YankUrl => "URL",
+          Action::YankCurl => "curl",
+          Action::YankPath => "path",
+          _ => "",
+        };
         match clipboard::write(&text) {
-          Ok(backend) => app.show_toast(format!("yanked via {backend}")),
-          Err(e) => app.show_toast(format!("clipboard unavailable: {e}; {text}")),
+          Ok(backend) => app.show_toast(format!("copied {label} via {backend}")),
+          Err(e) => {
+            // Curl payloads are long enough to drown the toast on a
+            // clipboard failure; trim aggressively for those while
+            // keeping URLs / paths intact (they're already short).
+            let preview = if text.len() > 80 {
+              format!("{}…", &text[..80])
+            } else {
+              text
+            };
+            app.show_toast(format!("clipboard unavailable: {e}; {preview}"));
+          }
         }
       } else {
         // `Y` (yank-curl) is the only path that strictly requires a
@@ -4404,7 +4442,11 @@ mod tests {
     // Round-8: `p` always yanks the focused path; `u` and `c`
     // need a running endpoint. Dispatch happens through the same
     // `apply_action` path as the Models list, so a successful
-    // yank toast is enough to prove the binding routes.
+    // yank toast is enough to prove the binding routes. The toast
+    // text names the thing copied (`copied URL/curl/path via …`)
+    // on success or surfaces a `clipboard unavailable` fallback
+    // when no backend is reachable — assert on the label in either
+    // shape so the wording can't silently regress.
     let mut app = App::new(Default::default());
     app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
     app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
@@ -4412,12 +4454,70 @@ mod tests {
     app.focus = Focus::RightPane;
     app.right_tab = RightTab::Settings;
     pump_input(&mut app, key(KeyCode::Char('p'), KeyModifiers::NONE));
-    assert!(app.toast_message().is_some(), "p must yank the path");
+    let path_toast = app
+      .toast_message()
+      .expect("p must yank the path")
+      .to_string();
+    assert!(
+      path_toast.contains("copied path") || path_toast.contains("clipboard unavailable"),
+      "p toast should name the copied thing or surface a clipboard failure; got: {path_toast}"
+    );
     app.toast = None;
     pump_input(&mut app, key(KeyCode::Char('u'), KeyModifiers::NONE));
-    assert!(app.toast_message().is_some(), "u must yank the URL");
+    let url_toast = app
+      .toast_message()
+      .expect("u must yank the URL")
+      .to_string();
+    assert!(
+      url_toast.contains("copied URL") || url_toast.contains("clipboard unavailable"),
+      "u toast should name the copied thing or surface a clipboard failure; got: {url_toast}"
+    );
     app.toast = None;
     pump_input(&mut app, key(KeyCode::Char('c'), KeyModifiers::NONE));
-    assert!(app.toast_message().is_some(), "c must yank the curl");
+    let curl_toast = app
+      .toast_message()
+      .expect("c must yank the curl")
+      .to_string();
+    assert!(
+      curl_toast.contains("copied curl") || curl_toast.contains("clipboard unavailable"),
+      "c toast should name the copied thing or surface a clipboard failure; got: {curl_toast}"
+    );
+  }
+
+  #[test]
+  fn c_on_logs_tab_copies_log_buffer() {
+    // `c` is double-duty: on the Settings tab (and elsewhere) it
+    // yanks the curl one-liner; on the Logs tab it copies the
+    // full log buffer to the system clipboard. Tab-aware dispatch
+    // mirrors the existing `s` (ToggleAutoScroll) precedent.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Logs;
+    app.logs_state.lines = vec!["line one".to_string(), "line two".to_string()];
+    pump_input(&mut app, key(KeyCode::Char('c'), KeyModifiers::NONE));
+    let logs_toast = app
+      .toast_message()
+      .expect("c on Logs tab must produce a toast")
+      .to_string();
+    assert!(
+      logs_toast.contains("copied logs") || logs_toast.contains("clipboard unavailable"),
+      "logs-copy toast should mention logs or a clipboard failure; got: {logs_toast}"
+    );
+    // Empty buffer surfaces a dedicated "no log lines yet" toast
+    // rather than copying an empty string.
+    app.logs_state.lines.clear();
+    app.toast = None;
+    pump_input(&mut app, key(KeyCode::Char('c'), KeyModifiers::NONE));
+    let empty_toast = app
+      .toast_message()
+      .expect("c on empty Logs tab must produce a toast")
+      .to_string();
+    assert!(
+      empty_toast.contains("no log lines yet"),
+      "empty-buffer toast should explain there's nothing to copy; got: {empty_toast}"
+    );
   }
 }

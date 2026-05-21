@@ -177,6 +177,12 @@ const MODELS: &[Row] = &[
   },
 ];
 
+/// On the Logs tab `c` copies the full log buffer to the system
+/// clipboard. The default `Action::YankCurl` description (`"curl"`)
+/// reflects the binding's Settings-tab meaning, so the help row
+/// overrides it with the Logs-tab semantics.
+const LOGS_COPY: &[(Focus, Action)] = &[(Focus::RightPane, Action::YankCurl)];
+
 const LOGS: &[Row] = &[
   Row::Single {
     focus: Focus::RightPane,
@@ -189,6 +195,10 @@ const LOGS: &[Row] = &[
   Row::Single {
     focus: Focus::RightPane,
     action: Action::MoveDown,
+  },
+  Row::Multi {
+    parts: LOGS_COPY,
+    description: "copy logs",
   },
   Row::Single {
     focus: Focus::RightPane,
