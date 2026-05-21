@@ -203,6 +203,7 @@ Do not flag these for deletion or `.gitignore` during reviews — they are part 
 - `docs/brainstorms/*` — origin requirements.
 - `docs/plans/*.md` — implementation plans (living docs with progress checkboxes).
 - `docs/solutions/*.md` — solution memos when present.
+- `docs/benchmarks/*` — methodology doc, results pages, and the raw per-host run JSONs under `runs/` and `overhead/`. These are the published evidence behind the README's positioning claims; deleting or rewriting prior dated pages destroys the reproducibility contract documented in `docs/benchmarks/methodology.md`.
 - `.context/compound-engineering/ce-review/*` — multi-agent review run artifacts.
 
 ## Built-in defaults table maintenance

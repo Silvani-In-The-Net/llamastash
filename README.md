@@ -127,6 +127,17 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 - [Atomic, mode-checked config + state writes](FEATURES.md#atomic-mode-checked-config--state-writes) — `0600` final mode; corrupt state quarantined, not fatal.
 - [Side-by-side daemons](FEATURES.md#side-by-side-daemons) — isolated instances via `LLAMASTASH_*_DIR` + `LLAMASTASH_SOCKET`.
 
+## Benchmarks
+
+LlamaStash spawns the unmodified upstream `llama-server`. That means two distinct questions matter, and both are tracked under [`docs/benchmarks/`](docs/benchmarks/):
+
+- **Suite A — overhead vs raw `llama-server`.** Same model + same effective argv, run twice (raw and through LlamaStash). The architectural claim is "near-zero overhead"; Suite A's two-tier threshold makes that a regression check, not a marketing line.
+- **Suite B — cross-tool end-to-end.** LlamaStash, raw `llama-server`, Ollama, and LM Studio on the same model + same hardware, driven through their OpenAI-compatible HTTP endpoints. Both *defaults* and *normalized* modes (same effective knobs to the extent each tool exposes them).
+
+Methodology, fairness notes, variance-gate rules, and the reproducibility contract live in [`docs/benchmarks/methodology.md`](docs/benchmarks/methodology.md). Published results pages are linked from [`docs/benchmarks/index.md`](docs/benchmarks/index.md). Re-run on your hardware with `make bench-end-to-end` (Suite B) or `make bench-overhead` (Suite A) — both are maintainer-run; there's no CI driving them.
+
+> _The first published results page lands once the harness completes its dry run on the maintainer's primary backend. Until then, the methodology doc and the per-host JSON layout are the public surface._
+
 ## Configuration
 
 LlamaStash reads `$XDG_CONFIG_HOME/llamastash/config.yaml` (macOS: `~/Library/Application Support/llamastash/config.yaml`). A fully-annotated sample lives at [`config.example.yaml`](config.example.yaml) — copy it to the path above and edit. The full schema reference is in [`docs/usage.md`](docs/usage.md#configuration).
