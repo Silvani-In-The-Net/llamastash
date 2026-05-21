@@ -434,6 +434,13 @@ pub struct InitArgs {
   /// branch-tracked. Empty values rejected at parse time.
   #[arg(long, value_name = "SHA", value_parser = parse_revision)]
   pub revision: Option<String>,
+
+  /// Skip the post-init handoff into the interactive TUI. By default,
+  /// a successful interactive (non-`--json`, TTY) init prompts to
+  /// launch the TUI in the same process; with `--recommended`, the
+  /// TUI launches without prompting. This flag bypasses both.
+  #[arg(long, action = ArgAction::SetTrue)]
+  pub no_tui: bool,
 }
 
 /// Reject empty `--revision` values up-front so a downstream hf-hub
@@ -603,6 +610,7 @@ pub fn recommend_to_init_args(args: RecommendArgs) -> InitArgs {
     model: args.model,
     config_choice: None,
     revision: args.revision,
+    no_tui: true,
   }
 }
 

@@ -569,6 +569,33 @@ pub async fn confirm_config_write(args: &InitArgs, diff_render: &str) -> Result<
   Ok(confirmed)
 }
 
+/// Resolve whether `init` should hand off into the interactive TUI
+/// when the wizard completes successfully. Short-circuits keep
+/// non-interactive callers (agents piping `--json`, headless CI,
+/// users who passed `--no-tui`) on the legacy "print outro and exit"
+/// path; `--recommended` auto-launches without prompting; everything
+/// else gets a single Y/n cliclack confirm with default Y.
+pub async fn confirm_tui_handoff(args: &InitArgs) -> Result<bool, CliExit> {
+  if args.no_tui || args.json {
+    return Ok(false);
+  }
+  if !stdout_is_terminal() {
+    return Ok(false);
+  }
+  if is_recommended(args) {
+    return Ok(true);
+  }
+  let confirmed = tokio::task::spawn_blocking(|| {
+    cliclack::confirm("Launch the TUI now?")
+      .initial_value(true)
+      .interact()
+  })
+  .await
+  .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: prompt join failed: {e}")))?
+  .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: handoff prompt: {e}")))?;
+  Ok(confirmed)
+}
+
 fn install_override_to_choice(
   override_value: InstallOverride,
   existing: &BinaryPresence,
@@ -709,6 +736,7 @@ mod tests {
       model: None,
       config_choice: None,
       revision: None,
+      no_tui: true,
     }
   }
 

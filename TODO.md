@@ -22,8 +22,10 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 ### Blockers
 
-- [ ] Init does not hand off to TUI after all steps.
-- [ ] Some HF downloaded models fail to start.
+- [x] ~~Init does not hand off to TUI after all steps.~~ — `init` now prompts to launch the TUI on success (auto-launch with `--recommended`, skip with `--no-tui`).
+- [ ] Some HF downloaded models fail to start??
+- [ ] random HF download failure ◓  Downloading 1/1 `Qwen_Qwen3.6-27B-Q8_0.gguf` (~27767.6 MiB)                                                                     ✗ init download: hf-hub: request error: error sending request for url (https://huggingface.co/bartowski/Qwen_Qwen3.6-27B-GGUF/resolve/main/Qwen_Qwen3.6-27B-Q8_0.gguf): request error: error sending request for url (https://huggingface.co/bartowski/Qwen_Qwen3.6-27B-GGUF/resolve/main/Qwen_Qwen3.6-27B-Q8_0.gguf): error sending request for url (https://huggingface.co/bartowski/Qwen_Qwen3.6-27B-GGUF/resolve/main/Qwen_Qwen3.6-27B-Q8_0.gguf): client error (SendRequest): connection error: Connection timed out (os error 110)
+- [ ] copy action should show a visual confirmation.
 
 ### Release checklist
 

@@ -175,7 +175,7 @@ fn report(result: CliResult) -> i32 {
 /// as the TUI's event loop attaches. Without this, `llamastash -p
 /// /path` ran with the daemon down displayed an empty Models pane
 /// and "daemon connecting…" indefinitely.
-async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> CliResult {
+pub(crate) async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> CliResult {
   // Ensure the daemon is up. The TUI's writer task reconnects per
   // command, so we don't hold the connection past startup priming.
   let mut client = client::connect_or_spawn(cli, config).await?;

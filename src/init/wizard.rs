@@ -393,6 +393,13 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
     ));
   }
 
+  // Step 7: TUI handoff. Defaults to launching when stdout is a TTY
+  // and the caller is not in `--json` / `--no-tui` mode. The TUI
+  // runs in this process; on exit we return cleanly.
+  if prompts::confirm_tui_handoff(&args).await? {
+    crate::cli::handle_tui(cli, config).await?;
+  }
+
   Ok(())
 }
 
