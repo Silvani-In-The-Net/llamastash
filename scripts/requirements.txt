@@ -15,3 +15,13 @@ whichllm==0.5.7
 # PyYAML parses data/task-hints.yaml + data/gguf-publisher-allowlist.yaml
 # (Unit 4 side-files for catalog curation).
 PyYAML>=6.0,<7.0
+
+# Bench harness (scripts/bench/) — Suite A (overhead) + Suite B (cross-tool).
+# pydantic v2 for the typed JSON schema in scripts/bench/end_to_end/schema.py;
+# matplotlib for the SVG renderer in scripts/bench/end_to_end/charts.py;
+# pytest for the harness's own unit tests under scripts/bench/end_to_end/tests/.
+# httpx is already pinned above for the snapshot script and is reused by the
+# workload runners.
+pydantic>=2.6,<3.0
+matplotlib>=3.8,<4.0
+pytest>=7.4,<9.0
