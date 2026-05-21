@@ -23,8 +23,8 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 ### Blockers
 
 - [x] ~~Init does not hand off to TUI after all steps.~~ — `init` now prompts to launch the TUI on success (auto-launch with `--recommended`, skip with `--no-tui`).
-- [ ] Add copy feature for logs pane. When in log pane, c should copy the full log text to clipboard and show a visual confirmation (e.g. a toast or temporary message in the UI).
-- [ ] copy actions(url,path,curl,logs) should show a visual confirmation (e.g. a toast or temporary message in the UI).
+- [x] ~~Add copy feature for logs pane. When in log pane, c should copy the full log text to clipboard and show a visual confirmation.~~ — `c` on the Logs tab now copies the full buffer and toasts `copied logs (N lines) via {backend}`.
+- [x] ~~copy actions(url,path,curl,logs) should show a visual confirmation.~~ — toasts now read `copied URL/curl/path/logs via {backend}` so the user sees exactly what was copied.
 - [x] ~~The UI here in `init` doesn't look nice. Make those info inline with remaining UI.~~ — summary now renders via `cliclack::note` so every line keeps the panel border, then a single-line `outro` closes the session.
 
 - [ ] **In progress**: Proxy router that maps a single endpoint to running models by model name. If the model isn't running, start it; if launch fails, fall back to a running model when one is available; otherwise error. Keep it OpenCode / π compatible so agents and tools can hit one URL.

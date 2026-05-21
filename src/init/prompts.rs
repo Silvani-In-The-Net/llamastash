@@ -220,10 +220,7 @@ pub fn outro(summary: &InitSummary) {
   let mut body = String::new();
   body.push_str(&format!("steps_ran:     {:?}", summary.steps_ran));
   if !summary.steps_skipped.is_empty() {
-    body.push_str(&format!(
-      "\nsteps_skipped: {:?}",
-      summary.steps_skipped
-    ));
+    body.push_str(&format!("\nsteps_skipped: {:?}", summary.steps_skipped));
   }
   if let Some(install) = &summary.install {
     body.push_str(&format!(
