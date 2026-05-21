@@ -8,6 +8,7 @@
 //! Also covers the integration verification line from Unit 4:
 //! "a newly-dropped `model.gguf` into a watched root appears via
 //! `list_models` within ~1 second."
+#![cfg(feature = "test-fixtures")]
 
 use std::fs;
 use std::path::{Path, PathBuf};

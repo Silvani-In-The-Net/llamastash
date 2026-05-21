@@ -4,6 +4,7 @@
 //! builder, writes it to a temp file, and drives `read_path` / `summarise`
 //! / `compute_identity` / `estimate_memory` as the daemon's discovery and
 //! supervisor consumers will.
+#![cfg(feature = "test-fixtures")]
 
 use std::fs;
 use std::io::Write;

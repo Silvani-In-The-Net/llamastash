@@ -1,6 +1,7 @@
 //! End-to-end discovery tests: walk a real temp filesystem tree and
 //! verify the streaming `mpsc` channel surfaces every model the way
 //! Unit 4's plan specifies.
+#![cfg(feature = "test-fixtures")]
 
 use std::fs;
 use std::path::PathBuf;

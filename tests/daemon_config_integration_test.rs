@@ -3,6 +3,7 @@
 //!
 //! Closes the Unit 4 follow-ups:
 //! - **P1** "Wire production daemon discovery roots from config + CLI" —
+#![cfg(feature = "test-fixtures")]
 //!   uses `cli::daemon::resolve_scan_roots` (via the public route the
 //!   real binary takes) and asserts the resulting catalog ends up
 //!   populated through `list_models`.

@@ -27,7 +27,7 @@ First publicly-installable release. Single `llamastash` binary acts as TUI, CLI,
 - HF Hub `trendingScore` query-token migration — legacy `sort=trending` now returns HTTP 400, so the `Trending` sort emits `trendingScore` and the URL shape stays uniform across every sort (legacy `search` / `filter` carve-outs reverted).
 - `--llama-server <PATH>` is sticky — resolved path is written back into `config.yaml` on every invocation.
 - `LLAMASTASH_STATE_DIR` / `LLAMASTASH_CONFIG_DIR` / `LLAMASTASH_CACHE_DIR` env overrides for side-by-side daemons (alongside the existing `LLAMASTASH_SOCKET`).
-- Maintainer-only `llamastash uat` (`--features uat`, never shipped on release) drives real-hardware lifecycle tests with a structured JSON report; nightly Metal CI lane in [`.github/workflows/uat-metal-nightly.yml`](.github/workflows/uat-metal-nightly.yml) ([`d1c3a1d`](../../commit/d1c3a1d)).
+- Maintainer-only `llamastash uat` (`--features uat`, never shipped on release) drives real-hardware lifecycle tests with a structured JSON report; nightly macOS build lane in [`.github/workflows/macos-build-nightly.yml`](.github/workflows/macos-build-nightly.yml) ([`d1c3a1d`](../../commit/d1c3a1d)).
 
 ## How to read this file
 
