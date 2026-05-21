@@ -908,7 +908,7 @@ fn apply_stop_model(app: &mut App) {
   };
   let launch_id = managed.launch_id.clone();
   let path = managed.path.clone();
-  let name = crate::util::paths::model_display_name(&path);
+  let name = app.display_name_for(&path);
   app.confirm_dialog = Some(ConfirmAction::StopModel { launch_id, name });
 }
 
@@ -944,7 +944,7 @@ fn apply_delete_model(app: &mut App) {
     app.show_toast(reason);
     return;
   }
-  let display_name = crate::util::paths::model_display_name(&path);
+  let display_name = app.display_name_for(&path);
   app.confirm_dialog = Some(ConfirmAction::DeleteModel { path, display_name });
 }
 
@@ -1459,7 +1459,7 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
 
   let active_instances = app.managed.iter().filter(|m| m.path == path).count();
   if active_instances > 0 {
-    let name = crate::util::paths::model_display_name(&path);
+    let name = app.display_name_for(&path);
     app.confirm_dialog = Some(ConfirmAction::LaunchDuplicate {
       name,
       active_instances,

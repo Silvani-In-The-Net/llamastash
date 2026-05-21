@@ -200,7 +200,12 @@ fn running_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a
   let parts: Vec<String> = app
     .managed
     .iter()
-    .map(|m| format!("{} :{}", model_display_name(&m.path), m.port))
+    .map(|m| {
+      let label = app
+        .display_label_for(&m.path)
+        .unwrap_or_else(|| model_display_name(&m.path));
+      format!("{label} :{}", m.port)
+    })
     .collect();
   let joined = parts.join(" · ");
   let trimmed = right_ellipsise(&joined, list_budget);

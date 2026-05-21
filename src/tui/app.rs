@@ -7,7 +7,7 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -951,6 +951,28 @@ impl App {
     rows
       .get(self.list_cursor)
       .and_then(|r| r.path().map(|p| p.to_path_buf()))
+  }
+
+  /// Friendly display label for `path` if the discovery layer
+  /// supplied one (Ollama's `<name>:<tag>`). Right-pane / info-pane
+  /// callers fall back to `util::paths::model_display_name` when this
+  /// returns `None` so non-Ollama rows keep their file_stem render.
+  pub fn display_label_for(&self, path: &Path) -> Option<String> {
+    self
+      .models
+      .iter()
+      .find(|m| m.path == path)
+      .and_then(|m| m.display_label.clone())
+  }
+
+  /// Friendly display name with fallback. Prefers the discovery
+  /// label, falls back to the path's file_stem. Centralised so every
+  /// surface (toast, confirm dialog, header, daemon panel) renders
+  /// the same name for the same model.
+  pub fn display_name_for(&self, path: &Path) -> String {
+    self
+      .display_label_for(path)
+      .unwrap_or_else(|| crate::util::paths::model_display_name(path))
   }
 
   /// Display name of the focused model.

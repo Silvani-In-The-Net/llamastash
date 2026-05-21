@@ -386,10 +386,18 @@ fn mnemonic_spans(label: &str, active: bool, palette: &Palette) -> Vec<Span<'sta
 fn render_header_name(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   use crate::util::paths::model_display_name;
   let name_style = palette.title_style();
+  // Prefer the discovery-supplied friendly label (Ollama's
+  // `<name>:<tag>`) over the path's file_stem so the header doesn't
+  // render the `sha256-<hex>` blob name.
+  let label_for = |path: &std::path::Path| {
+    app
+      .display_label_for(path)
+      .unwrap_or_else(|| model_display_name(path))
+  };
   let name_line = match app.right_pane_focus() {
-    Some(m) => Line::from(Span::styled(model_display_name(&m.path), name_style)),
+    Some(m) => Line::from(Span::styled(label_for(&m.path), name_style)),
     None => match app.focused_path() {
-      Some(p) => Line::from(Span::styled(model_display_name(&p), name_style)),
+      Some(p) => Line::from(Span::styled(label_for(&p), name_style)),
       None => Line::from(Span::styled("—", palette.muted_style())),
     },
   };
