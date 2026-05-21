@@ -4,10 +4,9 @@
 //!
 //! Replaces three near-identical implementations that grew across
 //! the v2 surface:
-//! - [`crate::gpu::run_with_timeout`] (vendor probes)
+//! - `crate::gpu::run_with_timeout` (vendor probes)
 //! - [`crate::init::smoke::version_probe`] (`llama-server --version`)
-//! - [`crate::init::install::brew::run_brew_with_timeout`]
-//!   (`brew install` / `brew --prefix`)
+//! - `run_brew_with_timeout` (brew install / brew --prefix)
 //!
 //! All three needed: capture both stdout and stderr, enforce a
 //! wall-clock deadline, kill the child on expiry, never leak the
