@@ -183,6 +183,12 @@ pub struct App {
   /// enters edit on `open_filter` so the user can type immediately.
   pub filter_input: crate::tui::input_field::InputField,
   pub launch_picker: Option<LaunchPickerState>,
+  /// Vertical scroll offset for the Settings tab's read-only
+  /// running-launch view. The view shows ~17 rows (launch id, 14
+  /// typed knobs, extras, footer); on a short viewport the user
+  /// scrolls with ↑/↓. Resets on model-list nav and when the picker
+  /// opens or closes.
+  pub running_view_scroll: u16,
   pub toast: Option<(String, Instant)>,
   pub daemon_connected: bool,
   /// Snapshot of the daemon-side metadata block from the most recent
@@ -292,6 +298,7 @@ impl App {
       list_cursor: 0,
       filter_input: crate::tui::input_field::InputField::new(),
       launch_picker: None,
+      running_view_scroll: 0,
       toast: None,
       daemon_connected: false,
       daemon_info: DaemonInfo::default(),
@@ -830,10 +837,15 @@ impl App {
   /// path *before* the move so we can compare against the path
   /// *after*.
   fn sync_picker_to_focus(&mut self, before: Option<PathBuf>) {
+    let after = self.focused_path();
+    if before != after {
+      // Scroll offset is per-focused-model; clear it on cursor moves
+      // so the new model's running-launch view opens at the top.
+      self.running_view_scroll = 0;
+    }
     if self.launch_picker.is_none() {
       return;
     }
-    let after = self.focused_path();
     if before != after {
       self.launch_picker = None;
     }
@@ -1020,12 +1032,14 @@ impl App {
       }
     }
     self.launch_picker = Some(picker);
+    self.running_view_scroll = 0;
     self.right_tab = RightTab::Settings;
     self.focus = Focus::RightPane;
   }
 
   pub fn close_launch_picker(&mut self) {
     self.launch_picker = None;
+    self.running_view_scroll = 0;
     self.focus = Focus::List;
     self.right_tab = RightTab::Settings;
   }

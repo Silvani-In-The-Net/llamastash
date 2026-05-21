@@ -56,7 +56,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         )
         .into(),
       );
-      frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+      // Clamp scroll to the actual line count vs viewport height so a
+      // window resize doesn't leave the view blanked. The stored
+      // scroll is bumped freely by ↑/↓ event handlers — this is the
+      // single point that ensures the rendered offset is in-bounds.
+      let max_scroll = (lines.len() as u16).saturating_sub(area.height);
+      let scroll = app.running_view_scroll.min(max_scroll);
+      frame.render_widget(
+        Paragraph::new(lines)
+          .scroll((scroll, 0))
+          .wrap(Wrap { trim: false }),
+        area,
+      );
       return;
     }
   }
@@ -110,6 +121,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 
   let show_source = area.width >= 50;
   let row_for = |field: PickerField| picker_view.field == field;
+  // Track the line index of the focused row so we can adjust the
+  // scroll offset below — on tall viewports nothing scrolls; on
+  // short ones the focused row stays visible with ≥1 row of context.
+  let mut focused_line: Option<u16> = None;
 
   // Every typed knob — including ctx and reasoning — flows through
   // the same `value (chip)` shape. Empty rows render `default` as
@@ -117,6 +132,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   for spec in knob_specs() {
     let field = spec.field;
     let focused = row_for(PickerField::Knob(field));
+    if focused {
+      focused_line = Some(lines.len() as u16);
+    }
     if picker_view.inline_edit.is_open()
       && picker_view.inline_edit.field == Some(PickerField::Knob(field))
     {
@@ -146,6 +164,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 
   // extras row
   let extras_focused = row_for(PickerField::Extras);
+  if extras_focused {
+    focused_line = Some(lines.len() as u16);
+  }
   if picker_view.extras_editing {
     lines.push(inline_edit_row(
       "extras",
@@ -207,7 +228,48 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     .into(),
   );
 
-  frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+  // Minimal-scroll-with-margin policy: keep ≥1 row of context above
+  // and below the focused row so the user sees what's adjacent. When
+  // the focused row crosses an edge, scroll just enough to restore
+  // the margin — no jumping to top/bottom, no centring. Recomputed
+  // every render so window resizes self-correct.
+  let scroll = clamp_scroll_with_margin(
+    picker_view.scroll_offset.get(),
+    focused_line.unwrap_or(0),
+    area.height,
+    lines.len() as u16,
+  );
+  picker_view.scroll_offset.set(scroll);
+
+  frame.render_widget(
+    Paragraph::new(lines)
+      .scroll((scroll, 0))
+      .wrap(Wrap { trim: false }),
+    area,
+  );
+}
+
+/// Minimal scroll with margin: keep the focused row visible with
+/// `MARGIN` rows of context above and below where possible. Returns
+/// the new scroll offset. Clamped to `[0, max_scroll]`.
+fn clamp_scroll_with_margin(current: u16, focused: u16, viewport: u16, total: u16) -> u16 {
+  const MARGIN: u16 = 1;
+  let max_scroll = total.saturating_sub(viewport);
+  if viewport == 0 {
+    return 0;
+  }
+  // Scroll up so focused is at least MARGIN rows below the top.
+  let upper_bound = focused.saturating_sub(MARGIN);
+  // Scroll down so focused is at least MARGIN rows above the bottom.
+  let lower_bound = focused.saturating_add(MARGIN + 1).saturating_sub(viewport);
+  let mut next = current;
+  if next > upper_bound {
+    next = upper_bound;
+  }
+  if next < lower_bound {
+    next = lower_bound;
+  }
+  next.min(max_scroll)
 }
 
 fn knob_label(field: KnobField) -> &'static str {
@@ -416,6 +478,24 @@ mod tests {
   use super::*;
   use crate::tui::app::{App, AppOptions};
   use std::path::PathBuf;
+
+  #[test]
+  fn clamp_scroll_keeps_focused_visible_with_margin() {
+    // Focused row inside the viewport — no change.
+    assert_eq!(clamp_scroll_with_margin(0, 5, 20, 30), 0);
+    // Focused below the viewport bottom — scroll just enough to land
+    // with one row of margin below.
+    assert_eq!(clamp_scroll_with_margin(0, 19, 10, 30), 11);
+    // Focused above the viewport top — scroll up to land one row
+    // below the top edge.
+    assert_eq!(clamp_scroll_with_margin(15, 5, 10, 30), 4);
+    // Focused at index 0 with no margin available — saturate at 0.
+    assert_eq!(clamp_scroll_with_margin(5, 0, 10, 30), 0);
+    // Viewport bigger than content — never scroll.
+    assert_eq!(clamp_scroll_with_margin(0, 5, 50, 10), 0);
+    // Zero viewport returns 0 (would otherwise underflow).
+    assert_eq!(clamp_scroll_with_margin(5, 5, 0, 30), 0);
+  }
 
   fn fake_model(path: &str, parent: &str) -> crate::discovery::DiscoveredModel {
     crate::discovery::DiscoveredModel {

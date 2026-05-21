@@ -703,12 +703,27 @@ fn apply_arrow_in_pane(app: &mut App, dir: ArrowDir) {
         ArrowDir::Up => app.logs_state.scroll_up(),
         ArrowDir::Down => app.logs_state.scroll_down(),
       },
-      // Settings: cycle the form's fields (ctx → reasoning →
-      // advanced). The picker materialisation happens in
-      // `apply_next_field` / `apply_prev_field`.
+      // Settings: cycle the form's fields when the picker is
+      // editable; scroll the read-only running-launch view when the
+      // focused model has a managed launch and no picker is staged.
+      // Arrows have no field semantics in the running view, so
+      // claiming them for scroll is collision-free and more
+      // discoverable than asking users to remember PageUp/PageDown.
       RightTab::Settings => match dir {
-        ArrowDir::Up => apply_prev_field(app),
-        ArrowDir::Down => apply_next_field(app),
+        ArrowDir::Up => {
+          if running_view_is_locked(app) {
+            app.running_view_scroll = app.running_view_scroll.saturating_sub(1);
+          } else {
+            apply_prev_field(app)
+          }
+        }
+        ArrowDir::Down => {
+          if running_view_is_locked(app) {
+            app.running_view_scroll = app.running_view_scroll.saturating_add(1);
+          } else {
+            apply_next_field(app)
+          }
+        }
       },
       // Round-8: Chat/Embed/Rerank output viewports scroll on the
       // same arrow keys as Logs while focus stays on the right
@@ -3818,8 +3833,9 @@ mod tests {
     // staged, any arrow key used to silently call `with_picker` and
     // swap the read-only "Running launch" pane for the editable
     // form. That hid the live params behind the form and surprised
-    // users. Arrows must now be a no-op in this state; `e` is the
-    // explicit gate.
+    // users. ↑/↓ now scroll the read-only view (the running-launch
+    // panel has ~17 rows and can overflow short viewports); ←/→
+    // remain no-ops. `e` is the explicit gate to start editing.
     let mut app = App::new(Default::default());
     app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
     app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
@@ -3833,6 +3849,29 @@ mod tests {
         "{code:?} must not stage a picker while a managed launch is focused"
       );
     }
+  }
+
+  #[test]
+  fn arrows_in_settings_scroll_read_only_running_view() {
+    // ↑/↓ over a running launch with no picker staged now drive the
+    // read-only view's scroll offset so the user can walk past
+    // viewport-clipped knob rows without `e`-staging the editor.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    assert_eq!(app.running_view_scroll, 0);
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.running_view_scroll, 1, "↓ must scroll one row down");
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.running_view_scroll, 2);
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.running_view_scroll, 1, "↑ must scroll one row up");
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.running_view_scroll, 0, "↑ saturates at 0");
   }
 
   #[test]

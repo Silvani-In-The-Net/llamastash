@@ -9,6 +9,7 @@
 //! row's value; `e` enters inline edit; Enter launches (or commits
 //! an open edit); Backspace resets the focused row.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
@@ -126,6 +127,12 @@ pub struct LaunchPickerState {
   pub field: PickerField,
   pub active_instances: usize,
   pub prefer_port: Option<u16>,
+  /// Row offset clipped from the top of the rendered line list so the
+  /// focused row stays visible on small viewports. Recomputed on each
+  /// render using the actual area height — the `Cell` lets the
+  /// read-only render path (which only has `&App`) update the cached
+  /// offset without taking a mutable borrow.
+  pub scroll_offset: Cell<u16>,
 }
 
 impl LaunchPickerState {
@@ -143,6 +150,7 @@ impl LaunchPickerState {
       field: PickerField::Knob(KnobField::Ctx),
       active_instances: 0,
       prefer_port: None,
+      scroll_offset: Cell::new(0),
     }
   }
 

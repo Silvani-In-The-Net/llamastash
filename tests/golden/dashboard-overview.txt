@@ -27,4 +27,4 @@
 │                                                                      ││  batch_size      default                     │
 │                                                                      ││  ubatch_size     default                     │
 │                                                                      ││  rope_freq_scale default                     │
-└ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ┘└ e:edit for launch · s:stop · p:path · u:url ·┘
+└ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ┘└ e:edit for launch · s:stop · ↑↓:scroll · p:pa┘

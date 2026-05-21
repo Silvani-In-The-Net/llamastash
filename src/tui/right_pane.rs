@@ -211,6 +211,15 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<String> {
           &mut chips,
           app.hint_with(Focus::RightPane, Action::ToggleAutoScroll, "stop"),
         );
+        // ↑/↓ scroll the read-only running-launch view (~17 rows).
+        // Surface the chip so users discover the affordance — without
+        // it, arrows look like a no-op.
+        if let (Some(down), Some(up)) = (
+          app.hint_with(Focus::RightPane, Action::MoveDown, "scroll"),
+          app.hint_with(Focus::RightPane, Action::MoveUp, "scroll"),
+        ) {
+          chips.push(bidirectional_chip(&up, &down, "scroll"));
+        }
         push(&mut chips, app.hint(Focus::RightPane, Action::YankPath));
         push(&mut chips, app.hint(Focus::RightPane, Action::YankUrl));
         push(&mut chips, app.hint(Focus::RightPane, Action::YankCurl));
@@ -623,6 +632,7 @@ mod tests {
       vec![
         "e:edit for launch".to_string(),
         "s:stop".to_string(),
+        "↑↓:scroll".to_string(),
         "p:path".to_string(),
         "u:url".to_string(),
         "c:curl".to_string(),
