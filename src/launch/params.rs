@@ -39,19 +39,37 @@ fn is_forbidden_head(head: &str) -> bool {
     .any(|p| lower == *p || (p.ends_with('-') && lower.starts_with(p)))
 }
 
-/// Returns the subset of `extras` flags that hit the denylist. Used
-/// by IPC handlers to refuse a launch before spawn, and by `compose`
-/// to defensively strip in case validation was skipped.
+/// Flag heads whose adjacent value is a secret and must be hidden
+/// before display in a log line, error message, or terminal echo.
+/// Shared between [`forbidden_in_extras`] and [`redact_for_display`]
+/// so both surfaces redact the same set.
+const SECRET_BEARING_PREFIXES: &[&str] = &["--api-key", "--ssl-"];
+
+fn is_secret_head(head: &str) -> bool {
+  let lower = head.to_ascii_lowercase();
+  SECRET_BEARING_PREFIXES
+    .iter()
+    .any(|p| lower == *p || (p.ends_with('-') && lower.starts_with(p)))
+}
+
+/// Returns the subset of `extras` flags that hit the denylist, with
+/// secret-bearing values redacted (`--api-key=foo` → `--api-key=<value-redacted>`).
+/// Callers must never display the *raw* extras list — only the
+/// redacted strings returned here — so a typo'd secret can't land in
+/// scrollback or daemon error logs.
 pub fn forbidden_in_extras(extras: &[OsString]) -> Vec<String> {
   extras
     .iter()
     .filter_map(|s| {
       let lossy = s.to_string_lossy();
       let head = lossy.split('=').next().unwrap_or(&lossy);
-      if is_forbidden_head(head) {
-        Some(lossy.into_owned())
+      if !is_forbidden_head(head) {
+        return None;
+      }
+      if is_secret_head(head) && lossy.contains('=') {
+        Some(format!("{head}=<value-redacted>"))
       } else {
-        None
+        Some(lossy.into_owned())
       }
     })
     .collect()
@@ -62,13 +80,7 @@ pub fn forbidden_in_extras(extras: &[OsString]) -> Vec<String> {
 /// the TUI's forbidden-flag inline warning and any other surface
 /// that might echo extras back to a log or terminal.
 pub fn redact_for_display(extras: &[OsString]) -> String {
-  let secret_prefixes: &[&str] = &["--api-key", "--ssl-"];
-  let is_secret = |head: &str| {
-    let lower = head.to_ascii_lowercase();
-    secret_prefixes
-      .iter()
-      .any(|p| lower == *p || (p.ends_with('-') && lower.starts_with(p)))
-  };
+  let is_secret = is_secret_head;
   let mut out = String::new();
   let mut iter = extras.iter().peekable();
   while let Some(token) = iter.next() {
@@ -620,6 +632,32 @@ mod tests {
     assert!(banned.iter().any(|s| s == "--api-key"));
     assert!(banned.iter().any(|s| s == "--ssl-key-file"));
     assert!(!banned.iter().any(|s| s == "--threads"));
+  }
+
+  #[test]
+  fn forbidden_in_extras_redacts_secret_values_in_equals_form() {
+    let extras = vec![
+      OsString::from("--api-key=supersecret"),
+      OsString::from("--ssl-key-file=/etc/key.pem"),
+      OsString::from("--host=0.0.0.0"),
+    ];
+    let banned = forbidden_in_extras(&extras);
+    let joined = banned.join(" ");
+    assert!(
+      !joined.contains("supersecret"),
+      "api-key value leaked into banned list: {joined}"
+    );
+    assert!(
+      !joined.contains("/etc/key.pem"),
+      "ssl path leaked into banned list: {joined}"
+    );
+    assert!(banned.iter().any(|s| s == "--api-key=<value-redacted>"));
+    assert!(banned
+      .iter()
+      .any(|s| s == "--ssl-key-file=<value-redacted>"));
+    // Non-secret forbidden flags (e.g. --host) keep their value — useful
+    // diagnostic and not sensitive.
+    assert!(banned.iter().any(|s| s == "--host=0.0.0.0"));
   }
 
   #[test]

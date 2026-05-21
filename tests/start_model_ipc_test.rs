@@ -421,6 +421,63 @@ async fn start_model_refuses_both_port_and_prefer_port() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_model_refuses_forbidden_extras_without_leaking_secret_values() {
+  // The IPC `extras flags refused` error path stringifies the banned
+  // list back to the caller. Secret-bearing flags (`--api-key`,
+  // `--ssl-*`) must redact their value before serialisation — a
+  // typo'd secret would otherwise land in the caller's stderr and
+  // any daemon log that captures the response.
+  let state = unique_temp("forbidden-redact");
+  let model_dir = unique_temp("forbidden-redact-models");
+  let model_path = model_dir.join("m.gguf");
+  std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
+  let model_path_canon = std::fs::canonicalize(&model_path).unwrap();
+
+  let opts = DaemonOptions {
+    binary: Some(fake_binary()),
+    port_range: allocate_port_range(),
+    ..DaemonOptions::rooted_at(state.clone())
+  };
+  let socket = opts.socket_path.clone();
+  let daemon = tokio::spawn(async move { run_foreground(opts).await });
+  wait_for_socket(&socket).await;
+  let mut client = Client::connect(&socket).await.expect("connect");
+
+  let err = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "extras": ["--api-key=supersecret", "--ssl-key-file=/etc/key.pem"],
+      })),
+    )
+    .await
+    .expect_err("forbidden extras must be refused");
+  let msg = format!("{err}");
+  assert!(
+    !msg.contains("supersecret"),
+    "api-key value leaked into IPC error: {msg}"
+  );
+  assert!(
+    !msg.contains("/etc/key.pem"),
+    "ssl path leaked into IPC error: {msg}"
+  );
+  assert!(
+    msg.contains("<value-redacted>"),
+    "redaction marker absent: {msg}"
+  );
+  assert!(
+    msg.contains("--api-key") && msg.contains("--ssl-key-file"),
+    "redacted form must still name the rejected flags: {msg}"
+  );
+
+  let _ = client.call("shutdown", None).await;
+  let _ = timeout(Duration::from_secs(3), daemon).await;
+  std::fs::remove_dir_all(&state).ok();
+  std::fs::remove_dir_all(&model_dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_model_returns_error_when_binary_unconfigured() {
   // Production daemon resolves the binary at startup; if it wasn't
   // resolved (e.g. user has no `llama-server` on PATH), `start_model`

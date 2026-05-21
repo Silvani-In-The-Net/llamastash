@@ -854,7 +854,7 @@ impl crate::init::download::DownloadProgress for WizardDownloadProgress {
 async fn run_config_step(
   args: &InitArgs,
   install: Option<&BinaryInstall>,
-  hardware: &HardwareSnapshot,
+  _hardware: &HardwareSnapshot,
 ) -> Result<Option<ConfigSummary>, CliExit> {
   let path =
     crate::util::paths::user_config_file().ok_or_else(|| CliExit::new(UNKNOWN, "no config dir"))?;
@@ -871,8 +871,9 @@ async fn run_config_step(
   // Round-9: the wizard no longer seeds `arch_defaults` — the
   // built-in `(arch, gpu_backend) → TypedKnobs` table supersedes
   // it. The YAML `arch_defaults` block remains an unmanaged escape
-  // hatch users can hand-edit to override the built-in row.
-  let _ = hardware; // retained for downstream callers' arity
+  // hatch users can hand-edit to override the built-in row. The
+  // `_hardware` arg stays on the signature so re-introducing
+  // hardware-aware additions doesn't need a caller-side change.
   let additions_value =
     serde_yaml::to_value(&bootstrap).expect("InitConfigAdditions serialises cleanly");
   // `composed` records `(dotted-path, value)` for every top-level

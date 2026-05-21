@@ -75,8 +75,11 @@ pub struct ManagedRow {
 pub struct LastParamsRow {
   pub ctx: Option<u32>,
   pub reasoning: bool,
-  /// Resolved typed knobs the supervisor argv-ified into flags. The
-  /// editor seeds its `last_used` resolver layer from this.
+  /// User-supplied typed-knob deltas from the last successful launch
+  /// (the *user's* contribution, not the resolved set). The editor
+  /// seeds its `user_knobs` row directly from this so a returning
+  /// user lands on the same overrides; rows the user never touched
+  /// re-resolve from yaml / built-in / model default.
   pub knobs: crate::config::TypedKnobs,
   /// Free-form argv tail that landed on `--`. Surfaces back in the
   /// editor's `extras` row.
@@ -991,6 +994,13 @@ impl App {
             .position(|val| *val == c)
         });
         state.prefer_port = last.port;
+        // R20: returning user inherits the typed-knob deltas they
+        // last shipped. The daemon persists only user-supplied
+        // deltas (not the fully resolved set) so seeding straight
+        // into `user_knobs` keeps the picker's source labels
+        // honest — every persisted knob shows `(user)`, the rest
+        // re-resolve from yaml / built-in / model default.
+        state.user_knobs = last.knobs.clone();
       }
     }
     state.active_instances = active_count;

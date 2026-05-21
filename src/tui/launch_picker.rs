@@ -535,11 +535,25 @@ impl LaunchPickerState {
   }
 }
 
-/// Cycle through `presets` from `current`. When `current` is `None`,
-/// wrap at the end; when it matches a preset, advance / reverse;
-/// when it sits between presets, snap to the nearest in the chosen
-/// direction.
-fn cycle_through<T: PartialEq + Copy>(
+/// Cycle through `presets` from `current`. Behaviour by case:
+///
+/// - **`current == None`** (row is on the inherited default): wrap to
+///   the first preset (forward) or the last preset (backward).
+/// - **`current` matches a preset exactly**: advance / reverse one
+///   slot. Falling off either end wraps back to `None` so the row
+///   re-inherits.
+/// - **`current` sits between presets** (e.g. user typed a custom
+///   value via `e`): snap to the nearest preset *in the chosen
+///   direction* — pressing `→` jumps to the smallest preset strictly
+///   greater than `current`; pressing `←` jumps to the largest one
+///   strictly less. This keeps cycling consistent with the visible
+///   direction of travel; the previous behaviour of jumping to
+///   `presets[0]` was a footgun on custom values mid-list.
+///
+/// `presets` is assumed to be sorted in ascending order — every
+/// caller in [`LaunchPickerState::cycle_knob`] passes a hand-curated
+/// ascending list.
+fn cycle_through<T: PartialEq + PartialOrd + Copy>(
   current: Option<T>,
   presets: &[T],
   forward: bool,
@@ -554,26 +568,36 @@ fn cycle_through<T: PartialEq + Copy>(
       presets[presets.len() - 1]
     }),
     Some(v) => {
-      let idx = presets.iter().position(|p| *p == v);
-      match idx {
-        Some(i) => {
-          if forward {
-            if i + 1 >= presets.len() {
-              None
-            } else {
-              Some(presets[i + 1])
-            }
-          } else if i == 0 {
+      if let Some(i) = presets.iter().position(|p| *p == v) {
+        return if forward {
+          if i + 1 >= presets.len() {
             None
           } else {
-            Some(presets[i - 1])
+            Some(presets[i + 1])
           }
-        }
-        None => Some(if forward {
-          presets[0]
+        } else if i == 0 {
+          None
         } else {
-          presets[presets.len() - 1]
-        }),
+          Some(presets[i - 1])
+        };
+      }
+      // Off-preset custom value: snap to the nearest preset in the
+      // direction the user pressed. Falls back to first/last when
+      // every preset sits on the other side of `current` (e.g. user
+      // typed something smaller than `presets[0]` then pressed ←).
+      if forward {
+        presets
+          .iter()
+          .find(|p| **p > v)
+          .copied()
+          .or(Some(presets[presets.len() - 1]))
+      } else {
+        presets
+          .iter()
+          .rev()
+          .find(|p| **p < v)
+          .copied()
+          .or(Some(presets[0]))
       }
     }
   }
@@ -682,5 +706,32 @@ mod tests {
   fn cycle_through_wraps_to_none_at_the_end() {
     assert_eq!(cycle_through::<u32>(Some(3), &[1, 2, 3], true), None);
     assert_eq!(cycle_through::<u32>(Some(1), &[1, 2, 3], false), None);
+  }
+
+  #[test]
+  fn cycle_through_off_preset_snaps_to_nearest_in_direction() {
+    // User typed `n_gpu_layers=42` via `e`, then presses →.
+    let presets = &[0, 16, 32, 64, 99];
+    assert_eq!(cycle_through(Some(42_u32), presets, true), Some(64));
+    assert_eq!(cycle_through(Some(42_u32), presets, false), Some(32));
+  }
+
+  #[test]
+  fn cycle_through_off_preset_below_first_snaps_to_first_going_forward() {
+    let presets = &[10, 20, 30];
+    // Forward from a value below presets[0] → first preset > current = 10.
+    assert_eq!(cycle_through(Some(5_u32), presets, true), Some(10));
+    // Backward from below presets[0] has nothing smaller → fall back
+    // to first preset.
+    assert_eq!(cycle_through(Some(5_u32), presets, false), Some(10));
+  }
+
+  #[test]
+  fn cycle_through_off_preset_above_last_snaps_to_last_going_backward() {
+    let presets = &[10, 20, 30];
+    assert_eq!(cycle_through(Some(99_u32), presets, false), Some(30));
+    // Forward from above presets[last] has nothing greater → fall back
+    // to last preset.
+    assert_eq!(cycle_through(Some(99_u32), presets, true), Some(30));
   }
 }

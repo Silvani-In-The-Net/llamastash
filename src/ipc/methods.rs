@@ -936,14 +936,14 @@ async fn start_model_handler(
     .unwrap_or(LaunchMode::Chat);
 
   // Reject pinned port values that would corrupt our internal state
-  // or require root: 0 means "OS pick" (llama-server would pick a
-  // port we never track), <1024 needs root and is almost certainly
-  // a typo / hostile.
+  // or require root: any value below 1024 (which also covers 0, the
+  // "OS picks for me" sentinel llama-server would pick a port we
+  // never track) needs root and is almost certainly a typo / hostile.
   for p in parsed.port.iter().chain(parsed.prefer_port.iter()) {
-    if *p == 0 || *p < 1024 {
+    if *p < 1024 {
       return Err(ErrorObject::new(
         ErrorCode::InvalidParams,
-        format!("port {p} is not in the allowed range (>= 1024, not 0)"),
+        format!("port {p} is not in the allowed range (>= 1024)"),
       ));
     }
   }
@@ -1007,6 +1007,16 @@ async fn start_model_handler(
   launch_params.port = Some(port);
   launch_params.reasoning = parsed.reasoning.unwrap_or(false);
   launch_params.extras = parsed.extras.into_iter().map(OsString::from).collect();
+
+  // User-supplied knob deltas — captured for persistence below.
+  // Persisting the *resolved* set would let last_used absorb the
+  // entire built-in / arch_default contribution after one launch, so
+  // every row's source chip would converge to `(last used)` and the
+  // `(built-in)` / `(arch default)` breadcrumbs would disappear. We
+  // persist only what the user explicitly set so source chips stay
+  // meaningful across re-launches and a future change to the
+  // built-in table reaches existing installs.
+  let user_knobs = parsed.knobs.clone();
 
   // Pull the model's last_params from persisted state so a returning
   // user inherits the knobs they last shipped (R20 precedence).
@@ -1117,11 +1127,18 @@ async fn start_model_handler(
   // last_params (per the plan — only updated on a *successful*
   // Loading → Ready transition). We poll because ManagedModel
   // doesn't expose a transition channel yet.
+  //
+  // Persist the *user-supplied* knob deltas, not the resolved set —
+  // so source chips in the picker stay meaningful (a knob the user
+  // never touched keeps re-resolving from yaml / built-in / model
+  // default instead of being frozen as `(last used)`).
+  let mut persist_params = launch_params.clone();
+  persist_params.knobs = user_knobs;
   spawn_last_params_recorder(
     ctx.state.clone(),
     model.clone(),
     id.clone(),
-    launch_params,
+    persist_params,
     ctx.shutdown.clone(),
   );
 
