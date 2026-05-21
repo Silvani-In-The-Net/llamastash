@@ -75,6 +75,8 @@ fn apply_knob(
   flag: &str,
 ) -> Result<(), CliExit> {
   match (field, kind) {
+    (KnobField::Ctx, ValueKind::U32) => knobs.ctx = Some(parse_u32(flag, value)?),
+    (KnobField::Reasoning, ValueKind::Bool) => knobs.reasoning = Some(parse_bool(flag, value)?),
     (KnobField::NGpuLayers, ValueKind::U32) => knobs.n_gpu_layers = Some(parse_u32(flag, value)?),
     (KnobField::Threads, ValueKind::U32) => knobs.threads = Some(parse_u32(flag, value)?),
     (KnobField::Parallel, ValueKind::U32) => knobs.parallel = Some(parse_u32(flag, value)?),

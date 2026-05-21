@@ -1,12 +1,13 @@
 //! Launch picker form state — the typed-knob editor.
 //!
-//! The Settings tab renders a vertical list of rows: `ctx`,
-//! `reasoning`, every `TypedKnobs` field with a source label
-//! (`(user)`, `(last used)`, `(arch default)`, `(built-in)`,
-//! `(model default)`), and an `extras` free-text row at the bottom.
-//! Up/Down moves between rows; Left/Right cycles the focused row's
-//! value; `e` enters inline edit; Enter launches (or commits an
-//! open edit); Backspace resets the focused row.
+//! The Settings tab renders a vertical list of rows: every
+//! `TypedKnobs` field (ctx, reasoning, n_gpu_layers, … in
+//! `knob_specs()` order) with a per-row source label (`(user)`,
+//! `(last used)`, `(arch default)`, `(model default)`,
+//! `(server default)`), plus an `extras` free-text row at the
+//! bottom. Up/Down moves between rows; Left/Right cycles the focused
+//! row's value; `e` enters inline edit; Enter launches (or commits
+//! an open edit); Backspace resets the focused row.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -19,76 +20,21 @@ use crate::launch::params::LayerLabel;
 /// values flow through the same field when the user types digits.
 pub const CTX_PRESETS: &[u32] = &[2048, 4096, 8192, 16384, 32768, 65536, 131072];
 
-/// Tri-state reasoning selector. `ModelDefault` means "don't send
-/// the reasoning flag at all" — the daemon falls back to whatever
-/// the model's metadata implies. `On` / `Off` are explicit user
-/// choices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ReasoningSetting {
-  #[default]
-  ModelDefault,
-  On,
-  Off,
-}
-
-impl ReasoningSetting {
-  pub fn label(self) -> &'static str {
-    match self {
-      ReasoningSetting::ModelDefault => "model default",
-      ReasoningSetting::On => "on",
-      ReasoningSetting::Off => "off",
-    }
-  }
-
-  pub fn as_wire(self) -> Option<bool> {
-    match self {
-      ReasoningSetting::ModelDefault => None,
-      ReasoningSetting::On => Some(true),
-      ReasoningSetting::Off => Some(false),
-    }
-  }
-
-  pub fn next(self) -> Self {
-    match self {
-      ReasoningSetting::ModelDefault => ReasoningSetting::On,
-      ReasoningSetting::On => ReasoningSetting::Off,
-      ReasoningSetting::Off => ReasoningSetting::ModelDefault,
-    }
-  }
-
-  pub fn prev(self) -> Self {
-    match self {
-      ReasoningSetting::ModelDefault => ReasoningSetting::Off,
-      ReasoningSetting::On => ReasoningSetting::ModelDefault,
-      ReasoningSetting::Off => ReasoningSetting::On,
-    }
-  }
-
-  pub fn from_persisted(prev: bool) -> Self {
-    if prev {
-      ReasoningSetting::On
-    } else {
-      ReasoningSetting::Off
-    }
-  }
-}
-
 /// Which row the cursor is on. The editor renders top-to-bottom in
-/// this declaration order so [`PickerField::all`] doubles as the
-/// vertical-navigation order.
+/// [`PickerField::all`] order so it doubles as the vertical-navigation
+/// order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerField {
-  Ctx,
-  Reasoning,
   Knob(KnobField),
   Extras,
 }
 
-/// Lazily-built navigation order — `Ctx`, `Reasoning`, every knob in
-/// `knob_specs()` order, `Extras`. Built once on first access so
-/// per-keypress navigation does no allocation.
+/// Lazily-built navigation order — every knob in `knob_specs()`
+/// order (ctx, reasoning, n_gpu_layers, …), followed by `Extras`.
+/// Built once on first access so per-keypress navigation does no
+/// allocation.
 static ALL_FIELDS: LazyLock<Box<[PickerField]>> = LazyLock::new(|| {
-  let mut v: Vec<PickerField> = vec![PickerField::Ctx, PickerField::Reasoning];
+  let mut v: Vec<PickerField> = Vec::new();
   for spec in crate::launch::flag_aliases::knob_specs() {
     v.push(PickerField::Knob(spec.field));
   }
@@ -160,16 +106,9 @@ impl InlineEdit {
 pub struct LaunchPickerState {
   /// Display name of the focused model (rendered in the title).
   pub model_name: String,
-  /// Selected ctx length. `None` lets the supervisor honour the
-  /// GGUF's native `context_length` (no `-c` flag).
-  pub ctx: Option<u32>,
-  /// Reasoning bundle: model-default / on / off.
-  pub reasoning: ReasoningSetting,
-  /// Index into CTX_PRESETS for cycling. `None` means custom.
-  pub preset_idx: Option<usize>,
   /// User-supplied typed knobs (only fields the user explicitly set;
   /// every other field stays `None` and inherits from the resolved
-  /// chain on render).
+  /// chain on render). Includes `ctx` and `reasoning`.
   pub user_knobs: TypedKnobs,
   /// Resolved knobs after applying the layered resolver — what the
   /// editor shows for each row.
@@ -193,9 +132,6 @@ impl LaunchPickerState {
   pub fn for_model(model_name: impl Into<String>) -> Self {
     Self {
       model_name: model_name.into(),
-      ctx: None,
-      reasoning: ReasoningSetting::default(),
-      preset_idx: None,
       user_knobs: TypedKnobs::default(),
       resolved: TypedKnobs::default(),
       sources: BTreeMap::new(),
@@ -204,7 +140,7 @@ impl LaunchPickerState {
       extras_cursor: 0,
       extras_editing: false,
       inline_edit: InlineEdit::default(),
-      field: PickerField::Ctx,
+      field: PickerField::Knob(KnobField::Ctx),
       active_instances: 0,
       prefer_port: None,
     }
@@ -218,40 +154,9 @@ impl LaunchPickerState {
     self.sources = sources;
   }
 
-  /// Cycle to the next ctx preset, wrapping around.
-  pub fn cycle_ctx_preset(&mut self) {
-    let next = match self.preset_idx {
-      Some(i) if i + 1 < CTX_PRESETS.len() => Some(i + 1),
-      Some(_) => None,
-      None => Some(0),
-    };
-    self.preset_idx = next;
-    self.ctx = next.map(|i| CTX_PRESETS[i]);
-  }
-
-  pub fn cycle_ctx_preset_prev(&mut self) {
-    let next = match self.preset_idx {
-      Some(0) => None,
-      Some(i) => Some(i - 1),
-      None => Some(CTX_PRESETS.len() - 1),
-    };
-    self.preset_idx = next;
-    self.ctx = next.map(|i| CTX_PRESETS[i]);
-  }
-
-  pub fn cycle_reasoning_next(&mut self) {
-    self.reasoning = self.reasoning.next();
-  }
-
-  pub fn cycle_reasoning_prev(&mut self) {
-    self.reasoning = self.reasoning.prev();
-  }
-
   /// Cycle the focused field's value forward (Right arrow).
   pub fn cycle_focused_value_next(&mut self) {
     match self.field {
-      PickerField::Ctx => self.cycle_ctx_preset(),
-      PickerField::Reasoning => self.cycle_reasoning_next(),
       PickerField::Knob(k) => self.cycle_knob(k, true),
       PickerField::Extras => {}
     }
@@ -260,8 +165,6 @@ impl LaunchPickerState {
   /// Cycle the focused field's value backward (Left arrow).
   pub fn cycle_focused_value_prev(&mut self) {
     match self.field {
-      PickerField::Ctx => self.cycle_ctx_preset_prev(),
-      PickerField::Reasoning => self.cycle_reasoning_prev(),
       PickerField::Knob(k) => self.cycle_knob(k, false),
       PickerField::Extras => {}
     }
@@ -269,6 +172,8 @@ impl LaunchPickerState {
 
   fn cycle_knob(&mut self, field: KnobField, forward: bool) {
     match field {
+      KnobField::Ctx => self.cycle_u32(field, CTX_PRESETS, forward),
+      KnobField::Reasoning => self.cycle_bool(field, forward),
       KnobField::NGpuLayers => self.cycle_u32(field, &[0, 16, 32, 64, 99], forward),
       KnobField::Threads => self.cycle_u32(field, &[1, 2, 4, 6, 8, 12, 16, 24], forward),
       KnobField::Parallel => self.cycle_u32(field, &[1, 2, 4, 8, 16], forward),
@@ -331,13 +236,6 @@ impl LaunchPickerState {
   /// inherit from the resolver chain.
   pub fn reset_focused_row(&mut self) {
     match self.field {
-      PickerField::Ctx => {
-        self.ctx = None;
-        self.preset_idx = None;
-      }
-      PickerField::Reasoning => {
-        self.reasoning = ReasoningSetting::ModelDefault;
-      }
       PickerField::Knob(k) => self.clear_user(k),
       PickerField::Extras => {
         self.extras.clear();
@@ -390,7 +288,9 @@ impl LaunchPickerState {
 
   /// Source label for `field`. Returns `LayerLabel::User` when the
   /// user has an explicit override; falls back to the resolver's
-  /// source map otherwise.
+  /// source map otherwise, then to the spec's `fallback_label` when
+  /// the resolver hasn't populated the map yet (freshly-opened
+  /// editor before the first resolve).
   pub fn source_for(&self, field: KnobField) -> LayerLabel {
     if self.user_has(field) {
       LayerLabel::User
@@ -399,12 +299,14 @@ impl LaunchPickerState {
         .sources
         .get(&field)
         .copied()
-        .unwrap_or(LayerLabel::ModelDefault)
+        .unwrap_or_else(|| crate::launch::flag_aliases::spec_for(field).fallback_label)
     }
   }
 
   fn user_has(&self, field: KnobField) -> bool {
     match field {
+      KnobField::Ctx => self.user_knobs.ctx.is_some(),
+      KnobField::Reasoning => self.user_knobs.reasoning.is_some(),
       KnobField::NGpuLayers => self.user_knobs.n_gpu_layers.is_some(),
       KnobField::Threads => self.user_knobs.threads.is_some(),
       KnobField::CacheTypeK => self.user_knobs.cache_type_k.is_some(),
@@ -422,6 +324,7 @@ impl LaunchPickerState {
 
   fn user_value_u32(&self, field: KnobField) -> Option<u32> {
     match field {
+      KnobField::Ctx => self.user_knobs.ctx,
       KnobField::NGpuLayers => self.user_knobs.n_gpu_layers,
       KnobField::Threads => self.user_knobs.threads,
       KnobField::Parallel => self.user_knobs.parallel,
@@ -449,6 +352,7 @@ impl LaunchPickerState {
 
   fn user_value_bool(&self, field: KnobField) -> Option<bool> {
     match field {
+      KnobField::Reasoning => self.user_knobs.reasoning,
       KnobField::FlashAttn => self.user_knobs.flash_attn,
       KnobField::Mlock => self.user_knobs.mlock,
       KnobField::NoMmap => self.user_knobs.no_mmap,
@@ -458,6 +362,7 @@ impl LaunchPickerState {
 
   fn resolved_u32(&self, field: KnobField) -> Option<u32> {
     match field {
+      KnobField::Ctx => self.resolved.ctx,
       KnobField::NGpuLayers => self.resolved.n_gpu_layers,
       KnobField::Threads => self.resolved.threads,
       KnobField::Parallel => self.resolved.parallel,
@@ -485,6 +390,7 @@ impl LaunchPickerState {
 
   fn resolved_bool(&self, field: KnobField) -> Option<bool> {
     match field {
+      KnobField::Reasoning => self.resolved.reasoning,
       KnobField::FlashAttn => self.resolved.flash_attn,
       KnobField::Mlock => self.resolved.mlock,
       KnobField::NoMmap => self.resolved.no_mmap,
@@ -494,6 +400,7 @@ impl LaunchPickerState {
 
   pub fn set_user_u32(&mut self, field: KnobField, value: Option<u32>) {
     match field {
+      KnobField::Ctx => self.user_knobs.ctx = value,
       KnobField::NGpuLayers => self.user_knobs.n_gpu_layers = value,
       KnobField::Threads => self.user_knobs.threads = value,
       KnobField::Parallel => self.user_knobs.parallel = value,
@@ -520,6 +427,7 @@ impl LaunchPickerState {
 
   pub fn set_user_bool(&mut self, field: KnobField, value: Option<bool>) {
     match field {
+      KnobField::Reasoning => self.user_knobs.reasoning = value,
       KnobField::FlashAttn => self.user_knobs.flash_attn = value,
       KnobField::Mlock => self.user_knobs.mlock = value,
       KnobField::NoMmap => self.user_knobs.no_mmap = value,
@@ -610,26 +518,28 @@ mod tests {
   #[test]
   fn cycle_ctx_walks_through_presets_then_returns_to_native() {
     let mut s = LaunchPickerState::for_model("qwen");
-    assert_eq!(s.ctx, None);
-    s.cycle_ctx_preset();
-    assert_eq!(s.ctx, Some(CTX_PRESETS[0]));
+    s.field = PickerField::Knob(KnobField::Ctx);
+    assert_eq!(s.user_knobs.ctx, None);
+    s.cycle_focused_value_next();
+    assert_eq!(s.user_knobs.ctx, Some(CTX_PRESETS[0]));
     for preset in CTX_PRESETS.iter().skip(1) {
-      s.cycle_ctx_preset();
-      assert_eq!(s.ctx, Some(*preset));
+      s.cycle_focused_value_next();
+      assert_eq!(s.user_knobs.ctx, Some(*preset));
     }
-    s.cycle_ctx_preset();
-    assert_eq!(s.ctx, None, "wraps back to native");
+    s.cycle_focused_value_next();
+    assert_eq!(s.user_knobs.ctx, None, "wraps back to native");
   }
 
   #[test]
   fn reasoning_cycle_walks_tri_state_in_both_directions() {
     let mut s = LaunchPickerState::for_model("qwen");
-    s.cycle_reasoning_next();
-    assert_eq!(s.reasoning, ReasoningSetting::On);
-    s.cycle_reasoning_next();
-    assert_eq!(s.reasoning, ReasoningSetting::Off);
-    s.cycle_reasoning_next();
-    assert_eq!(s.reasoning, ReasoningSetting::ModelDefault);
+    s.field = PickerField::Knob(KnobField::Reasoning);
+    s.cycle_focused_value_next();
+    assert_eq!(s.user_knobs.reasoning, Some(true));
+    s.cycle_focused_value_next();
+    assert_eq!(s.user_knobs.reasoning, Some(false));
+    s.cycle_focused_value_next();
+    assert_eq!(s.user_knobs.reasoning, None);
   }
 
   #[test]
@@ -637,7 +547,7 @@ mod tests {
     let mut s = LaunchPickerState::for_model("qwen");
     let all = PickerField::all();
     assert!(
-      all.len() > 12,
+      all.len() > 14,
       "should cover ctx + reasoning + 12 knobs + extras"
     );
     for expected in all.iter().skip(1).chain(std::iter::once(&all[0])) {
@@ -682,7 +592,7 @@ mod tests {
   fn source_for_falls_through_to_resolver_when_no_user_override() {
     let mut s = LaunchPickerState::for_model("qwen");
     let mut sources = BTreeMap::new();
-    sources.insert(KnobField::NGpuLayers, LayerLabel::BuiltIn);
+    sources.insert(KnobField::NGpuLayers, LayerLabel::ArchDefault);
     s.set_resolved(
       TypedKnobs {
         n_gpu_layers: Some(99),
@@ -690,7 +600,7 @@ mod tests {
       },
       sources,
     );
-    assert_eq!(s.source_for(KnobField::NGpuLayers), LayerLabel::BuiltIn);
+    assert_eq!(s.source_for(KnobField::NGpuLayers), LayerLabel::ArchDefault);
     // User override flips the source to User.
     s.user_knobs.n_gpu_layers = Some(32);
     assert_eq!(s.source_for(KnobField::NGpuLayers), LayerLabel::User);

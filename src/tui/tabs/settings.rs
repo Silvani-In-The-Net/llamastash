@@ -124,32 +124,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let show_source = area.width >= 50;
   let row_for = |field: PickerField| picker_view.field == field;
 
-  // ctx row
-  let ctx_value = match picker_view.ctx {
-    Some(n) => format!("{n}"),
-    None => "native (GGUF default)".to_string(),
-  };
-  lines.push(kv_focused(
-    "ctx",
-    ctx_value,
-    None,
-    row_for(PickerField::Ctx),
-    true,
-    palette,
-    show_source,
-  ));
-  // reasoning row
-  lines.push(kv_focused(
-    "reasoning",
-    picker_view.reasoning.label().to_string(),
-    None,
-    row_for(PickerField::Reasoning),
-    true,
-    palette,
-    show_source,
-  ));
-
-  // typed knob rows
+  // Every typed knob — including ctx and reasoning — flows through
+  // the same `value (chip)` shape. Empty rows render `default` as
+  // the value; the chip names the layer that would supply it.
   for spec in knob_specs() {
     let field = spec.field;
     let focused = row_for(PickerField::Knob(field));
@@ -248,6 +225,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 
 fn knob_label(field: KnobField) -> &'static str {
   match field {
+    KnobField::Ctx => "ctx",
+    KnobField::Reasoning => "reasoning",
     KnobField::NGpuLayers => "n_gpu_layers",
     KnobField::Threads => "threads",
     KnobField::CacheTypeK => "cache_type_k",
@@ -265,7 +244,8 @@ fn knob_label(field: KnobField) -> &'static str {
 
 fn format_knob_value(state: &LaunchPickerState, field: KnobField) -> String {
   match field {
-    KnobField::NGpuLayers
+    KnobField::Ctx
+    | KnobField::NGpuLayers
     | KnobField::Threads
     | KnobField::Parallel
     | KnobField::BatchSize
@@ -281,7 +261,7 @@ fn format_knob_value(state: &LaunchPickerState, field: KnobField) -> String {
     KnobField::CacheTypeK | KnobField::CacheTypeV => state
       .effective_str(field)
       .unwrap_or_else(|| "default".into()),
-    KnobField::FlashAttn | KnobField::Mlock | KnobField::NoMmap => {
+    KnobField::Reasoning | KnobField::FlashAttn | KnobField::Mlock | KnobField::NoMmap => {
       match state.effective_bool(field) {
         Some(true) => "on".into(),
         Some(false) => "off".into(),
@@ -413,7 +393,14 @@ mod tests {
       LastParamsRow {
         ctx: Some(16384),
         reasoning: true,
-        knobs: Default::default(),
+        // ctx/reasoning now live inside `knobs`; the picker seeds
+        // `user_knobs` straight from `knobs` so a returning user
+        // sees their last-shipped values with `(user)` chips.
+        knobs: crate::config::TypedKnobs {
+          ctx: Some(16384),
+          reasoning: Some(true),
+          ..Default::default()
+        },
         extras: vec!["--rope-freq-base".into(), "10000".into()],
         port: Some(41100),
       },

@@ -79,6 +79,8 @@ fn lookup_explicit(arch: &str, backend: GpuFlavor) -> Option<TypedKnobs> {
 fn merge(over: Option<TypedKnobs>, under: TypedKnobs) -> TypedKnobs {
   let Some(over) = over else { return under };
   TypedKnobs {
+    ctx: over.ctx.or(under.ctx),
+    reasoning: over.reasoning.or(under.reasoning),
     n_gpu_layers: over.n_gpu_layers.or(under.n_gpu_layers),
     threads: over.threads.or(under.threads),
     cache_type_k: over.cache_type_k.or(under.cache_type_k),

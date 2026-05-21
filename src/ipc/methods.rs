@@ -1003,20 +1003,22 @@ async fn start_model_handler(
   // `last_params` for this model → YAML `arch_defaults[architecture]`
   // → built-in `(arch, backend)` table → llama-server's own default.
   let mut launch_params = LaunchParams::new(parsed.model_path.clone(), mode);
-  launch_params.ctx = parsed.ctx;
   launch_params.port = Some(port);
-  launch_params.reasoning = parsed.reasoning.unwrap_or(false);
   launch_params.extras = parsed.extras.into_iter().map(OsString::from).collect();
 
-  // User-supplied knob deltas — captured for persistence below.
-  // Persisting the *resolved* set would let last_used absorb the
-  // entire built-in / arch_default contribution after one launch, so
-  // every row's source chip would converge to `(last used)` and the
-  // `(built-in)` / `(arch default)` breadcrumbs would disappear. We
-  // persist only what the user explicitly set so source chips stay
-  // meaningful across re-launches and a future change to the
-  // built-in table reaches existing installs.
-  let user_knobs = parsed.knobs.clone();
+  // Merge the caller's top-level `ctx` and `reasoning` into the
+  // User-layer typed knobs so they participate in the resolver chain
+  // alongside the other typed fields. The wire payload keeps the
+  // top-level fields for backward compat with scripted clients —
+  // they're projected onto the typed knob slots here, with explicit
+  // `knobs.{ctx,reasoning}` overrides winning if the caller set both.
+  let mut user_knobs = parsed.knobs.clone();
+  if user_knobs.ctx.is_none() {
+    user_knobs.ctx = parsed.ctx;
+  }
+  if user_knobs.reasoning.is_none() {
+    user_knobs.reasoning = parsed.reasoning;
+  }
 
   // Pull the model's last_params from persisted state so a returning
   // user inherits the knobs they last shipped (R20 precedence).
@@ -1038,15 +1040,26 @@ async fn start_model_handler(
     Some(a) => crate::launch::defaults_table::lookup(a, backend),
     None => crate::launch::defaults_table::lookup("", backend),
   };
+  // yaml + built-in share the `ArchDefault` chip — yaml wins per
+  // field via precedence order.
   let resolved = crate::launch::params::resolve_layered(&[
-    (crate::launch::params::LayerLabel::User, &parsed.knobs),
+    (crate::launch::params::LayerLabel::User, &user_knobs),
     (
       crate::launch::params::LayerLabel::LastUsed,
       &last_params_knobs,
     ),
     (crate::launch::params::LayerLabel::ArchDefault, yaml_knobs),
-    (crate::launch::params::LayerLabel::BuiltIn, &builtin_knobs),
+    (
+      crate::launch::params::LayerLabel::ArchDefault,
+      &builtin_knobs,
+    ),
   ]);
+  // Project resolved ctx/reasoning back onto the top-level
+  // `LaunchParams` fields — `compose` emits them inline (ctx as
+  // `-c <N>`, reasoning as the `--jinja --reasoning-format deepseek`
+  // bundle).
+  launch_params.ctx = resolved.knobs.ctx;
+  launch_params.reasoning = resolved.knobs.reasoning.unwrap_or(false);
   launch_params.knobs = resolved.knobs;
 
   // Reject loopback-breaking / auth-bypass extras flags before

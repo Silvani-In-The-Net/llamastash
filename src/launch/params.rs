@@ -164,10 +164,17 @@ impl LaunchParams {
 /// `None` fields; for booleans, only emits the flag when
 /// `Some(true)` (`Some(false)` is an explicit opt-out — no
 /// `--no-flash-attn` form because llama-server doesn't have one).
+///
+/// `Ctx` and `Reasoning` are deliberately skipped here — they live
+/// in `TypedKnobs` for the resolver chain and the editor's source
+/// chips, but `compose` emits them inline (ctx → `-c <N>`, reasoning
+/// → `--jinja --reasoning-format deepseek`) so their argv order and
+/// bundle shape stay distinct from the other knobs.
 pub fn argvify(knobs: &TypedKnobs) -> Vec<OsString> {
   let mut out: Vec<OsString> = Vec::new();
   for spec in knob_specs() {
     match spec.field {
+      KnobField::Ctx | KnobField::Reasoning => continue,
       KnobField::NGpuLayers => push_u32(&mut out, spec.canonical, knobs.n_gpu_layers),
       KnobField::Threads => push_u32(&mut out, spec.canonical, knobs.threads),
       KnobField::CacheTypeK => push_str(&mut out, spec.canonical, knobs.cache_type_k.as_deref()),
@@ -235,14 +242,24 @@ fn format_f32(v: f32) -> String {
 /// One layer in the precedence chain (R106). The label is reported
 /// back in `Resolved.sources` so the editor can render per-row
 /// origin chips (`(user)`, `(last used)`, `(arch default)`,
-/// `(built-in)`, `(model default)`).
+/// `(model default)`, `(server default)`).
+///
+/// `ArchDefault` covers both the user's yaml `arch_defaults` block
+/// and the compiled-in arch table — yaml wins per field at resolve
+/// time, but the chip is the same since both are conceptually
+/// "what this arch defaults to."
+///
+/// `ModelDefault` means the value comes from the model file itself
+/// (GGUF header for `ctx`, chat template for `reasoning`).
+/// `ServerDefault` means no flag is sent and llama-server falls back
+/// to its own hardcoded default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LayerLabel {
   User,
   LastUsed,
   ArchDefault,
-  BuiltIn,
   ModelDefault,
+  ServerDefault,
 }
 
 impl LayerLabel {
@@ -252,8 +269,8 @@ impl LayerLabel {
       LayerLabel::User => "user",
       LayerLabel::LastUsed => "last used",
       LayerLabel::ArchDefault => "arch default",
-      LayerLabel::BuiltIn => "built-in",
       LayerLabel::ModelDefault => "model default",
+      LayerLabel::ServerDefault => "server default",
     }
   }
 }
@@ -274,14 +291,18 @@ pub struct Resolved {
 ///
 /// Layers are passed in precedence order — most-specific first. The
 /// IPC handler builds `[(User, &caller_knobs), (LastUsed, &last),
-/// (ArchDefault, &yaml), (BuiltIn, &table_lookup)]`; anything still
-/// `None` after that walk is annotated `ModelDefault` (llama-server
-/// will fall back to its own default).
+/// (ArchDefault, &yaml), (ArchDefault, &table_lookup)]` — yaml and
+/// the compiled-in arch table share the `ArchDefault` chip label,
+/// with yaml winning per-field via precedence order. Anything still
+/// `None` after that walk is annotated with the field's
+/// `spec.fallback_label` — `ModelDefault` for ctx/reasoning (read
+/// from the model file when omitted), `ServerDefault` for everything
+/// else (llama-server's hardcoded default).
 pub fn resolve_layered(layers: &[(LayerLabel, &TypedKnobs)]) -> Resolved {
   let mut knobs = TypedKnobs::default();
   let mut sources: BTreeMap<KnobField, LayerLabel> = BTreeMap::new();
   for spec in knob_specs() {
-    sources.insert(spec.field, LayerLabel::ModelDefault);
+    sources.insert(spec.field, spec.fallback_label);
   }
   for spec in knob_specs() {
     for (label, layer) in layers {
@@ -298,6 +319,8 @@ pub fn resolve_layered(layers: &[(LayerLabel, &TypedKnobs)]) -> Resolved {
 /// Returns true when a copy happened.
 fn try_inherit_field(into: &mut TypedKnobs, from: &TypedKnobs, field: KnobField) -> bool {
   match field {
+    KnobField::Ctx => copy_some(&mut into.ctx, from.ctx),
+    KnobField::Reasoning => copy_some(&mut into.reasoning, from.reasoning),
     KnobField::NGpuLayers => copy_some(&mut into.n_gpu_layers, from.n_gpu_layers),
     KnobField::Threads => copy_some(&mut into.threads, from.threads),
     KnobField::CacheTypeK => copy_some_clone(&mut into.cache_type_k, &from.cache_type_k),
@@ -472,6 +495,8 @@ mod tests {
   #[test]
   fn argvify_emits_full_set_in_canonical_order() {
     let knobs = TypedKnobs {
+      ctx: Some(32768),
+      reasoning: Some(true),
       n_gpu_layers: Some(99),
       threads: Some(8),
       cache_type_k: Some("q8_0".into()),
@@ -706,7 +731,7 @@ mod tests {
     };
     let r = resolve_layered(&[
       (LayerLabel::LastUsed, &upper),
-      (LayerLabel::BuiltIn, &lower),
+      (LayerLabel::ArchDefault, &lower),
     ]);
     assert_eq!(r.knobs.threads, Some(8), "upper layer wins on overlap");
     assert_eq!(r.knobs.n_gpu_layers, Some(99), "lower fills the unset");
@@ -716,12 +741,22 @@ mod tests {
     );
     assert_eq!(
       r.sources.get(&KnobField::NGpuLayers),
-      Some(&LayerLabel::BuiltIn)
+      Some(&LayerLabel::ArchDefault)
     );
     assert_eq!(
       r.sources.get(&KnobField::FlashAttn),
+      Some(&LayerLabel::ServerDefault),
+      "knob fields no layer filled fall through to ServerDefault"
+    );
+    assert_eq!(
+      r.sources.get(&KnobField::Ctx),
       Some(&LayerLabel::ModelDefault),
-      "fields no layer filled fall through to ModelDefault"
+      "ctx falls through to ModelDefault (read from GGUF when omitted)"
+    );
+    assert_eq!(
+      r.sources.get(&KnobField::Reasoning),
+      Some(&LayerLabel::ModelDefault),
+      "reasoning falls through to ModelDefault (chat template decides)"
     );
   }
 
@@ -749,10 +784,36 @@ mod tests {
       (LayerLabel::User, &preset),
       (LayerLabel::LastUsed, &last),
       (LayerLabel::ArchDefault, &yaml),
-      (LayerLabel::BuiltIn, &builtin),
+      (LayerLabel::ArchDefault, &builtin),
     ]);
     assert_eq!(r.knobs.threads, Some(1));
     assert_eq!(r.sources.get(&KnobField::Threads), Some(&LayerLabel::User));
+  }
+
+  #[test]
+  fn resolve_layered_yaml_and_builtin_both_report_arch_default() {
+    // Yaml and the compiled-in arch table share the `ArchDefault`
+    // chip — only their per-field precedence differs.
+    let yaml = TypedKnobs {
+      threads: Some(8),
+      ..TypedKnobs::default()
+    };
+    let builtin = TypedKnobs {
+      n_gpu_layers: Some(99),
+      ..TypedKnobs::default()
+    };
+    let r = resolve_layered(&[
+      (LayerLabel::ArchDefault, &yaml),
+      (LayerLabel::ArchDefault, &builtin),
+    ]);
+    assert_eq!(
+      r.sources.get(&KnobField::Threads),
+      Some(&LayerLabel::ArchDefault)
+    );
+    assert_eq!(
+      r.sources.get(&KnobField::NGpuLayers),
+      Some(&LayerLabel::ArchDefault)
+    );
   }
 
   #[test]

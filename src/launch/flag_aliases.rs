@@ -7,10 +7,21 @@
 //! TUI extras-row inline edit. Centralising the table here keeps
 //! those three in lock-step.
 
+use crate::launch::params::LayerLabel;
+
 /// One typed knob the editor surfaces. Keep in sync with
 /// `TypedKnobs` in `crate::config`.
+///
+/// `Ctx` and `Reasoning` are surfaced as typed knobs so the resolver
+/// chain and the editor render them through the same layer-source
+/// machinery as everything else. Their argv emission is still
+/// special-cased in `compose` (ctx → `-c <N>`, reasoning → the
+/// `--jinja --reasoning-format deepseek` bundle); `argvify` skips
+/// these two fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KnobField {
+  Ctx,
+  Reasoning,
   NGpuLayers,
   Threads,
   CacheTypeK,
@@ -43,6 +54,12 @@ pub struct KnobSpec {
   pub canonical: &'static str,
   pub aliases: &'static [&'static str],
   pub kind: ValueKind,
+  /// Layer reported by the resolver when no chain layer supplies a
+  /// value. `ServerDefault` for flags whose omission falls back to
+  /// llama-server's hardcoded default. `ModelDefault` for flags
+  /// llama-server reads from the model file (GGUF header / chat
+  /// template) when the flag is omitted.
+  pub fallback_label: LayerLabel,
 }
 
 /// Allowed values for `cache_type_k` / `cache_type_v` (matches
@@ -50,79 +67,106 @@ pub struct KnobSpec {
 pub const KV_CACHE_TYPES: &[&str] = &["f16", "q8_0", "q4_0"];
 
 /// Canonical emission order. Pinned by the plan's Risks & Dependencies
-/// table to keep argv diffs readable across releases.
+/// table to keep argv diffs readable across releases. `Ctx` and
+/// `Reasoning` sit at the top so the editor renders them first.
 const SPECS: &[KnobSpec] = &[
+  KnobSpec {
+    field: KnobField::Ctx,
+    canonical: "--ctx-size",
+    aliases: &["-c"],
+    kind: ValueKind::U32,
+    fallback_label: LayerLabel::ModelDefault,
+  },
+  KnobSpec {
+    field: KnobField::Reasoning,
+    canonical: "--reasoning",
+    aliases: &[],
+    kind: ValueKind::Bool,
+    fallback_label: LayerLabel::ModelDefault,
+  },
   KnobSpec {
     field: KnobField::NGpuLayers,
     canonical: "--n-gpu-layers",
     aliases: &["-ngl"],
     kind: ValueKind::U32,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::Threads,
     canonical: "--threads",
     aliases: &["-t"],
     kind: ValueKind::U32,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::CacheTypeK,
     canonical: "--cache-type-k",
     aliases: &["-ctk"],
     kind: ValueKind::KvCacheType,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::CacheTypeV,
     canonical: "--cache-type-v",
     aliases: &["-ctv"],
     kind: ValueKind::KvCacheType,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::Parallel,
     canonical: "--parallel",
     aliases: &["-np"],
     kind: ValueKind::U32,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::FlashAttn,
     canonical: "--flash-attn",
     aliases: &["-fa"],
     kind: ValueKind::Bool,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::Mlock,
     canonical: "--mlock",
     aliases: &[],
     kind: ValueKind::Bool,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::NoMmap,
     canonical: "--no-mmap",
     aliases: &[],
     kind: ValueKind::Bool,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::BatchSize,
     canonical: "--batch-size",
     aliases: &["-b"],
     kind: ValueKind::U32,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::UbatchSize,
     canonical: "--ubatch-size",
     aliases: &["-ub"],
     kind: ValueKind::U32,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::RopeFreqScale,
     canonical: "--rope-freq-scale",
     aliases: &[],
     kind: ValueKind::F32,
+    fallback_label: LayerLabel::ServerDefault,
   },
   KnobSpec {
     field: KnobField::Keep,
     canonical: "--keep",
     aliases: &[],
     kind: ValueKind::U32,
+    fallback_label: LayerLabel::ServerDefault,
   },
 ];
 
@@ -242,6 +286,8 @@ mod tests {
     assert_eq!(
       canon,
       vec![
+        "--ctx-size",
+        "--reasoning",
         "--n-gpu-layers",
         "--threads",
         "--cache-type-k",
@@ -256,5 +302,29 @@ mod tests {
         "--keep",
       ]
     );
+  }
+
+  #[test]
+  fn knob_specs_carry_fallback_labels() {
+    for spec in knob_specs() {
+      match spec.field {
+        KnobField::Ctx | KnobField::Reasoning => {
+          assert_eq!(
+            spec.fallback_label,
+            LayerLabel::ModelDefault,
+            "{:?}",
+            spec.field
+          );
+        }
+        _ => {
+          assert_eq!(
+            spec.fallback_label,
+            LayerLabel::ServerDefault,
+            "{:?}",
+            spec.field
+          );
+        }
+      }
+    }
   }
 }

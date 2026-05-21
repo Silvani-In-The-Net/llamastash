@@ -248,6 +248,14 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<String> {
         ) {
           chips.push(bidirectional_chip(&prev, &next, "cycle value"));
         }
+        // Surface `e:edit` so the extras row (and numeric / enum
+        // knobs) is discoverable. Without this chip, `e` looked like
+        // a no-op on the editable form because nothing in the hint
+        // strip pointed at it.
+        push(
+          &mut chips,
+          app.hint_with(Focus::RightPane, Action::EnterEdit, "edit"),
+        );
         push(&mut chips, app.hint(Focus::RightPane, Action::YankPath));
       }
     }

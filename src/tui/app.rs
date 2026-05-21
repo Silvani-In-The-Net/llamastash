@@ -981,18 +981,6 @@ impl App {
     let mut state = LaunchPickerState::for_model(name);
     if let Some(p) = &path {
       if let Some(last) = self.last_params.get(p) {
-        state.ctx = last.ctx;
-        // Returning users land on their last explicit on/off
-        // choice. Only a brand-new picker shows the model-default
-        // tri-state — `from_persisted` collapses the daemon-side
-        // `bool` back into the explicit pair.
-        state.reasoning =
-          crate::tui::launch_picker::ReasoningSetting::from_persisted(last.reasoning);
-        state.preset_idx = last.ctx.and_then(|c| {
-          crate::tui::launch_picker::CTX_PRESETS
-            .iter()
-            .position(|val| *val == c)
-        });
         state.prefer_port = last.port;
         // R20: returning user inherits the typed-knob deltas they
         // last shipped. The daemon persists only user-supplied
@@ -1000,6 +988,10 @@ impl App {
         // into `user_knobs` keeps the picker's source labels
         // honest — every persisted knob shows `(user)`, the rest
         // re-resolve from yaml / built-in / model default.
+        //
+        // `ctx` and `reasoning` are now part of `TypedKnobs`, so
+        // they ride along inside `last.knobs` without dedicated
+        // seeding paths.
         state.user_knobs = last.knobs.clone();
       }
     }
@@ -1658,18 +1650,26 @@ mod tests {
       LastParamsRow {
         ctx: Some(16384),
         reasoning: true,
-        knobs: Default::default(),
+        knobs: crate::config::TypedKnobs {
+          ctx: Some(16384),
+          reasoning: Some(true),
+          ..Default::default()
+        },
         extras: vec!["--rope-freq-base".into(), "10000".into()],
         port: Some(41105),
       },
     );
     app.open_launch_picker();
     let picker = app.launch_picker.as_ref().expect("picker state");
-    assert_eq!(picker.ctx, Some(16384), "ctx must seed from last_params");
     assert_eq!(
-      picker.reasoning,
-      crate::tui::launch_picker::ReasoningSetting::On,
-      "reasoning must seed from last_params"
+      picker.user_knobs.ctx,
+      Some(16384),
+      "ctx must seed from last_params via user_knobs"
+    );
+    assert_eq!(
+      picker.user_knobs.reasoning,
+      Some(true),
+      "reasoning must seed from last_params via user_knobs"
     );
     assert_eq!(picker.prefer_port, Some(41105), "port must seed too");
     let extras: Vec<String> = picker

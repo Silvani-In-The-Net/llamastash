@@ -186,6 +186,7 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
   // Round-7 navigation model: ↑/↓ in the Settings tab cycle the
   // form's fields (ctx → reasoning → typed knobs → extras), and ←/→ cycle
   // the focused field's value. Tab cycles panes universally.
+  use llamastash::launch::flag_aliases::KnobField;
   use llamastash::tui::keybindings::Focus;
   use llamastash::tui::launch_picker::PickerField;
   use llamastash::tui::launch_picker::CTX_PRESETS;
@@ -197,29 +198,31 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
   assert_eq!(app.focus, Focus::RightPane);
   assert_eq!(app.right_tab, RightTab::Settings);
   let picker = app.launch_picker.as_ref().expect("picker");
-  assert_eq!(picker.field, PickerField::Ctx);
-  assert_eq!(picker.ctx, None, "ctx defaults to native");
+  assert_eq!(picker.field, PickerField::Knob(KnobField::Ctx));
+  assert_eq!(
+    picker.user_knobs.ctx, None,
+    "ctx defaults to native (no user override)"
+  );
   // → advances the focused field's value.
   pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
   assert_eq!(
-    app.launch_picker.as_ref().unwrap().ctx,
+    app.launch_picker.as_ref().unwrap().user_knobs.ctx,
     Some(CTX_PRESETS[0])
   );
   // ← walks it back to native.
   pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
-  assert_eq!(app.launch_picker.as_ref().unwrap().ctx, None);
+  assert_eq!(app.launch_picker.as_ref().unwrap().user_knobs.ctx, None);
   // ↓ moves the cursor to the next field.
   pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
   assert_eq!(
     app.launch_picker.as_ref().unwrap().field,
-    PickerField::Reasoning
+    PickerField::Knob(KnobField::Reasoning)
   );
-  // → walks the reasoning tri-state forward (ModelDefault → On).
+  // → walks the reasoning tri-state forward (None → Some(true)).
   pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
-  use llamastash::tui::launch_picker::ReasoningSetting;
   assert_eq!(
-    app.launch_picker.as_ref().unwrap().reasoning,
-    ReasoningSetting::On
+    app.launch_picker.as_ref().unwrap().user_knobs.reasoning,
+    Some(true)
   );
 }
 
@@ -403,7 +406,7 @@ fn launch_picker_seeds_from_persisted_last_params() {
         "mode": "chat",
         "ctx": 8192,
         "reasoning": true,
-        "knobs": {"threads": 8},
+        "knobs": {"ctx": 8192, "reasoning": true, "threads": 8},
         "extras": ["--rope-freq-base", "10000"],
       },
     }],
@@ -411,12 +414,11 @@ fn launch_picker_seeds_from_persisted_last_params() {
   app.go_top();
   app.open_launch_picker();
   let picker = app.launch_picker.as_ref().expect("picker open");
-  assert_eq!(picker.ctx, Some(8192));
-  use llamastash::tui::launch_picker::ReasoningSetting;
+  assert_eq!(picker.user_knobs.ctx, Some(8192));
   assert_eq!(
-    picker.reasoning,
-    ReasoningSetting::On,
-    "reasoning toggle must seed from last_params"
+    picker.user_knobs.reasoning,
+    Some(true),
+    "reasoning toggle must seed from last_params via user_knobs"
   );
   let extras: Vec<String> = picker
     .extras

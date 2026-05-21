@@ -74,6 +74,14 @@ pub struct Config {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct TypedKnobs {
+  /// Context window length. Maps to `-c` (`--ctx-size`). `None` means
+  /// no flag is sent — llama-server reads `context_length` from the
+  /// GGUF header.
+  pub ctx: Option<u32>,
+  /// Reasoning toggle. `Some(true)` bundles `--jinja --reasoning-format
+  /// deepseek` at argv time; `Some(false)` / `None` send nothing and
+  /// let the model's chat template decide.
+  pub reasoning: Option<bool>,
   /// Layers offloaded to the GPU. Maps to `--n-gpu-layers`. Use 99
   /// for "all" (llama-server caps internally).
   pub n_gpu_layers: Option<u32>,

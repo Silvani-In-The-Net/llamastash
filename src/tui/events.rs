@@ -209,7 +209,8 @@ fn open_focused_inline_edit(app: &mut App) {
       // Seed from the resolved effective value so the user types from
       // the current row content, not from blank.
       let initial = match field {
-        crate::launch::flag_aliases::KnobField::NGpuLayers
+        crate::launch::flag_aliases::KnobField::Ctx
+        | crate::launch::flag_aliases::KnobField::NGpuLayers
         | crate::launch::flag_aliases::KnobField::Threads
         | crate::launch::flag_aliases::KnobField::Parallel
         | crate::launch::flag_aliases::KnobField::BatchSize
@@ -226,8 +227,12 @@ fn open_focused_inline_edit(app: &mut App) {
         | crate::launch::flag_aliases::KnobField::CacheTypeV => {
           picker.effective_str(field).unwrap_or_default()
         }
-        // Booleans don't need a buffer — cycle handles them.
-        _ => return,
+        // Booleans (reasoning, flash_attn, mlock, no_mmap) don't
+        // need a buffer — cycle handles them.
+        crate::launch::flag_aliases::KnobField::Reasoning
+        | crate::launch::flag_aliases::KnobField::FlashAttn
+        | crate::launch::flag_aliases::KnobField::Mlock
+        | crate::launch::flag_aliases::KnobField::NoMmap => return,
       };
       picker.inline_edit.open(PickerField::Knob(field), initial);
     }
@@ -241,7 +246,6 @@ fn open_focused_inline_edit(app: &mut App) {
       picker.extras_cursor = picker.extras_buffer.len();
       picker.extras_editing = true;
     }
-    _ => {}
   }
 }
 
@@ -1397,10 +1401,13 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     .and_then(|m| m.metadata.as_ref())
     .and_then(|md| LaunchMode::resolve(None, md.mode_hint));
 
+  // ctx and reasoning ride inside `knobs` now; the wire payload also
+  // carries dedicated top-level fields for backward compat with
+  // scripted clients, so project them out of `knobs` for the call.
   let cmd = WriterCmd::StartModel {
     model_path: path.clone(),
-    ctx: picker.ctx,
-    reasoning: picker.reasoning.as_wire(),
+    ctx: knobs.ctx,
+    reasoning: knobs.reasoning,
     knobs: knobs.clone(),
     extras: extras.clone(),
     mode,
@@ -1414,8 +1421,8 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
       name,
       active_instances,
       model_path: path,
-      ctx: picker.ctx,
-      reasoning: picker.reasoning.as_wire(),
+      ctx: knobs.ctx,
+      reasoning: knobs.reasoning,
       knobs,
       extras,
       mode,
@@ -3270,6 +3277,7 @@ mod tests {
   fn submit_in_launch_picker_sends_start_model_through_writer() {
     use crate::discovery::{DiscoveredModel, ModelSource};
     use crate::gguf::metadata::{ModeHint, ModelMetadata, Quant};
+    use crate::tui::launch_picker::PickerField;
 
     let mut app = App::new(Default::default());
     app.models = vec![DiscoveredModel {
@@ -3296,10 +3304,12 @@ mod tests {
     // arrive on the wire.
     app.open_launch_picker();
     let p = app.launch_picker.as_mut().unwrap();
-    p.cycle_ctx_preset();
-    let expected_ctx = p.ctx;
-    // Round-8: tri-state cycle — ModelDefault → On.
-    p.cycle_reasoning_next();
+    p.field = PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
+    p.cycle_focused_value_next();
+    let expected_ctx = p.user_knobs.ctx;
+    // Round-8: tri-state cycle — None → Some(true).
+    p.field = PickerField::Knob(crate::launch::flag_aliases::KnobField::Reasoning);
+    p.cycle_focused_value_next();
 
     let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
     pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
@@ -3737,7 +3747,10 @@ mod tests {
       .as_ref()
       .map(|p| p.field)
       .expect("↓ in Settings should materialise the picker form");
-    assert_eq!(field, PickerField::Reasoning);
+    assert_eq!(
+      field,
+      PickerField::Knob(crate::launch::flag_aliases::KnobField::Reasoning)
+    );
 
     pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(
@@ -3779,12 +3792,19 @@ mod tests {
     // Auto-stages the picker on first key; cursor lands on Ctx.
     pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
     let p = app.launch_picker.as_ref().expect("picker auto-staged");
-    assert_eq!(p.field, PickerField::Ctx);
-    assert_eq!(p.ctx, Some(CTX_PRESETS[0]), "→ advances Ctx preset");
+    assert_eq!(
+      p.field,
+      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx)
+    );
+    assert_eq!(
+      p.user_knobs.ctx,
+      Some(CTX_PRESETS[0]),
+      "→ advances Ctx preset"
+    );
 
     pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
     assert_eq!(
-      app.launch_picker.as_ref().unwrap().ctx,
+      app.launch_picker.as_ref().unwrap().user_knobs.ctx,
       None,
       "← walks Ctx back to native"
     );
