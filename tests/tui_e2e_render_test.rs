@@ -67,6 +67,7 @@ fn seeded_dashboard_app() -> App {
     build: Some("0.1.0".into()),
     server_path: Some("/usr/local/bin/llama-server".into()),
     socket_path: Some("/run/user/1000/llamastash/daemon.sock".into()),
+    proxy: None,
   };
   app.host_metrics = HostMetricsSnapshot {
     cpu_pct: 47.5,

@@ -22,6 +22,7 @@ const LABEL_UPTIME: &str = "uptime  ";
 const LABEL_SERVER: &str = "server  ";
 const LABEL_MODELS: &str = "models  ";
 const LABEL_RUNNING: &str = "running ";
+const LABEL_PROXY: &str = "proxy   ";
 
 /// Render the Daemon info panel into `area`. The block title is
 /// `Daemon`; inner content is five label-prefixed rows.
@@ -34,11 +35,49 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let lines: Vec<Line<'_>> = vec![
     socket_row(app, row_budget, palette),
     uptime_build_row(app, palette),
-    server_row(app, row_budget, palette),
+    proxy_or_server_row(app, row_budget, palette),
     counts_row(app, palette),
     running_row(app, row_budget, palette),
   ];
   frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Compose the `server`/`proxy` slot — the third row of the Daemon
+/// info panel. When the proxy is `disabled` (or absent), this falls
+/// through to the legacy `server <path> (<flavor>)` row that has
+/// shipped since v1. When the proxy is up (any of `listening`,
+/// `port_in_use`, `unbound`), the row switches to a leading `proxy`
+/// label so the listener state is one glance away — the canonical
+/// "is the OpenAI-compat endpoint reachable?" surface for Unit 5.
+/// The `llama-server` binary path stays surfaced via `daemon status`
+/// / `--server-path` flag and the inline picker; the swap here trades
+/// a low-churn row for the live runtime signal.
+fn proxy_or_server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a> {
+  match app.daemon_info.proxy.as_ref() {
+    Some(info) if info.status != "disabled" => proxy_row_inner(info, palette),
+    _ => server_row(app, budget, palette),
+  }
+}
+
+/// Render the proxy listener's state into one row. Labels match the
+/// wire `status` values (R161). The success/error palette signals
+/// liveness at a glance without forcing the user to read the
+/// endpoint.
+fn proxy_row_inner<'a>(info: &'a crate::tui::app::ProxyInfo, palette: &'a Palette) -> Line<'a> {
+  let listen = info.listen.as_deref().unwrap_or("");
+  let (body, body_style) = match info.status.as_str() {
+    "listening" => (format!("listening {listen}"), palette.success_style()),
+    "port_in_use" => (format!("port_in_use {listen}"), palette.error_style()),
+    "unbound" => {
+      let cause = info.bind_error.as_deref().unwrap_or("bind failed");
+      (format!("unbound {listen} ({cause})"), palette.error_style())
+    }
+    other => (format!("{other} {listen}"), palette.muted_style()),
+  };
+  Line::from(vec![
+    Span::styled(LABEL_PROXY, palette.label_style()),
+    Span::styled(body, body_style),
+  ])
 }
 
 fn socket_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a> {
@@ -691,6 +730,63 @@ mod tests {
     assert!(
       !server_row.contains('('),
       "flavor must be suppressed when binary is unresolved: {server_row:?}"
+    );
+  }
+
+  #[test]
+  fn proxy_row_renders_listening_endpoint_when_set() {
+    use crate::tui::app::ProxyInfo;
+    let mut app = App::new(AppOptions::default());
+    app.daemon_info = DaemonInfo {
+      proxy: Some(ProxyInfo {
+        enabled: true,
+        listen: Some("127.0.0.1:11434".into()),
+        status: "listening".into(),
+        bind_error: None,
+      }),
+      ..Default::default()
+    };
+    let rows = render_lines(&app);
+    let proxy_row = rows
+      .iter()
+      .find(|r| r.contains("proxy"))
+      .expect("proxy row must render when daemon_info.proxy is set");
+    assert!(
+      proxy_row.contains("listening 127.0.0.1:11434"),
+      "expected `listening 127.0.0.1:11434`: {proxy_row:?}"
+    );
+  }
+
+  #[test]
+  fn proxy_row_renders_port_in_use_with_endpoint() {
+    use crate::tui::app::ProxyInfo;
+    let mut app = App::new(AppOptions::default());
+    app.daemon_info = DaemonInfo {
+      proxy: Some(ProxyInfo {
+        enabled: true,
+        listen: Some("127.0.0.1:11434".into()),
+        status: "port_in_use".into(),
+        bind_error: None,
+      }),
+      ..Default::default()
+    };
+    let rows = render_lines(&app);
+    let proxy_row = rows.iter().find(|r| r.contains("proxy")).unwrap();
+    assert!(
+      proxy_row.contains("port_in_use"),
+      "expected `port_in_use` label: {proxy_row:?}"
+    );
+  }
+
+  #[test]
+  fn proxy_row_hidden_when_no_proxy_info() {
+    // Pre-Unit-5 daemons omit the block; the panel falls back to its
+    // 5-row layout without rendering a placeholder.
+    let app = App::new(AppOptions::default());
+    let rows = render_lines(&app);
+    assert!(
+      !rows.iter().any(|r| r.contains("proxy")),
+      "proxy row must be hidden when daemon_info.proxy is None: {rows:#?}"
     );
   }
 }

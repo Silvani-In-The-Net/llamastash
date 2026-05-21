@@ -277,13 +277,20 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // 8. Wire the dispatcher context.
   let supervisors = SupervisorRegistry::new();
   let persisted = PersistedState::new(state_after_sweep, Some(opts.state_dir.clone()));
+  // Construct the proxy status cell *before* the context so the IPC
+  // `status` handler and the proxy listener task share the same
+  // handle. Unit 5 surfaces the cell via `status.proxy`; Unit 1
+  // already locked the seeded variant (`Disabled`) so a daemon with
+  // `proxy.enabled: false` reads as disabled even before §8b runs.
+  let proxy_status_cell = proxy::server::new_status_cell();
   let mut ctx = MethodContext::with_catalog(token.clone(), catalog)
     .with_supervisors(supervisors)
     .with_gpu(initial_gpu)
     .with_sampler(sampler)
     .with_state(persisted)
     .with_external(external_combined)
-    .with_socket_path(opts.socket_path.clone());
+    .with_socket_path(opts.socket_path.clone())
+    .with_proxy_status(std::sync::Arc::clone(&proxy_status_cell));
   if let Some(binary) = opts.binary.clone() {
     if let Err(e) = std::fs::create_dir_all(&opts.log_dir) {
       log::warn!(
@@ -319,14 +326,13 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // non-fatal — the proxy is a convenience surface; the daemon's
   // primary contract (IPC + supervisor) survives a port collision.
   // The status cell holds the outcome (Disabled / Listening /
-  // PortInUse / Unbound) so Unit 5 can surface it through the IPC
-  // `status` response. Leading underscore until that wiring lands.
-  let _proxy_status = proxy::server::new_status_cell();
+  // PortInUse / Unbound); Unit 5's IPC `status` handler reads it
+  // via the clone attached to `ctx` above (§8).
   if opts.proxy.enabled {
     let state = proxy::ProxyState::from_context(&ctx);
     let addr = proxy::server::loopback_addr(opts.proxy.port);
     let token_for_proxy = token.clone();
-    let status_for_proxy = std::sync::Arc::clone(&_proxy_status);
+    let status_for_proxy = std::sync::Arc::clone(&proxy_status_cell);
     supervisor::spawn_supervised("proxy_listener", async move {
       if let Err(e) = proxy::serve(state, addr, token_for_proxy, status_for_proxy).await {
         log::warn!("proxy listener task ended with error: {e}");
@@ -334,7 +340,7 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     });
   } else {
     log::info!("proxy listener disabled in config; daemon stays IPC-only");
-    if let Ok(mut guard) = _proxy_status.write() {
+    if let Ok(mut guard) = proxy_status_cell.write() {
       *guard = ProxyStatus::Disabled;
     }
   }

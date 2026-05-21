@@ -242,12 +242,19 @@ pub async fn fetch_status(client: &mut Client) -> Result<StatusSnapshot, CliExit
   // verbatim so the CLI `status --json` mirrors the IPC contract.
   let host = body.get("host").cloned().unwrap_or(Value::Null);
   let daemon = body.get("daemon").and_then(parse_daemon_health);
+  // Preserve the proxy block verbatim — the CLI `status --json` is
+  // byte-shape-identical to the IPC wire format per the plan's
+  // R161 contract. Older daemons that don't surface the field land
+  // as `Value::Null` and the projection in `status_json` drops the
+  // key entirely.
+  let proxy = body.get("proxy").cloned().unwrap_or(Value::Null);
   Ok(StatusSnapshot {
     models,
     external,
     gpu,
     host,
     daemon,
+    proxy,
   })
 }
 
@@ -267,6 +274,12 @@ pub struct StatusSnapshot {
   /// `active_connections`). Older daemons may omit the field, in
   /// which case this is `None` — the formatter silently skips it.
   pub daemon: Option<DaemonHealth>,
+  /// Proxy listener block — `{enabled, listen, status, bind_error}`.
+  /// Verbatim copy of the daemon's wire shape (Unit 5 / R161); the
+  /// CLI `status --json` rewrites it byte-for-byte so agents that
+  /// parse the IPC and the CLI see identical shapes. `Value::Null`
+  /// when talking to a pre-Unit-5 daemon that omits the field.
+  pub proxy: Value,
 }
 
 #[derive(Debug, Clone)]
