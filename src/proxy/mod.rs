@@ -12,7 +12,9 @@
 //! Scope reminder (plan §Scope Boundaries): loopback-only,
 //! same-UID, no auth, no TLS, no LAN binding, no MCP, no HTTP/2.
 
+pub mod forward;
 pub mod openai;
+pub mod route;
 pub mod router;
 pub mod server;
 pub mod state;

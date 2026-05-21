@@ -8,7 +8,7 @@
 //! `/v1/embeddings`, `/v1/rerank`) stay 501 until Units 3/4 land the
 //! resolution + forwarding plumbing.
 
-use std::convert::Infallible;
+use std::error::Error as StdError;
 use std::sync::Arc;
 
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
@@ -16,17 +16,20 @@ use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::json;
 
+use super::forward;
 use super::openai::{ErrorObject, ErrorResponse, ModelList, ModelObject};
+use super::route::{self, BodyError as RouteBodyError, RouteDecision};
 use super::state::ProxyState;
 use crate::daemon::supervisor::ManagedState;
 use crate::discovery::DiscoveredModel;
 
-/// The error type our `BoxBody` carries. We control every body we
-/// emit (all in-memory `Bytes`), so an infallible error is the most
-/// honest signal — chunks never fail at frame time. When Unit 3
-/// starts piping reqwest's `bytes_stream()` through, the body alias
-/// switches to a `BoxBody<Bytes, BoxError>` instead.
-pub type BodyError = Infallible;
+/// The error type our `BoxBody` carries. Unit 3 streams upstream
+/// `reqwest::Response::bytes_stream()` chunks through `StreamBody`,
+/// so the body alias must accept *some* error type at frame time.
+/// Boxed dyn errors are the most flexible choice — non-streaming
+/// arms (errors, health, /v1/models) still emit `Infallible`-shaped
+/// `Full` bodies and coerce into the wider alias via `map_err`.
+pub type BodyError = Box<dyn StdError + Send + Sync>;
 
 /// What every handler returns. `Result<_, hyper::Error>` is the
 /// `service_fn` contract; the inner body is boxed so each arm can
@@ -40,19 +43,111 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
   let method = req.method().clone();
   let path = req.uri().path().to_string();
 
-  // 6-route dispatch table. The five non-`/health` arms are 501
-  // until later units replace them with the real handler bodies.
-  // Keeping them named here rather than in a single `_ =>` catch-all
-  // documents the surface and makes it obvious which units land
-  // where.
+  // 6-route dispatch table. Unit 3 lights up the four `/v1/...`
+  // forwarding arms; Unit 4 layers auto-start + fallback on top.
   match (&method, path.as_str()) {
     (&Method::GET, "/health") => health(state).await,
     (&Method::GET, "/v1/models") => list_models(state).await,
-    (&Method::POST, "/v1/chat/completions") => not_implemented(),
-    (&Method::POST, "/v1/completions") => not_implemented(),
-    (&Method::POST, "/v1/embeddings") => not_implemented(),
-    (&Method::POST, "/v1/rerank") => not_implemented(),
+    (&Method::POST, "/v1/chat/completions") => forward_request(state, req).await,
+    (&Method::POST, "/v1/completions") => forward_request(state, req).await,
+    (&Method::POST, "/v1/embeddings") => forward_request(state, req).await,
+    (&Method::POST, "/v1/rerank") => forward_request(state, req).await,
     _ => not_found(),
+  }
+}
+
+/// Unit 3 pipeline: buffer the body under the 2 MiB cap, extract
+/// `body.model`, run the resolver, pick a Ready supervisor, forward.
+async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyResponse {
+  let (method, uri, headers, body) = forward::deconstruct(req);
+
+  let parsed = match route::buffer_and_extract(body).await {
+    Ok(p) => p,
+    Err(RouteBodyError::TooLarge) => {
+      return error_response(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+        &format!(
+          "request body exceeds the {} MiB limit",
+          route::BODY_LIMIT_BYTES / (1024 * 1024)
+        ),
+      );
+    }
+    Err(RouteBodyError::Malformed { message }) => {
+      return error_response(StatusCode::BAD_REQUEST, "invalid_request", &message);
+    }
+    Err(RouteBodyError::Read { message }) => {
+      return error_response(StatusCode::BAD_REQUEST, "invalid_request", &message);
+    }
+  };
+
+  let decision = route::decide(&state, parsed.model).await;
+  match decision {
+    RouteDecision::ReadyAt {
+      port,
+      served_model_id,
+      fallback,
+      fallback_reason,
+      ..
+    } => {
+      forward::forward_to_upstream(
+        &state,
+        forward::InboundRequest {
+          method,
+          uri,
+          headers,
+          body_bytes: parsed.bytes,
+        },
+        forward::Target {
+          port,
+          served_model_id: &served_model_id,
+          fallback,
+          fallback_reason: fallback_reason.as_deref(),
+        },
+      )
+      .await
+    }
+    RouteDecision::NotRunning {
+      requested_model, ..
+    } => {
+      // TODO(unit-4): replace with auto-start + wait-for-Ready +
+      // family-MRU fallback. The `RouteDecision::NotRunning`
+      // variant carries the resolved row + arch so Unit 4 can
+      // launch without re-resolving.
+      error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "model_not_running",
+        &format!("{requested_model} not running; auto-start is not yet wired"),
+      )
+    }
+    RouteDecision::NotFound { requested_model } => error_with_matches(
+      StatusCode::NOT_FOUND,
+      "model_not_found",
+      &format!("{requested_model} not found"),
+      Vec::<String>::new(),
+    ),
+    RouteDecision::Ambiguous {
+      requested_model,
+      candidates,
+    } => {
+      let message = format!(
+        "`{requested_model}` matched {n} models; refine the reference (full path or unique substring)",
+        n = candidates.len()
+      );
+      error_with_matches(
+        StatusCode::BAD_REQUEST,
+        "ambiguous_model",
+        &message,
+        candidates,
+      )
+    }
+    RouteDecision::ModelRequired => error_with_code(
+      StatusCode::BAD_REQUEST,
+      "invalid_request",
+      "the `model` field is required",
+      "model_required",
+      Some("model"),
+    ),
   }
 }
 
@@ -128,26 +223,15 @@ fn model_id_for(m: &DiscoveredModel) -> String {
   crate::util::paths::model_display_name(&m.path)
 }
 
-fn not_implemented() -> ProxyResponse {
-  // OpenAI-shaped error body so clients see a recognisable payload
-  // even on the 501 placeholder. Units 3/4 swap this for the real
-  // handler — the wire shape they emit will be the same.
-  error_response(
-    StatusCode::NOT_IMPLEMENTED,
-    "not_implemented",
-    "endpoint not implemented yet",
-  )
-}
-
 fn not_found() -> ProxyResponse {
   error_response(StatusCode::NOT_FOUND, "not_found", "no such route")
 }
 
 /// Build an OpenAI-shaped error response from a `(status, type,
-/// message)` triple. Centralised so the 501 / 404 / future Unit 3
-/// `model_required` / `model_not_found` arms all emit the same
+/// message)` triple. Centralised so the 404 / Unit 3
+/// `model_not_running` arms all emit the same
 /// `{"error":{"type":..., "message":...}}` envelope.
-fn error_response(status: StatusCode, r#type: &str, message: &str) -> ProxyResponse {
+pub(crate) fn error_response(status: StatusCode, r#type: &str, message: &str) -> ProxyResponse {
   let body = ErrorResponse {
     error: ErrorObject::new(r#type, message),
   };
@@ -155,8 +239,45 @@ fn error_response(status: StatusCode, r#type: &str, message: &str) -> ProxyRespo
   Ok(json_response(status, bytes))
 }
 
+/// Variant of [`error_response`] that stamps `code` (e.g.
+/// `"model_required"`) + `param` (e.g. `"model"`). Used by the
+/// `invalid_request` arm so OpenAI SDK clients can branch on `code`
+/// without parsing `message`.
+pub(crate) fn error_with_code(
+  status: StatusCode,
+  r#type: &str,
+  message: &str,
+  code: &str,
+  param: Option<&str>,
+) -> ProxyResponse {
+  let mut error = ErrorObject::new(r#type, message).with_code(code);
+  if let Some(p) = param {
+    error = error.with_param(p);
+  }
+  let bytes = serde_json::to_vec(&ErrorResponse { error }).expect("json encoding of fixed shape");
+  Ok(json_response(status, bytes))
+}
+
+/// Variant of [`error_response`] that stamps the candidate-name
+/// `matches` list. Used by `model_not_found` (empty list) and
+/// `ambiguous_model` (≥ 2 names).
+pub(crate) fn error_with_matches<I, S>(
+  status: StatusCode,
+  r#type: &str,
+  message: &str,
+  matches: I,
+) -> ProxyResponse
+where
+  I: IntoIterator<Item = S>,
+  S: Into<String>,
+{
+  let error = ErrorObject::new(r#type, message).with_matches(matches);
+  let bytes = serde_json::to_vec(&ErrorResponse { error }).expect("json encoding of fixed shape");
+  Ok(json_response(status, bytes))
+}
+
 fn json_response(status: StatusCode, body: Vec<u8>) -> Response<BoxBody<Bytes, BodyError>> {
-  let body = Full::new(Bytes::from(body)).boxed();
+  let body = full_body(Bytes::from(body));
   Response::builder()
     .status(status)
     .header(hyper::header::CONTENT_TYPE, "application/json")
@@ -164,9 +285,20 @@ fn json_response(status: StatusCode, body: Vec<u8>) -> Response<BoxBody<Bytes, B
     .expect("static headers always parse")
 }
 
+/// Wrap an in-memory `Bytes` payload as a `BoxBody` whose error
+/// type is the wider `BodyError` alias. `Full`'s native error is
+/// `Infallible`; `map_err` widens it (via the `From<Infallible>`
+/// blanket impl) so non-streaming arms share the streaming arm's
+/// body alias.
+fn full_body(bytes: Bytes) -> BoxBody<Bytes, BodyError> {
+  Full::new(bytes).map_err(|never| match never {}).boxed()
+}
+
 /// Construct an empty body — kept here for future handler arms that
 /// need a no-content response without re-importing the util crate.
 #[allow(dead_code)]
 pub(crate) fn empty_body() -> BoxBody<Bytes, BodyError> {
-  Empty::<Bytes>::new().boxed()
+  Empty::<Bytes>::new()
+    .map_err(|never| match never {})
+    .boxed()
 }

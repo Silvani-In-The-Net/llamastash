@@ -9,6 +9,7 @@
 //! later units lean on the rest.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::daemon::registry::SupervisorRegistry;
 use crate::discovery::ModelCatalog;
@@ -37,6 +38,12 @@ pub struct ProxyState {
   /// `None` in tests that never launch; Unit 4 refuses to auto-start
   /// in that case.
   pub launch: Option<LaunchEnv>,
+  /// Pooled HTTP client used by Unit 3's forwarding path. One per
+  /// proxy process — hyper handles keep-alive per-host inside the
+  /// pool, so a second client would just be cargo cult. Wrapped in
+  /// `Arc` so the per-connection clone is a refcount bump rather
+  /// than rebuilding the pool.
+  pub http_client: Arc<reqwest::Client>,
 }
 
 impl ProxyState {
@@ -49,6 +56,26 @@ impl ProxyState {
       supervisors: ctx.supervisors.clone(),
       state: ctx.state.clone(),
       launch: ctx.launch.clone(),
+      http_client: Arc::new(build_http_client()),
     })
   }
+}
+
+/// Build the proxy's pooled HTTP client. Single source so tests can
+/// reach into the same pool if they ever need to. The settings here
+/// target the loopback `llama-server` upstream: short-ish connect
+/// timeout (the child is on the same machine, anything > 5 s is a
+/// real bug), no request timeout (chat completions are arbitrarily
+/// long-running by design), pooling kept on so repeated requests
+/// against the same port reuse keep-alive.
+fn build_http_client() -> reqwest::Client {
+  reqwest::Client::builder()
+    .connect_timeout(Duration::from_secs(5))
+    .pool_idle_timeout(Duration::from_secs(90))
+    .build()
+    // Builder failures here would be a misconfigured TLS stack /
+    // missing certificate root. Loopback HTTP has none of those — we
+    // never hit a network. If this ever panics in production the
+    // build is broken, not the runtime.
+    .expect("reqwest client must build on a healthy runtime")
 }

@@ -347,7 +347,13 @@ mod tests {
   }
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-  async fn unimplemented_route_returns_501() {
+  async fn chat_completions_without_model_field_returns_400() {
+    // Unit 3 wires the four `/v1/...` arms to the resolver. A
+    // body without `model` short-circuits at the
+    // `RouteDecision::ModelRequired` arm — 400
+    // `invalid_request` / `code: model_required`. Pre-Unit-3
+    // this same route returned 501; the assertion swap documents
+    // the contract handoff.
     let (addr, shutdown, _status) = spawn_proxy_on_ephemeral_port().await;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut sock = tokio::net::TcpStream::connect(addr).await.expect("connect");
@@ -359,8 +365,8 @@ mod tests {
     let mut buf = Vec::new();
     sock.read_to_end(&mut buf).await.expect("read");
     let head = std::str::from_utf8(&buf).expect("utf8");
-    assert!(head.contains("501"), "expected 501 in: {head}");
-    assert!(head.contains("not_implemented"), "body shape: {head}");
+    assert!(head.contains("400"), "expected 400 in: {head}");
+    assert!(head.contains("model_required"), "body shape: {head}");
     shutdown.trigger();
   }
 

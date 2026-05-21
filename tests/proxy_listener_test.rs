@@ -143,11 +143,15 @@ async fn daemon_starts_with_proxy_enabled_and_health_returns_ok() {
     "models_discovered shape"
   );
 
-  // 501 placeholder for a non-/health route.
+  // Unit 3 wires `/v1/chat/completions` to the resolver; a body
+  // without `model` short-circuits at `RouteDecision::ModelRequired`.
+  // Pre-Unit-3 the same call returned 501 / `not_implemented`.
   let (s2, b2) = http_post(proxy_addr, "/v1/chat/completions", "{}").await;
-  assert_eq!(s2, 501);
+  assert_eq!(s2, 400);
   let parsed2: serde_json::Value = serde_json::from_slice(&b2).expect("json2");
-  assert_eq!(parsed2["error"]["type"], "not_implemented");
+  assert_eq!(parsed2["error"]["type"], "invalid_request");
+  assert_eq!(parsed2["error"]["code"], "model_required");
+  assert_eq!(parsed2["error"]["param"], "model");
 
   // Shutdown.
   let mut client = Client::connect(&socket_path).await.expect("connect daemon");

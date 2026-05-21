@@ -9,13 +9,13 @@
 //!   the proxy uses for every non-2xx body so clients see a
 //!   recognisable payload.
 //!
-//! Unit 2 introduces the listing shapes; Unit 3 will extend
-//! [`ErrorObject`] with `code` / `param` slots as the routing /
-//! resolution paths land. The fields are `Option<...>` where OpenAI
-//! itself treats them as optional, so the same struct serializes
-//! cleanly for both Unit 2 and Unit 3 use.
+//! Unit 2 introduces the listing shapes; Unit 3 extends [`ErrorObject`]
+//! with `code` / `param` slots and adds a `matches` field for the
+//! `model_not_found` / `ambiguous_model` cases (clients use it to
+//! retry with a tighter reference).
 //!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 2).
+//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Units
+//! 2 + 3).
 
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +87,8 @@ pub struct ErrorResponse {
 /// One OpenAI-shaped error. `type` is mandatory; the rest mirror
 /// the public OpenAI shape for `code` / `param` / `message`.
 /// Unit 2 only uses `r#type` + `message`; Unit 3 leans on `code`
-/// for the `model_required` / `ambiguous_model` cases.
+/// for the `model_required` case and on `matches` for the
+/// `model_not_found` / `ambiguous_model` disambiguation surface.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorObject {
   /// Discriminator (e.g. `"not_implemented"`, `"invalid_request"`,
@@ -104,6 +105,12 @@ pub struct ErrorObject {
   /// Name of the offending field, if applicable.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub param: Option<String>,
+  /// Candidate model names returned alongside `model_not_found` /
+  /// `ambiguous_model` errors so the client can refine its request.
+  /// Always omitted on the wire when empty — keeping the absent
+  /// case JSON-shaped the same as Unit 2's bare errors.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub matches: Option<Vec<String>>,
 }
 
 impl ErrorObject {
@@ -113,7 +120,33 @@ impl ErrorObject {
       message: message.into(),
       code: None,
       param: None,
+      matches: None,
     }
+  }
+
+  /// Builder helper: stamp `code` (e.g. `"model_required"`).
+  pub fn with_code(mut self, code: impl Into<String>) -> Self {
+    self.code = Some(code.into());
+    self
+  }
+
+  /// Builder helper: stamp `param` (e.g. `"model"`).
+  pub fn with_param(mut self, param: impl Into<String>) -> Self {
+    self.param = Some(param.into());
+    self
+  }
+
+  /// Builder helper: stamp the candidate-name list. Empty input
+  /// stays `None` so clients see the field omitted rather than a
+  /// `[]` they have to special-case.
+  pub fn with_matches<I, S>(mut self, matches: I) -> Self
+  where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+  {
+    let v: Vec<String> = matches.into_iter().map(Into::into).collect();
+    self.matches = if v.is_empty() { None } else { Some(v) };
+    self
   }
 }
 
