@@ -230,6 +230,7 @@ A TODO entry tracks the AMD/HIP `no_mmap` measurement follow-up.
 - `cargo build` (without `--features test-fixtures`) intentionally omits `fake_llama_server` and `_test_sleep`. CI runs both with and without the feature to catch accidental dependencies on test-only surface.
 - `cargo install` artifacts deliberately exclude `src/gguf/test_fixtures` and the `_test_sleep` IPC method via feature gating — don't move them out from behind `#[cfg(any(test, feature = "test-fixtures"))]`.
 - Release pipeline runs `publish-homebrew`, `publish-site`, and `publish-cargo` in parallel after the upstream build matrix; a single-job failure leaves channels diverged. Recovery is to re-run the failed job from the Actions UI (or `gh run rerun --failed <run-id>`). Pre-release tags (`vX.Y.Z-<suffix>`) skip all three downstream jobs by design so dry runs never write to external repos.
+- `LLAMASTASH_BENCH_DISABLE_DEFAULTS=1` is a bench-internal escape hatch read by `src/launch/params.rs::resolve_layered`. When set, the resolver collapses to "User-labeled layers only" — preset/last-used/yaml-arch/built-in-arch defaults all skip. `scripts/bench/` sets it so `llamastash start` produces byte-identical argv to raw `llama-server` for Suite-A overhead comparison. Never set this in production runs; it disables the auto-tuning the launcher exists to do.
 
 ## Release & distribution
 
