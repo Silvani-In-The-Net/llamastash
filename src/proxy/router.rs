@@ -3,9 +3,10 @@
 //! `(method, path)` for the six fixed routes the proxy answers,
 //! mirroring the style of [`crate::ipc::methods::dispatch_request`].
 //!
-//! Unit 1 only implements `/health`; every other path returns 501
-//! `Not Implemented`. Subsequent units replace the 501 arms with
-//! real handlers without touching this file's outer shape.
+//! Unit 1 stood up `/health`; Unit 2 adds `/v1/models`. The remaining
+//! four arms (`/v1/chat/completions`, `/v1/completions`,
+//! `/v1/embeddings`, `/v1/rerank`) stay 501 until Units 3/4 land the
+//! resolution + forwarding plumbing.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -15,7 +16,10 @@ use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::json;
 
+use super::openai::{ErrorObject, ErrorResponse, ModelList, ModelObject};
 use super::state::ProxyState;
+use crate::daemon::supervisor::ManagedState;
+use crate::discovery::DiscoveredModel;
 
 /// The error type our `BoxBody` carries. We control every body we
 /// emit (all in-memory `Bytes`), so an infallible error is the most
@@ -43,7 +47,7 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
   // where.
   match (&method, path.as_str()) {
     (&Method::GET, "/health") => health(state).await,
-    (&Method::GET, "/v1/models") => not_implemented(),
+    (&Method::GET, "/v1/models") => list_models(state).await,
     (&Method::POST, "/v1/chat/completions") => not_implemented(),
     (&Method::POST, "/v1/completions") => not_implemented(),
     (&Method::POST, "/v1/embeddings") => not_implemented(),
@@ -53,11 +57,13 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
 }
 
 async fn health(state: Arc<ProxyState>) -> ProxyResponse {
-  // `len()` on both is a single read-lock acquisition each; cheap.
-  // Counts will gain real meaning in Unit 2 (alphabetical /v1/models
-  // listing) but the wire shape is locked here so clients can pin
-  // against it from day one.
-  let models_loaded = state.supervisors.len().await;
+  // `models_loaded` filters the supervisor snapshot to entries
+  // currently in `ManagedState::Ready`. Unit 1 used `len()` as a
+  // wire-shape stand-in; Unit 2 promotes it to the real Ready count
+  // per R158 / R159. `models_discovered` is the catalog length —
+  // discovery surfaces every row, even parse-error rows, so this
+  // matches what `/v1/models` returns.
+  let models_loaded = count_ready(&state).await;
   let models_discovered = state.catalog.len().await;
   let body = json!({
     "status": "ok",
@@ -69,29 +75,84 @@ async fn health(state: Arc<ProxyState>) -> ProxyResponse {
   Ok(json_response(StatusCode::OK, bytes))
 }
 
+/// Count supervisors currently in `ManagedState::Ready`. Each
+/// `state()` call acquires a per-supervisor read lock, so the
+/// snapshot is a sequence of cheap clones rather than one global
+/// lock — consistent with how `status_handler` walks the registry.
+async fn count_ready(state: &ProxyState) -> usize {
+  let snap = state.supervisors.snapshot().await;
+  let mut ready = 0usize;
+  for (_id, model) in snap {
+    if matches!(model.state().await, ManagedState::Ready) {
+      ready += 1;
+    }
+  }
+  ready
+}
+
+/// `GET /v1/models` — list every discovered model in OpenAI shape,
+/// sorted alphabetically by `id`. Empty catalog returns
+/// `{"object":"list","data":[]}` (not a 404, not an error).
+async fn list_models(state: Arc<ProxyState>) -> ProxyResponse {
+  let snap = state.catalog.snapshot().await;
+  let mut rows: Vec<ModelObject> = snap
+    .iter()
+    .map(|m| ModelObject::new(model_id_for(m)))
+    .collect();
+  // ASCII-lexicographic sort: stable, deterministic across runs, and
+  // independent of the catalog's underlying BTreeMap key (canonical
+  // path) which orders by filesystem layout instead of display name.
+  rows.sort_by(|a, b| a.id.cmp(&b.id));
+  let list = ModelList::new(rows);
+  let bytes = serde_json::to_vec(&list).expect("json encoding of fixed shape");
+  Ok(json_response(StatusCode::OK, bytes))
+}
+
+/// Project a [`DiscoveredModel`] onto the `id` field of an OpenAI
+/// `model` object. Rule: `display_label` wins when set (Ollama
+/// surfaces `<name>:<tag>` here), otherwise fall back to
+/// `path.file_stem()` via [`crate::util::paths::model_display_name`].
+/// This matches what the TUI and `llamastash list` show, so the same
+/// model identifier appears in every surface.
+///
+/// Note: `CatalogRow::name()` falls back to `path.file_name()`
+/// (basename *with* extension) rather than the file stem. The plan
+/// explicitly calls for the stem here so the OpenAI `id` reads
+/// cleanly (`qwen2.5-coder` rather than `qwen2.5-coder.gguf`). The
+/// resolver's substring matching (used in Unit 3) is tolerant to
+/// either form, so this divergence is intentional and bounded.
+fn model_id_for(m: &DiscoveredModel) -> String {
+  if let Some(label) = &m.display_label {
+    return label.clone();
+  }
+  crate::util::paths::model_display_name(&m.path)
+}
+
 fn not_implemented() -> ProxyResponse {
   // OpenAI-shaped error body so clients see a recognisable payload
   // even on the 501 placeholder. Units 3/4 swap this for the real
   // handler — the wire shape they emit will be the same.
-  let body = json!({
-    "error": {
-      "type": "not_implemented",
-      "message": "endpoint not implemented yet",
-    }
-  });
-  let bytes = serde_json::to_vec(&body).expect("json encoding of fixed shape");
-  Ok(json_response(StatusCode::NOT_IMPLEMENTED, bytes))
+  error_response(
+    StatusCode::NOT_IMPLEMENTED,
+    "not_implemented",
+    "endpoint not implemented yet",
+  )
 }
 
 fn not_found() -> ProxyResponse {
-  let body = json!({
-    "error": {
-      "type": "not_found",
-      "message": "no such route",
-    }
-  });
+  error_response(StatusCode::NOT_FOUND, "not_found", "no such route")
+}
+
+/// Build an OpenAI-shaped error response from a `(status, type,
+/// message)` triple. Centralised so the 501 / 404 / future Unit 3
+/// `model_required` / `model_not_found` arms all emit the same
+/// `{"error":{"type":..., "message":...}}` envelope.
+fn error_response(status: StatusCode, r#type: &str, message: &str) -> ProxyResponse {
+  let body = ErrorResponse {
+    error: ErrorObject::new(r#type, message),
+  };
   let bytes = serde_json::to_vec(&body).expect("json encoding of fixed shape");
-  Ok(json_response(StatusCode::NOT_FOUND, bytes))
+  Ok(json_response(status, bytes))
 }
 
 fn json_response(status: StatusCode, body: Vec<u8>) -> Response<BoxBody<Bytes, BodyError>> {

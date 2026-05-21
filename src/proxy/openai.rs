@@ -1,0 +1,173 @@
+//! OpenAI-compatible response and error shapes used by the proxy.
+//!
+//! These types stay private to the proxy module. They mirror the
+//! documented OpenAI REST shapes for the surfaces llamastash speaks:
+//!
+//! - [`ModelList`] / [`ModelObject`] — the `/v1/models` listing
+//!   (`object: "list"` envelope, each row `object: "model"`).
+//! - [`ErrorResponse`] / [`ErrorObject`] — the OpenAI error envelope
+//!   the proxy uses for every non-2xx body so clients see a
+//!   recognisable payload.
+//!
+//! Unit 2 introduces the listing shapes; Unit 3 will extend
+//! [`ErrorObject`] with `code` / `param` slots as the routing /
+//! resolution paths land. The fields are `Option<...>` where OpenAI
+//! itself treats them as optional, so the same struct serializes
+//! cleanly for both Unit 2 and Unit 3 use.
+//!
+//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 2).
+
+use serde::{Deserialize, Serialize};
+
+/// One row of `/v1/models`. The four documented fields (`id`,
+/// `object`, `created`, `owned_by`) — agents pin against this shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelObject {
+  /// User-visible identifier the client passes in `body.model`. For
+  /// llamastash this is the `display_label` (e.g. Ollama's
+  /// `<name>:<tag>`) when present, otherwise `path.file_stem()`.
+  /// Matches the rule used by `crate::util::paths::model_display_name`
+  /// + the TUI display layer so the same name appears everywhere.
+  pub id: String,
+  /// Discriminator — always the literal `"model"` for this row type.
+  pub object: &'static str,
+  /// Seconds-since-Unix-epoch. v1 emits `0` for every row: the
+  /// catalog doesn't currently surface a stable creation/discovery
+  /// timestamp on `DiscoveredModel`, and inventing one from file
+  /// mtime would churn agent caches every time the user re-touches
+  /// the file. `0` is the conventional "unknown / not meaningful"
+  /// value seen across other OpenAI-compat servers (Ollama, vLLM
+  /// historically) so clients tolerate it.
+  pub created: u64,
+  /// Owner label. Hard-coded to `"llamastash"` — there is no
+  /// per-model owner concept in v1.
+  pub owned_by: &'static str,
+}
+
+impl ModelObject {
+  /// Construct a `ModelObject` for a discovered model. `id` is the
+  /// caller's responsibility (Unit 2 derives it from `display_label`
+  /// → `path.file_stem()`); this constructor just stamps the three
+  /// fixed fields so callers stay short.
+  pub fn new(id: String) -> Self {
+    Self {
+      id,
+      object: "model",
+      created: 0,
+      owned_by: "llamastash",
+    }
+  }
+}
+
+/// The `/v1/models` envelope. `object: "list"` per the OpenAI spec.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelList {
+  pub object: &'static str,
+  pub data: Vec<ModelObject>,
+}
+
+impl ModelList {
+  /// Wrap a vector of rows in the `{object:"list", data:[...]}`
+  /// envelope. Caller sorts `rows` before passing them in — the
+  /// envelope itself doesn't impose order.
+  pub fn new(rows: Vec<ModelObject>) -> Self {
+    Self {
+      object: "list",
+      data: rows,
+    }
+  }
+}
+
+/// OpenAI's error envelope: `{"error": {...}}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorResponse {
+  pub error: ErrorObject,
+}
+
+/// One OpenAI-shaped error. `type` is mandatory; the rest mirror
+/// the public OpenAI shape for `code` / `param` / `message`.
+/// Unit 2 only uses `r#type` + `message`; Unit 3 leans on `code`
+/// for the `model_required` / `ambiguous_model` cases.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorObject {
+  /// Discriminator (e.g. `"not_implemented"`, `"invalid_request"`,
+  /// `"model_not_found"`). Stable wire label.
+  #[serde(rename = "type")]
+  pub r#type: String,
+  /// Human-readable message.
+  pub message: String,
+  /// Sub-discriminator for client-side switching (e.g.
+  /// `"model_required"`). `None` when the `type` field alone is
+  /// sufficient.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub code: Option<String>,
+  /// Name of the offending field, if applicable.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub param: Option<String>,
+}
+
+impl ErrorObject {
+  pub fn new(r#type: impl Into<String>, message: impl Into<String>) -> Self {
+    Self {
+      r#type: r#type.into(),
+      message: message.into(),
+      code: None,
+      param: None,
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn model_object_serializes_with_documented_fields() {
+    let row = ModelObject::new("llama3:8b".to_string());
+    let v: serde_json::Value = serde_json::to_value(&row).expect("serialize");
+    // Exactly four fields — the OpenAI documented shape.
+    let obj = v.as_object().expect("object");
+    assert_eq!(obj.len(), 4, "field count: {v}");
+    assert_eq!(obj.get("id"), Some(&serde_json::json!("llama3:8b")));
+    assert_eq!(obj.get("object"), Some(&serde_json::json!("model")));
+    assert_eq!(obj.get("created"), Some(&serde_json::json!(0)));
+    assert_eq!(obj.get("owned_by"), Some(&serde_json::json!("llamastash")));
+  }
+
+  #[test]
+  fn model_list_envelope_shape() {
+    let list = ModelList::new(vec![ModelObject::new("a".to_string())]);
+    let v: serde_json::Value = serde_json::to_value(&list).expect("serialize");
+    assert_eq!(v["object"], serde_json::json!("list"));
+    let data = v["data"].as_array().expect("data array");
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0]["id"], serde_json::json!("a"));
+  }
+
+  #[test]
+  fn empty_model_list_is_an_object_with_empty_data() {
+    let list = ModelList::new(Vec::new());
+    let v: serde_json::Value = serde_json::to_value(&list).expect("serialize");
+    assert_eq!(v["object"], serde_json::json!("list"));
+    assert!(v["data"].is_array());
+    assert_eq!(v["data"].as_array().unwrap().len(), 0);
+  }
+
+  #[test]
+  fn error_object_omits_optional_fields_when_unset() {
+    let err = ErrorObject::new("not_implemented", "endpoint not implemented yet");
+    let v: serde_json::Value = serde_json::to_value(&err).expect("serialize");
+    let obj = v.as_object().expect("object");
+    assert_eq!(obj.len(), 2, "no code/param when unset: {v}");
+    assert_eq!(obj.get("type"), Some(&serde_json::json!("not_implemented")));
+    assert!(obj.contains_key("message"));
+  }
+
+  #[test]
+  fn error_object_emits_code_when_present() {
+    let mut err = ErrorObject::new("invalid_request", "model is required");
+    err.code = Some("model_required".to_string());
+    let v: serde_json::Value = serde_json::to_value(&err).expect("serialize");
+    assert_eq!(v["code"], serde_json::json!("model_required"));
+  }
+}
