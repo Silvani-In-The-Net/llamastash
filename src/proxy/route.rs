@@ -382,14 +382,16 @@ where
 }
 
 /// Resolve a display name for a CatalogRow that mirrors what
-/// `/v1/models` and `llamastash list` show. Falls back to the
-/// resolver's `name()` which uses `path.file_name()`; the
-/// `display_label` form (Ollama's `<name>:<tag>`) wins when present.
+/// `/v1/models` returns. `display_label` (Ollama's `<name>:<tag>`)
+/// wins when present; otherwise fall back to the file stem via
+/// [`crate::util::paths::model_display_name`] so the value of
+/// `x-llamastash-served-by` is byte-equal to the corresponding
+/// `/v1/models` `id` for the same model (closes R-11).
 fn served_name_for_row(row: &CatalogRow) -> String {
   if let Some(label) = &row.display_label {
     return label.clone();
   }
-  row.name()
+  crate::util::paths::model_display_name(std::path::Path::new(&row.path))
 }
 
 /// Build the candidate list the fallback selector picks from. Reads
