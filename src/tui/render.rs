@@ -39,9 +39,13 @@ const HOST_PANEL_WIDTH: u16 = 28;
 const MIN_RENDER_WIDTH: u16 = 40;
 const MIN_RENDER_HEIGHT: u16 = 10;
 // COMPACT_BANNER is 8 cells wide; +1 cell padding each side + 2
-// border cells = 12. Drop the panel entirely on narrower terminals.
+// border cells = 12.
 const LOGO_PANEL_WIDTH: u16 = 12;
-const MIN_LOGO_INNER_WIDTH: u16 = 9;
+// Hide the logo panel on terminals narrower than this many cells —
+// at sub-120 widths the Daemon middle pane gets squeezed and the
+// logo competes for cells the info readouts need. The banner still
+// surfaces on the top header bar regardless.
+const LOGO_MIN_TOTAL_WIDTH: u16 = 120;
 
 /// Paint `palette.bg` over `area` so subsequent foreground-only
 /// widgets inherit the theme surface rather than the terminal
@@ -303,14 +307,10 @@ fn render_title_left(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pal
 
 /// Render the three-panel info row.
 fn render_info_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  // Reserve the Logo panel only when there's enough width for its
-  // inner area to be readable. Otherwise the Daemon panel claims the
-  // freed space.
-  let show_logo = area
-    .width
-    .saturating_sub(HOST_PANEL_WIDTH)
-    .saturating_sub(LOGO_PANEL_WIDTH)
-    >= MIN_LOGO_INNER_WIDTH + 2;
+  // Reserve the Logo panel only when the terminal is wide enough that
+  // the Daemon middle pane won't get squeezed by it. Otherwise the
+  // Daemon panel claims the freed space.
+  let show_logo = area.width >= LOGO_MIN_TOTAL_WIDTH;
   let constraints = if show_logo {
     vec![
       Constraint::Length(HOST_PANEL_WIDTH),
@@ -849,36 +849,34 @@ mod tests {
 
   #[test]
   fn narrow_width_hides_logo_panel() {
-    // 45-col terminal: 28 (host) + 12 (logo) leaves only ~5 cells
-    // for the daemon middle, which is below the
-    // `MIN_LOGO_INNER_WIDTH + 2` threshold the renderer enforces.
-    // The Logo panel drops and Daemon flexes to fill the rest. We
-    // assert the banner glyph (the only thing the logo panel emits)
-    // is absent rather than greping for the theme tag — that tag
-    // now lives on the top header bar regardless of the logo panel.
+    // Anything below the 120-col threshold drops the logo so the
+    // Daemon middle pane keeps its readouts uncramped. We assert the
+    // banner glyph (the only thing the logo panel emits) is absent
+    // rather than greping for the theme tag — that tag now lives on
+    // the top header bar regardless of the logo panel.
     let app = App::new(AppOptions::default());
-    let rows = render_into(45, 30, app);
+    let rows = render_into(119, 30, app);
     let body = rows.join("\n");
     assert!(body.contains("Host"));
     assert!(body.contains("Daemon"));
     assert!(
       !body.contains("██"),
-      "logo panel should be hidden at width 45: {body}"
+      "logo panel should be hidden below 120 cols: {body}"
     );
   }
 
   #[test]
   fn wider_width_shows_logo_panel() {
     let app = App::new(AppOptions::default());
-    let rows = render_into(100, 30, app);
+    let rows = render_into(140, 30, app);
     let body = rows.join("\n");
-    // At 100 cols, Host(28) + Daemon(min 1) + Logo(12) easily fit.
-    // The logo panel emits the COMPACT_BANNER glyphs (`██`) — assert
-    // those rather than the theme tag, which now lives on the
-    // top-row hint strip and may get clipped at narrower widths.
+    // At ≥120 cols the logo panel renders. It emits the COMPACT_BANNER
+    // glyphs (`██`) — assert those rather than the theme tag, which
+    // lives on the top-row hint strip and may get clipped at narrower
+    // widths.
     assert!(
       body.contains("██"),
-      "logo panel should render at width 100: {body}"
+      "logo panel should render at width 140: {body}"
     );
   }
 

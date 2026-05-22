@@ -33,7 +33,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
   - [x] try 65x35 split for main panes
   - [x] Settings: when value is default it should be muted color. Else normal color
   - [x] ~~Model pane title "Models [x]" should be muted color when Model pane is not active. ie Right pane has focus.~~ — `build_block_title` now takes `pane_focused`; the heading drops from bold `panel_title` to `muted_style` when the right pane owns focus. Mnemonic underline on `M` survives both states.
-  - [ ] No logo in small widths < 120w
+  - [x] ~~No logo in small widths < 120w~~ — Logo pane now only renders when the terminal is ≥120 cells wide. Sub-120 widths give the Daemon middle pane its cells back; the banner still surfaces on the top header bar regardless.
   - [ ] adjust min h x w supported.
   - [ ] Adaptive Panes.
   - [ ] Adaptive hints with priority ranks so that order doesn't matter.
