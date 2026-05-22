@@ -66,7 +66,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 ### Follow-up
 
 - [ ] No glyphs fallback.
-- [ ] `show` command shows model info. gguf parses values, full path, size, etc and 
+- [ ] `show` command shows model info. gguf parses values, full path, size, etc, arch defauklts, last run vals, and any other useful stuff
 - [ ] **Release pipeline ops** — secret/token plumbing around `release.yml` and the org bootstrap.
   - [ ] Write `docs/runbooks/secret-rotation.md` — operational steps for rotating `CRATES_IO_TOKEN` + `GH_BUMP_TOKEN`. Referenced from [`docs/runbooks/release-0.0.1-bootstrap.md`](docs/runbooks/release-0.0.1-bootstrap.md) §"Token rotation cadence".
 - [ ] Some HF downloaded models fail to start??
