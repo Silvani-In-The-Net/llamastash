@@ -299,7 +299,7 @@ llamastash init [--recommended] [--yes] [--json] [--offline]
 | Flag | Effect |
 |---|---|
 | `--recommended` | Accept the hardware-aware default for every prompt; no prompts fire. Canonical form. |
-| `--yes` | Hidden permanent alias for `--recommended`. Preserved for backward compatibility with scripts and agents that already pass it. |
+| `--yes` | Hidden alias for `--recommended`. Preserved for script and agent compatibility. |
 | `--json` | Emit a structured summary (schema: `schema_version`, `steps_ran`, `steps_skipped`, `install`, `model`, `config`, `smoke`, `hardware`) and skip all human prose. |
 | `--offline` | Refuse outbound network. Useful for `--only config` / `--only server` reruns where the model and snapshot are already cached. `LLAMASTASH_OFFLINE=1` is equivalent. |
 | `--only <STEPS>` | Comma-separated list of `server,models,config` (other names rejected). Only the listed steps run. |

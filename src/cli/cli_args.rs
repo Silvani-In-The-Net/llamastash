@@ -368,10 +368,8 @@ pub struct InitArgs {
   /// silently downgraded.
   #[arg(long, action = ArgAction::SetTrue)]
   pub recommended: bool,
-  /// Backward-compat alias for `--recommended`. Hidden from `--help`
-  /// because new invocations should reach for `--recommended`, but
-  /// preserved indefinitely so existing scripts and agents keep
-  /// working without a deprecation warning at runtime.
+  /// Hidden alias for `--recommended` kept for agent/script
+  /// compatibility.
   #[arg(long, hide = true)]
   pub yes: bool,
   /// Emit a single structured summary at completion. Per-step progress
@@ -695,7 +693,7 @@ impl LaunchMode {
   }
 }
 
-/// `llamadash uat` arguments (Unit 3 / R4 / R5). Only compiled when
+/// `llamastash uat` arguments (Unit 3 / R4 / R5). Only compiled when
 /// the `uat` Cargo feature is enabled — the release binary on
 /// crates.io and Homebrew bottles never carries this subcommand.
 ///
@@ -838,21 +836,21 @@ mod tests {
   }
 
   #[test]
-  fn init_yes_json_offline_flags_parse() {
-    let cli = parse(&["init", "--yes", "--json", "--offline"]);
+  fn init_recommended_json_offline_flags_parse() {
+    let cli = parse(&["init", "--recommended", "--json", "--offline"]);
     match cli.command {
       Some(Command::Init(args)) => {
-        assert!(args.yes);
+        assert!(args.recommended);
+        assert!(!args.yes);
         assert!(args.json);
         assert!(args.offline);
-        assert!(!args.recommended);
       }
       other => panic!("expected init, got {other:?}"),
     }
   }
 
   #[test]
-  fn init_recommended_parses_independently_of_yes() {
+  fn init_recommended_parses() {
     let cli = parse(&["init", "--recommended"]);
     match cli.command {
       Some(Command::Init(args)) => {
@@ -864,21 +862,7 @@ mod tests {
   }
 
   #[test]
-  fn init_recommended_and_yes_are_combinable() {
-    // Both flags coexist with no mutex; the wizard reads
-    // `args.recommended || args.yes` so either flag short-circuits.
-    let cli = parse(&["init", "--recommended", "--yes"]);
-    match cli.command {
-      Some(Command::Init(args)) => {
-        assert!(args.recommended);
-        assert!(args.yes);
-      }
-      other => panic!("expected init, got {other:?}"),
-    }
-  }
-
-  #[test]
-  fn init_yes_is_hidden_from_help_but_still_parses() {
+  fn init_help_lists_recommended_and_not_yes() {
     let rendered = Cli::try_parse_from(["llamastash", "init", "--help"])
       .unwrap_err()
       .to_string();
@@ -892,9 +876,34 @@ mod tests {
       rendered.contains("--config-step"),
       "help must list --config-step"
     );
-    assert!(!rendered.contains("--yes"), "help must hide --yes");
-    // Still parseable.
+    assert!(!rendered.contains("--yes"), "help must not list --yes");
     assert!(Cli::try_parse_from(["llamastash", "init", "--yes"]).is_ok());
+  }
+
+  #[test]
+  fn init_yes_json_offline_flags_parse() {
+    let cli = parse(&["init", "--yes", "--json", "--offline"]);
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert!(args.yes);
+        assert!(!args.recommended);
+        assert!(args.json);
+        assert!(args.offline);
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn init_recommended_and_yes_are_combinable() {
+    let cli = parse(&["init", "--recommended", "--yes"]);
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert!(args.recommended);
+        assert!(args.yes);
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
   }
 
   #[test]
@@ -1617,7 +1626,7 @@ mod tests {
     // `GpuInfo::AppleMetal` discriminant — refusing it at parse time
     // keeps the report's `backend.expected` vs `backend.detected`
     // comparison unambiguous on Apple Silicon hosts.
-    let result = Cli::try_parse_from(["llamadash", "uat", "--backend", "metal"]);
+    let result = Cli::try_parse_from(["llamastash", "uat", "--backend", "metal"]);
     assert!(
       result.is_err(),
       "`--backend metal` must be refused; use apple_metal"
@@ -1629,7 +1638,7 @@ mod tests {
   fn uat_subcommand_absent_without_feature() {
     // Build invariant from Unit 3: no UAT entry point when the
     // feature is off. clap rejects the subcommand at parse time.
-    let result = Cli::try_parse_from(["llamadash", "uat", "--backend", "nvidia"]);
+    let result = Cli::try_parse_from(["llamastash", "uat", "--backend", "nvidia"]);
     assert!(
       result.is_err(),
       "`uat` must not parse without `--features uat`"
