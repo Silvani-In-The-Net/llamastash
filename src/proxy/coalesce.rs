@@ -293,7 +293,10 @@ mod tests {
     let woke_for_task = woke.clone();
     let task = tokio::spawn(async move {
       let out = follower.wait().await;
-      assert!(matches!(out, Some(SharedOutcome::Ready { port: 18001, .. })));
+      assert!(matches!(
+        out,
+        Some(SharedOutcome::Ready { port: 18001, .. })
+      ));
       woke_for_task.fetch_add(1, Ordering::SeqCst);
     });
     // Yield to let the follower start awaiting; with the durable
@@ -325,7 +328,10 @@ mod tests {
     leader.finish(ready(18042)).await;
     // ... then wait. Should return immediately.
     let out = follower.wait().await;
-    assert!(matches!(out, Some(SharedOutcome::Ready { port: 18042, .. })));
+    assert!(matches!(
+      out,
+      Some(SharedOutcome::Ready { port: 18042, .. })
+    ));
   }
 
   #[tokio::test]
