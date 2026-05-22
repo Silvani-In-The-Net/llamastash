@@ -585,12 +585,12 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
         // `Y` (yank-curl) is the only path that strictly requires a
         // Ready model; the smart `y` fallback yields a string for
         // any focused row, so this branch only fires for `Y`.
-        app.show_toast("nothing to yank — focus a Ready model");
+        app.show_toast("nothing to copy — focus a Ready model");
       }
     }
     Action::CycleTheme => {
       app.cycle_theme();
-      app.show_toast(format!("theme: {}", app.options.theme.canonical()));
+      app.show_toast(format!("theme → {}", app.options.theme.canonical()));
     }
     Action::ToggleHelp => app.toggle_help(),
     Action::FocusList => {
@@ -1112,9 +1112,9 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
         WriterCmd::StopModel {
           launch_id: launch_id.clone(),
         },
-        format!("stop dispatched ({name})"),
+        format!("stopping {name}…"),
         "stop failed — writer offline",
-        format!("stop dispatched (no writer; launch {launch_id})"),
+        "stop unavailable — no daemon writer attached".into(),
       );
     }
     ConfirmAction::KillDaemon => {
@@ -1122,9 +1122,9 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
         app,
         writer,
         WriterCmd::Shutdown,
-        "daemon shutdown dispatched".into(),
+        "daemon shutting down…".into(),
         "daemon shutdown failed — writer offline",
-        "daemon shutdown (no writer)".into(),
+        "daemon shutdown unavailable — no writer attached".into(),
       );
     }
     ConfirmAction::RestartDaemon => {
@@ -1132,9 +1132,9 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
         app,
         writer,
         WriterCmd::RestartDaemon,
-        "daemon restart dispatched".into(),
+        "daemon restarting…".into(),
         "daemon restart failed — writer offline",
-        "daemon restart (no writer)".into(),
+        "daemon restart unavailable — no writer attached".into(),
       );
     }
     ConfirmAction::DeleteModel { path, display_name } => match delete_model_on_disk(&path) {
@@ -1165,7 +1165,7 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
           next,
           ..
         } => {
-          app.show_toast(format!("cancelled: {cancelled_friendly_name}"));
+          app.show_toast(format!("cancelled {cancelled_friendly_name}"));
           if let Some(promoted) = next {
             app.download_strip.install_active(&promoted);
             let abort = spawn_download_task(
@@ -1179,6 +1179,7 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
       }
     }
     ConfirmAction::LaunchDuplicate {
+      name,
       model_path,
       ctx,
       reasoning,
@@ -1197,7 +1198,7 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
         mode,
         prefer_port,
       };
-      dispatch_launch(app, writer, cmd);
+      dispatch_launch(app, writer, cmd, name);
     }
   }
 }
@@ -1307,7 +1308,7 @@ fn apply_send_chat(app: &mut App) {
     return;
   };
   if app.chat.prompt.buffer().trim().is_empty() {
-    app.show_toast("prompt is empty");
+    app.show_toast("chat prompt is empty");
     return;
   }
   let prompt = app.chat.prompt.buffer().to_string();
@@ -1434,10 +1435,11 @@ fn apply_toggle_favorite(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>
       return;
     }
   }
+  let name = app.display_name_for(&p);
   app.show_toast(if now_favorite {
-    "favorite added"
+    format!("favorited {name}")
   } else {
-    "favorite removed"
+    format!("unfavorited {name}")
   });
 }
 
@@ -1495,9 +1497,9 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     prefer_port: picker.prefer_port,
   };
 
+  let name = app.display_name_for(&path);
   let active_instances = app.managed.iter().filter(|m| m.path == path).count();
   if active_instances > 0 {
-    let name = app.display_name_for(&path);
     app.confirm_dialog = Some(ConfirmAction::LaunchDuplicate {
       name,
       active_instances,
@@ -1512,18 +1514,23 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     return;
   }
 
-  dispatch_launch(app, writer, cmd);
+  dispatch_launch(app, writer, cmd, name);
 }
 
 /// Send a fully-assembled `StartModel` payload via the writer
 /// channel and close the picker on success. Shared by the
 /// direct-launch path and the post-confirm dispatch so both flows
 /// emit the same toasts.
-fn dispatch_launch(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>, cmd: WriterCmd) {
+fn dispatch_launch(
+  app: &mut App,
+  writer: Option<&mpsc::Sender<WriterCmd>>,
+  cmd: WriterCmd,
+  name: String,
+) {
   match writer {
     Some(tx) => match tx.try_send(cmd) {
       Ok(()) => {
-        app.show_toast("launch dispatched");
+        app.show_toast(format!("launching {name}…"));
         app.close_launch_picker();
       }
       Err(_) => {
@@ -1534,7 +1541,7 @@ fn dispatch_launch(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>, cmd:
       // No daemon attached (headless test backend, dry run, etc.).
       // Keep the picker open so the user can retry once a writer is
       // wired up rather than silently swallowing the keypress.
-      app.show_toast("launch dispatched (no writer)");
+      app.show_toast("launch unavailable — no daemon writer attached");
     }
   }
 }
@@ -2643,7 +2650,7 @@ pub fn drain_download_strip(app: &mut App) {
           .map(|a| a.friendly_name.clone());
         let next = app.download_strip.apply_finished(&repo_id);
         if let Some(name) = label {
-          app.show_toast(format!("pulled: {name}"));
+          app.show_toast(format!("downloaded {name}"));
         }
         next
       }
@@ -3407,8 +3414,8 @@ mod tests {
     pump_input(&mut app, key(KeyCode::Char('u'), KeyModifiers::NONE));
     let msg = app.toast_message().unwrap();
     assert!(
-      msg.contains("nothing to yank") || msg.contains("clipboard"),
-      "yank toast must explain why: {msg}"
+      msg.contains("nothing to copy") || msg.contains("clipboard"),
+      "copy toast must explain why: {msg}"
     );
   }
 
@@ -3707,9 +3714,9 @@ mod tests {
   }
 
   #[test]
-  fn ctrl_q_stages_kill_daemon_confirm() {
+  fn ctrl_k_stages_kill_daemon_confirm() {
     let mut app = App::new(Default::default());
-    pump_input(&mut app, key(KeyCode::Char('q'), KeyModifiers::CONTROL));
+    pump_input(&mut app, key(KeyCode::Char('k'), KeyModifiers::CONTROL));
     assert!(matches!(
       app.confirm_dialog,
       Some(crate::tui::app::ConfirmAction::KillDaemon)
@@ -3722,7 +3729,7 @@ mod tests {
     let (tx, mut rx) = mpsc::channel::<WriterCmd>(4);
     pump_input_with_writer(
       &mut app,
-      key(KeyCode::Char('q'), KeyModifiers::CONTROL),
+      key(KeyCode::Char('k'), KeyModifiers::CONTROL),
       Some(&tx),
     );
     pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
