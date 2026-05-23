@@ -114,7 +114,7 @@ pub struct DaemonInfo {
   pub socket_path: Option<String>,
   /// Latest snapshot of the OpenAI-compat proxy listener (Unit 5).
   /// `None` when talking to a pre-Unit-5 daemon that omits the
-  /// field — info_pane suppresses the proxy row in that case.
+  /// field — info_pane renders the proxy row as `proxy   —` in that case.
   pub proxy: Option<ProxyInfo>,
 }
 
