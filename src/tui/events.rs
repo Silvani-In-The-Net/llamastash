@@ -235,12 +235,16 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
     handle_settings_inline_edit(app, key);
     return;
   }
-  // Vim `g`-prefix dispatcher (right-pane only — `g` is unbound there;
-  // in List focus `g` keeps its immediate GoTop semantic). After `g`
-  // is queued, the next key resolves:
-  //   - `t`        → cycle to the next right tab
-  //   - `T` (⇧t)   → cycle to the previous right tab
+  // Vim `g`-prefix dispatcher. `g` in LIST or RIGHT_PANE focus queues
+  // the prefix; in LIST the canonical `g → GoTop` still fires
+  // immediately so the single-stroke vim motion isn't laggy. After
+  // `g` is queued, the next key resolves:
+  //   - `t`        → cycle to the next right-pane tab
+  //   - `T` (⇧t)   → cycle to the previous right-pane tab
   //   - anything   → drop the prefix and fall through to normal dispatch
+  // Side-effect: `gt` from LIST also moves the list cursor to the top
+  // (the queued GoTop fired on the first `g`). Cursor moves on the
+  // left pane while the tab cycles on the right pane — harmless.
   if app.pending_g_prefix {
     app.pending_g_prefix = false;
     match (key.code, key.modifiers) {
@@ -255,11 +259,17 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
       _ => {}
     }
   }
-  if app.focus == Focus::RightPane
+  if matches!(app.focus, Focus::List | Focus::RightPane)
     && matches!(key.code, KeyCode::Char('g'))
     && key.modifiers == KeyModifiers::NONE
   {
     app.pending_g_prefix = true;
+    // In LIST, `g` is canonically bound to GoTop — fire it
+    // immediately so the single-stroke motion stays snappy. In
+    // RightPane, `g` is unbound and just sets the prefix.
+    if app.focus == Focus::List {
+      apply_action(app, Action::GoTop, writer);
+    }
     return;
   }
   // Resolve the bound action first; if a focus doesn't have a binding
@@ -3195,6 +3205,36 @@ mod tests {
     app.right_tab = RightTab::Embed;
     pump_input(&mut app, key(KeyCode::Char('i'), KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::EmbedInput, "`i` must open the input");
+  }
+
+  #[test]
+  fn vim_gt_cycles_right_tabs_from_list_focus_too() {
+    // The original bug: `gt` from Models list didn't queue the prefix,
+    // so `t` fell through to CycleTheme. Now `g` in LIST fires GoTop
+    // immediately AND queues the prefix so the follow-up `t` cycles
+    // the right tab instead of the theme.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/a.gguf", "/m")];
+    app.focus = Focus::List;
+    let tabs = app.available_right_tabs();
+    if tabs.len() < 2 {
+      pump_input(&mut app, key(KeyCode::Char('g'), KeyModifiers::NONE));
+      assert!(app.pending_g_prefix);
+      pump_input(&mut app, key(KeyCode::Char('t'), KeyModifiers::NONE));
+      assert!(!app.pending_g_prefix);
+      return;
+    }
+    let starting_tab = app.right_tab;
+    let starting_theme = app.options.theme;
+    pump_input(&mut app, key(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert!(app.pending_g_prefix, "`g` in LIST must queue the prefix");
+    pump_input(&mut app, key(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(!app.pending_g_prefix);
+    assert_ne!(app.right_tab, starting_tab, "`gt` must cycle the right tab");
+    assert_eq!(
+      app.options.theme, starting_theme,
+      "`gt` must NOT also cycle the theme — that was the original bug"
+    );
   }
 
   #[test]
