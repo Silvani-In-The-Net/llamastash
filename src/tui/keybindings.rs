@@ -553,15 +553,17 @@ fn build_default_bindings() -> Vec<Binding> {
       (KeyCode::Char('R'), KeyModifiers::SHIFT, "R", CAT_GLOBAL),
     ],
   });
-  // Everything else stays as an explicit literal — scope or category
-  // divergence per chord defeats the shared-metadata macro.
-  v.extend_from_slice(LEGACY_BINDINGS);
+  // Single-chord or scope-divergent rows declared as explicit
+  // `Binding { ... }` literals — they can't share metadata via the
+  // `binds!` macro because either there's only one chord per action
+  // or each chord needs its own scope / category.
+  v.extend_from_slice(LITERAL_BINDINGS);
   v
 }
 
-/// Bindings that don't fit the `binds!` shared-metadata pattern —
-/// scope or category diverges per chord, or there's only one chord.
-const LEGACY_BINDINGS: &[Binding] = &[
+/// Bindings declared as explicit `Binding` literals — single-chord
+/// rows and groups whose scope or category diverges per chord.
+const LITERAL_BINDINGS: &[Binding] = &[
   // ─── Always-on chords across the nav focuses ────────────────
   Binding {
     key: KeyCode::Char('?'),
