@@ -411,8 +411,19 @@ const HIGHLIGHT_GUTTER: usize = 0;
 /// pre-split `STATUS_W + FAV_W = 6` chrome with a flat 3 cells.
 const MARKER_W: usize = 3;
 const COL_SEP_W: usize = 1; // space before each data column
-/// Minimum number of columns the Name column always reserves.
+/// Minimum number of cells the Name column reserves at all widths.
+/// Hard floor — even a pane that's too narrow for any data column
+/// still gives the model name at least this much room.
 const MIN_NAME_W: usize = 8;
+/// "Comfortable" Name budget: enough cells to display a typical
+/// model name (e.g. `qwen-7b-instruct-Q4_K_M`, ~24 chars) without
+/// the ellipsis truncation glyph. The layout reserves this much
+/// from the content budget *before* picking data columns, so
+/// columns drop sooner under width pressure to keep the name
+/// readable. Whatever budget the column picker leaves unspent
+/// rolls back into the Name column, so a wide pane still grows
+/// Name beyond this floor.
+const PREFERRED_NAME_W: usize = 24;
 
 /// Identifies which model field a data column renders. Lets the
 /// [`Column`] table stay `const` while the value extraction lives
@@ -510,22 +521,49 @@ struct ColumnLayout {
 }
 
 /// Greedy-fit data columns into the budget left after marker +
-/// `MIN_NAME_W` are reserved. Lower-rank columns win first. Any
-/// budget the picker doesn't spend rolls back into the Name column
-/// so a wide pane gives Name room to breathe.
+/// the comfortable Name reservation. Lower-rank columns win first.
+///
+/// Width-band gradient:
+/// - `content_w >= MARKER_W + PREFERRED_NAME_W` → reserve
+///   [`PREFERRED_NAME_W`] for Name first; columns fill the
+///   remainder by rank. Unspent budget rolls back into Name so a
+///   wide pane keeps growing the name column.
+/// - `content_w < MARKER_W + PREFERRED_NAME_W` → fall back to the
+///   hard [`MIN_NAME_W`] floor and let the picker squeeze data
+///   columns into whatever is left.
+///
+/// Net effect: at moderate widths the picker drops lower-priority
+/// columns rather than truncating the model name. The user's
+/// primary signal (the name) stays readable, and the cells that
+/// would otherwise be spent on a redundant Mode column fund a
+/// usable Name column instead.
 fn layout_columns(content_w: usize) -> ColumnLayout {
-  let budget = content_w.saturating_sub(MARKER_W + MIN_NAME_W);
+  let reserved_for_name = if content_w >= MARKER_W + PREFERRED_NAME_W {
+    PREFERRED_NAME_W
+  } else {
+    MIN_NAME_W
+  };
+  let budget = content_w.saturating_sub(MARKER_W + reserved_for_name);
+
   let mut by_rank: Vec<(usize, &'static Column)> = COLUMNS.iter().enumerate().collect();
   by_rank.sort_by_key(|(_, c)| c.rank);
 
   let mut taken: Vec<(usize, &'static Column)> = Vec::with_capacity(COLUMNS.len());
   let mut spent = 0usize;
+  // Strict rank-tail drop: once a lower-rank column refuses to fit,
+  // stop trying to admit any higher-rank columns. The alternative
+  // (greedy: skip the big one, keep checking smaller ones) gives a
+  // tighter information density but produces non-contiguous
+  // visibility — a Port column slotting in where Arch can't makes
+  // it look like the data jumped a slot as the pane resizes. The
+  // cutoff is what users intuit from "rank = min-width threshold".
   for (idx, c) in by_rank {
     let cost = c.width + COL_SEP_W;
-    if spent + cost <= budget {
-      spent += cost;
-      taken.push((idx, c));
+    if spent + cost > budget {
+      break;
     }
+    spent += cost;
+    taken.push((idx, c));
   }
   // Restore declaration order so columns disappear from less-
   // important slots while the survivors keep their familiar
@@ -639,11 +677,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, palette: &Palette, input: Rende
   };
   let items: Vec<ListItem<'_>> = rows
     .iter()
-    .enumerate()
-    .map(|(i, r)| {
-      let is_selected = Some(i) == safe_selected;
-      render_row(r, palette, &layout, content_w, is_selected)
-    })
+    .map(|r| render_row(r, palette, &layout, content_w))
     .collect();
   let title_line = build_block_title(input.title, input.filter_chip_label, palette, input.focused);
   let legend = build_status_legend(palette);
@@ -836,32 +870,24 @@ fn row_fg(state: SurfaceState, palette: &Palette) -> ratatui::style::Color {
 
 /// Single combined marker for a model row. Priority winner from
 /// highest to lowest:
-///   1. Selection cursor `>` — wins on the focused row so the
-///      selection is always unambiguous. No explicit fg so the
-///      `Modifier::REVERSED` on the row flips the whole strip with
-///      the row's semantic colour.
-///   2. Launch-state glyph (`◌ ◐ ● ▲ ○ ⇪`) — wins whenever
+///   1. Launch-state glyph (`◌ ◐ ● ▲ ○ ⇪`) — wins whenever
 ///      [`glyph_for`] returns a non-space char (`NotLaunched` maps
 ///      to space, which falls through). Painted with
 ///      [`colour_for`] so a Ready row stays green, an Error row
 ///      stays red, etc.
-///   3. Favorite star `★` — wins on idle favorited rows.
-///   4. Blank — nothing to surface.
+///   2. Favorite star `★` — wins on idle favorited rows.
+///   3. Blank — nothing to surface.
+///
+/// The selection state is **not** drawn into the marker column.
+/// `Modifier::REVERSED` on the whole row already inverts the
+/// strip unambiguously; adding a `>` caret would burn a cell of
+/// horizontal real estate to repeat what the inversion already
+/// says. Selected rows keep their state glyph / favorite star
+/// (which inverts with the rest of the row).
 ///
 /// Always returns a 3-cell span (` X `) so the Name column lines
 /// up across every row regardless of which slot won.
-fn marker_span(
-  state: SurfaceState,
-  favorite: bool,
-  is_selected: bool,
-  palette: &Palette,
-) -> Span<'static> {
-  if is_selected {
-    return Span::styled(
-      " > ".to_string(),
-      Style::default().add_modifier(Modifier::BOLD),
-    );
-  }
+fn marker_span(state: SurfaceState, favorite: bool, palette: &Palette) -> Span<'static> {
   let glyph = glyph_for(state);
   if glyph != ' ' {
     return Span::styled(
@@ -909,7 +935,6 @@ fn render_row<'a>(
   palette: &Palette,
   layout: &ColumnLayout,
   content_w: usize,
-  is_selected: bool,
 ) -> ListItem<'a> {
   let name_w = layout.name_w;
   let cols = layout.visible.as_slice();
@@ -976,7 +1001,7 @@ fn render_row<'a>(
       // flips it with the rest of the row.
       let fg = row_fg(*state, palette);
       let mut spans: Vec<Span<'a>> = Vec::with_capacity(2 + cols.len() * 2);
-      spans.push(marker_span(*state, *favorite, is_selected, palette));
+      spans.push(marker_span(*state, *favorite, palette));
       spans.push(Span::raw(cell(name.as_str(), name_w)));
       for c in cols {
         spans.push(Span::raw(" "));
@@ -1762,43 +1787,63 @@ mod tests {
 
   #[test]
   fn layout_preserves_declaration_order_when_high_rank_columns_drop() {
-    // Budget = 32 cells (= Arch+Quant+Ctx+Size cost). Mode (11) and
-    // Port (7) don't both fit, but neither does either alone after
-    // the rank-ordered greedy takes the cheaper ones first.
-    let layout = layout_columns(MARKER_W + MIN_NAME_W + 32);
+    // content_w = 67. PREFERRED_NAME_W (24) reserved up front, so
+    // budget = 67 - 3 - 24 = 40 cells. Strict rank-tail cutoff
+    // takes Size, Quant, Ctx, Arch (sum 32) then stops at Mode
+    // (32+11=43 > 40). Source order preserved: Size (best rank)
+    // does not jump to the front of the strip.
+    let layout = layout_columns(67);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
-    // Source order preserved — Size (best rank) does not jump to
-    // the front of the strip.
     assert_eq!(
       ids,
-      vec![
-        ColumnId::Arch,
-        ColumnId::Quant,
-        ColumnId::Ctx,
-        ColumnId::Size
-      ]
+      vec![ColumnId::Arch, ColumnId::Quant, ColumnId::Ctx, ColumnId::Size]
     );
   }
 
   #[test]
-  fn layout_can_keep_lowest_priority_column_if_a_higher_one_overflows() {
-    // Budget = 39 cells. Greedy by rank takes Size+Quant+Ctx+Arch
-    // (32), can't fit Mode (11 would put it over), but still fits
-    // Port (7) at the tail. The visible set is non-contiguous in
-    // declaration order — Port renders right after Size with no
-    // Mode column between them.
-    let layout = layout_columns(MARKER_W + MIN_NAME_W + 39);
+  fn layout_drops_columns_in_strict_rank_order_no_skipping() {
+    // Once a column refuses to fit, the picker stops admitting
+    // even smaller higher-rank columns. content_w = 58 (compact
+    // terminal at 60-wide → list content 58 after borders).
+    // Budget = 58-3-24=31. Size(7), Quant(15), Ctx(23) all fit;
+    // Arch(9, 32>31) refuses → break. Port (cost 7) is *not*
+    // smuggled in even though 23+7=30 would have fit, because
+    // that would shuffle column positions as the pane resizes.
+    let layout = layout_columns(58);
+    let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
+    assert_eq!(ids, vec![ColumnId::Quant, ColumnId::Ctx, ColumnId::Size]);
+  }
+
+  #[test]
+  fn layout_reserves_preferred_name_before_columns_at_moderate_widths() {
+    // 60-cell content area. PREFERRED_NAME_W=24 is reserved up
+    // front, so the picker only has 60-3-24=33 cells. Mode (rank
+    // 50, cost 11) doesn't fit alongside Size+Quant+Ctx+Arch (32);
+    // strict cutoff stops there. Name keeps the leftover (25
+    // cells) instead of being truncated — the cells that would
+    // otherwise fund Mode/Port go to the user's primary signal.
+    let layout = layout_columns(60);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
     assert_eq!(
       ids,
-      vec![
-        ColumnId::Arch,
-        ColumnId::Quant,
-        ColumnId::Ctx,
-        ColumnId::Size,
-        ColumnId::Port
-      ]
+      vec![ColumnId::Arch, ColumnId::Quant, ColumnId::Ctx, ColumnId::Size]
     );
+    assert!(
+      layout.name_w >= PREFERRED_NAME_W,
+      "name should hold at the comfortable budget at 60 cells, got {}",
+      layout.name_w
+    );
+  }
+
+  #[test]
+  fn layout_grows_name_with_unspent_budget_on_wide_panes() {
+    // At 130 cells (typical wide-mode list pane in a 200-col
+    // terminal) every column fits and Name absorbs the rest.
+    let layout = layout_columns(130);
+    assert_eq!(layout.visible.len(), COLUMNS.len(), "all columns visible");
+    let cols_w: usize = COLUMNS.iter().map(|c| c.width + COL_SEP_W).sum();
+    assert_eq!(layout.name_w, 130 - MARKER_W - cols_w);
+    assert!(layout.name_w > PREFERRED_NAME_W);
   }
 
   #[test]
