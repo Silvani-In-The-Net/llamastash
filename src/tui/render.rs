@@ -350,6 +350,22 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
   let filter_chip = models_filter_chip(app);
   let list_focused = list_is_focused(app.focus);
   let right_focused = right_is_focused(app.focus);
+  // Refresh the body-level hit-test rects for the mouse-focus
+  // dispatch. The list-pane rect is always populated; the right-pane
+  // rect is zeroed when the right pane is hidden so a stray click in
+  // that screen region doesn't match a stale frame's footprint.
+  {
+    let mut hits = app.hit_rects.borrow_mut();
+    hits.list_pane = split[0];
+    hits.right_pane = if show_right {
+      split[1]
+    } else {
+      Rect::default()
+    };
+    if !show_right {
+      hits.right_tabs.clear();
+    }
+  }
   if rows.is_empty() {
     render_empty_state(frame, split[0], palette, title, &filter_chip, list_focused);
   } else {

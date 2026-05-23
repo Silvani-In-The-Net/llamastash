@@ -30,7 +30,12 @@ use crate::tui::tabs::{chat, embed, logs, rerank, settings, RightTab};
 /// dashboard owns the keyboard chain at a glance.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, focused: bool) {
   let tabs = app.available_right_tabs();
-  let title_line = block_title_line(app, &tabs, palette);
+  let (title_line, tab_rects) = block_title_with_rects(app, &tabs, palette, area);
+  // Stash the per-tab rects on App so the mouse-focus click handler
+  // can resolve `(column, row)` → `RightTab`. The list/right-pane
+  // rects were written by `render_body`; we only touch `right_tabs`
+  // here.
+  app.hit_rects.borrow_mut().right_tabs = tab_rects;
   let bottom_chips = bottom_hint_chips(app);
   let border_color = palette.focus_border(focused);
 
@@ -342,12 +347,46 @@ fn bottom_hint_line(chips: &[String], palette: &Palette) -> Line<'static> {
 /// Chat `. The active tab is highlighted; all key hints live on
 /// the *bottom* border now (see [`bottom_hint_chips`]) so the
 /// top stays a clean tab strip.
-fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'static> {
+///
+/// Also returns the per-tab on-screen rectangles, computed in
+/// lockstep with the span sequence so the mouse-focus click handler
+/// in [`crate::tui::events`] can hit-test labels without re-deriving
+/// the layout. Each rect spans one row (`y == area.y` — ratatui
+/// paints titles on the top border) and the exact label width in
+/// columns. Tabs whose label would extend past the visible width are
+/// dropped from the rect list — the title is clipped on screen so
+/// hit-testing them would land on truncated glyphs.
+fn block_title_with_rects(
+  app: &App,
+  tabs: &[RightTab],
+  palette: &Palette,
+  area: Rect,
+) -> (Line<'static>, Vec<(RightTab, Rect)>) {
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(tabs.len() * 3 + 4);
+  let mut rects: Vec<(RightTab, Rect)> = Vec::with_capacity(tabs.len());
   spans.push(Span::raw(" "));
+  // Ratatui paints `Block::title` starting at `area.x + 1`
+  // (skipping the top-left corner glyph). The leading " " span
+  // pushes the first label one cell further right.
+  let mut col: u16 = area.x.saturating_add(2);
+  let last_col: u16 = area.x.saturating_add(area.width);
   for (i, tab) in tabs.iter().enumerate() {
     if i > 0 {
       spans.push(Span::styled(" │ ", palette.muted_style()));
+      col = col.saturating_add(3);
+    }
+    let label = tab.label();
+    let label_width = label.chars().count() as u16;
+    if col.saturating_add(label_width) <= last_col {
+      rects.push((
+        *tab,
+        Rect {
+          x: col,
+          y: area.y,
+          width: label_width,
+          height: 1,
+        },
+      ));
     }
     // Active tab gets `panel_title` + bold so it reads like the
     // panel's heading text (matches Host/Daemon/Models titles).
@@ -355,10 +394,11 @@ fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'st
     // The mnemonic underline (first letter) is applied separately
     // by [`mnemonic_spans`].
     let active = *tab == app.right_tab;
-    spans.extend(mnemonic_spans(tab.label(), active, palette));
+    spans.extend(mnemonic_spans(label, active, palette));
+    col = col.saturating_add(label_width);
   }
   spans.push(Span::raw(" "));
-  Line::from(spans)
+  (Line::from(spans), rects)
 }
 
 /// Split a tab label into spans that underline the first character
@@ -562,8 +602,8 @@ fn stats_pair(m: &crate::tui::app::ManagedRow) -> (String, String) {
   (rss, cpu)
 }
 
-/// Title-text view of [`block_title_line`] for tests that just want
-/// to grep the flattened text.
+/// Title-text view of [`block_title_with_rects`] for tests that just
+/// want to grep the flattened text.
 #[cfg(test)]
 fn right_pane_title(app: &App) -> String {
   use crate::util::paths::model_display_name;
@@ -953,7 +993,7 @@ mod tests {
     app.focus = Focus::RightPane;
     let palette = app.palette();
     let tabs = app.available_right_tabs();
-    let line = block_title_line(&app, &tabs, palette);
+    let (line, _) = block_title_with_rects(&app, &tabs, palette, Rect::new(0, 0, 60, 10));
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(text.contains("Logs"));
     assert!(text.contains("Settings"));

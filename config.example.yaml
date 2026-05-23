@@ -116,6 +116,27 @@ port_range:
 # loads.
 probe_timeout_secs: 120
 
+# ─── Mouse focus ──────────────────────────────────────────────────
+#
+# Opt into terminal mouse capture. When enabled:
+#   - Left-click on the Models list, the right pane, or a tab label
+#     (Settings/Logs/Chat/Embed/Rerank) moves focus / switches tab.
+#   - Wheel up/down replays the ↑/↓ action in the current focus —
+#     same as pressing k/j (or arrows). Click into a pane first to
+#     redirect the wheel there.
+#   - Drag / Up / motion are filtered out so the terminal's bypass
+#     modifier (Shift on iTerm2/Alacritty/foot/wezterm, Option on
+#     Apple Terminal) can still highlight text for native copy.
+# Off by default — capturing the mouse pre-empts the terminal's
+# native click-and-drag text selection, so users who copy paths or
+# logs out of the dashboard keep the cleaner default.
+#
+# The global `--mouse-focus` CLI flag flips this on for a single
+# run; the two sources are OR-ed. For an always-on setup without
+# editing this file, alias the binary in your shell:
+#   alias llamastash='llamastash --mouse-focus'
+mouse_focus: false
+
 # ─── Keybindings ──────────────────────────────────────────────────
 #
 # Override the default keymap. Each entry maps an action name

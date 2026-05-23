@@ -256,6 +256,7 @@ fn build_cli(model_dir: &Path, command: Command) -> (Cli, LoadedConfig) {
     no_colors: false,
     render: false,
     render_size: None,
+    mouse_focus: false,
     command: Some(command),
   };
   let config = LoadedConfig {

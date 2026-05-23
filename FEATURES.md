@@ -86,7 +86,7 @@ Save tuned launch profiles per model (`coding`, `long-ctx`, `fast`) via [`llamas
 
 ### Keyboard-driven everywhere
 
-Vim-style navigation (`hjkl`), `/` to filter, `f` to favorite, `u`/`c`/`p` to yank URL / curl / path, `t` to cycle theme, `?` for contextual help. Mouse is optional polish — every action has a keyboard binding. Full reference in [`docs/usage.md` § Global / list focus](docs/usage.md#global--list-focus).
+Vim-style navigation (`hjkl`), `/` to filter, `f` to favorite, `u`/`c`/`p` to yank URL / curl / path, `t` to cycle theme, `?` for contextual help. Mouse is optional polish — pass `--mouse-focus` (or set `mouse_focus: true` in `config.yaml`, or `alias llamastash='llamastash --mouse-focus'`) to opt into click-to-focus on the Models list, the right pane, and the tab labels (`Settings`/`Logs`/`Chat`/`Embed`/`Rerank`); off by default so the terminal keeps native click-and-drag text selection. Every action has a keyboard binding. Full reference in [`docs/usage.md` § Global / list focus](docs/usage.md#global--list-focus).
 
 **Vim muscle memory at home.** Beyond `hjkl`, the list scroller honours `Ctrl+F`/`Ctrl+B` (page) and `Ctrl+U` (half-page collapses to page-up), `0`/`$` for top/bottom, `gg` already works because the second `g` is a no-op once you're at the top, and `i` opens the right-pane input alongside `e`. In the right pane, `gt` / `gT` cycle the Settings / Logs / Chat / Embed / Rerank tabs — the only two-stroke chord in the keymap.
 

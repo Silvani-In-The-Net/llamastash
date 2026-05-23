@@ -49,6 +49,14 @@ pub struct Config {
   /// hit `health probe timeout (last status 503)` for legitimate
   /// loads.
   pub probe_timeout_secs: u64,
+  /// Opt into terminal mouse capture so a left-click can switch pane
+  /// focus and pick a right-pane tab. Off by default: capturing the
+  /// mouse pre-empts the terminal's native click-and-drag text
+  /// selection, so users who copy paths / logs out of the dashboard
+  /// keep the cleaner default. When enabled, most terminals still
+  /// expose a bypass modifier (Shift on iTerm2/Alacritty/foot/wezterm,
+  /// Option on Apple Terminal) for ad-hoc selections.
+  pub mouse_focus: bool,
   /// Per-architecture launch defaults — user escape hatch over the
   /// built-in `(arch, gpu_backend) → TypedKnobs` table. Map keys are
   /// GGUF `general.architecture` strings (`llama`, `qwen2`, `mistral`,
@@ -121,6 +129,7 @@ impl Default for Config {
       keybindings: BTreeMap::new(),
       disable_scan: false,
       probe_timeout_secs: 120,
+      mouse_focus: false,
       arch_defaults: BTreeMap::new(),
     }
   }

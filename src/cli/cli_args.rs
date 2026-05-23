@@ -75,6 +75,14 @@ pub struct Cli {
   #[arg(long, value_name = "WxH", global = true)]
   pub render_size: Option<String>,
 
+  /// Opt into terminal mouse capture for the TUI so a left-click on
+  /// the Models list, the right pane, or a tab label moves focus /
+  /// switches tab. Takes precedence over `mouse_focus` in
+  /// `config.yaml`. Off by default — capturing the mouse pre-empts
+  /// the terminal's native click-and-drag text selection.
+  #[arg(long, global = true, action = ArgAction::SetTrue)]
+  pub mouse_focus: bool,
+
   #[command(subcommand)]
   pub command: Option<Command>,
 }
@@ -806,6 +814,18 @@ mod tests {
     assert!(after.no_scan);
     assert!(matches!(before.command, Some(Command::List(_))));
     assert!(matches!(after.command, Some(Command::List(_))));
+  }
+
+  #[test]
+  fn mouse_focus_flag_parses_and_defaults_off() {
+    // Default off so the existing copy-friendly UX is preserved when
+    // nothing opts in.
+    let baseline = parse(&[]);
+    assert!(!baseline.mouse_focus);
+    // Flag flips it on at the TUI entry — the dispatcher ORs this
+    // with `config.mouse_focus` so either source is sufficient.
+    let on = parse(&["--mouse-focus"]);
+    assert!(on.mouse_focus);
   }
 
   #[test]

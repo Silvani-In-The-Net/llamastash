@@ -193,11 +193,17 @@ pub(crate) async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> Cli
   // `from_defaults` and logs.
   let daemon_opts = daemon::build_options(None, None, cli, config).ok();
   let offline = crate::init::fetch::offline_requested(false);
+  // CLI flag wins as a one-way opt-in: `--mouse-focus` flips on even
+  // when `config.mouse_focus` is unset / false. Matches `--offline`
+  // and `--no-scan` — there's no negating counter-flag because the
+  // default is already the conservative "off" path.
+  let mouse_focus = cli.mouse_focus || config.mouse_focus;
   match crate::tui::events::launch(
     config.theme,
     resolve_custom_palette(config),
     keymap,
     offline,
+    mouse_focus,
     &socket,
     daemon_opts,
   )
@@ -266,6 +272,7 @@ async fn render_snapshot(
     custom_palette: resolve_custom_palette(config),
     keymap: resolve_keymap(config),
     offline: crate::init::fetch::offline_requested(false),
+    mouse_focus: cli.mouse_focus || config.mouse_focus,
   });
   if let Ok(body) = client.call("list_models", None).await {
     app.ingest_list_models(&body);

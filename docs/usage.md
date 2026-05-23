@@ -65,6 +65,8 @@ disable_default_cache_paths:
 
 probe_timeout_secs: 120     # Per-launch health-probe deadline.
 
+mouse_focus: false          # Opt into mouse capture for click-to-focus / click-to-tab. Default off keeps native terminal text selection.
+
 keybindings:                # Action-name → key-spec overrides.
   quit: ctrl+q
   cycle_theme: T
@@ -185,6 +187,7 @@ These work on every subcommand (clap marks them `global`):
 --no-scan                  Disable filesystem scanning.
 --no-spawn                 Fail fast if the daemon is not running.
 --no-colors                Disable ANSI styling on human-readable output.
+--mouse-focus              Opt into TUI mouse capture (click-to-focus / click-to-tab). ORs with `mouse_focus` in `config.yaml`; there's no negating counter-flag.
 -v, --verbose              Debug logging.
 ```
 
@@ -410,6 +413,26 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Ctrl+K` | Kill the daemon entirely (List focus; opens a confirmation popup) |
 | `Ctrl+D` | Delete the focused model from disk (idle rows only: `NotLaunched` / `Stopped` — opens a confirmation popup; HF-cache models remove the entire `models--<owner>--<repo>` directory to reclaim blob bytes) |
 | `Ctrl+X` | Cancel the currently-active HF download (any focus; opens a confirmation popup; queued pulls stay in line — press again on the next promoted pull) |
+
+### Mouse focus (opt-in)
+
+Mouse capture is **off by default** so the terminal keeps native click-and-drag text selection — useful for copying paths, logs, or curl strings out of the dashboard. Two ways to opt in:
+
+- Per-run: `llamastash --mouse-focus`.
+- Always-on: set `mouse_focus: true` in `config.yaml`, or alias the binary in your shell rc — `alias llamastash='llamastash --mouse-focus'`.
+
+The CLI flag and the config knob are OR-ed; either source is sufficient. There's no negating counter-flag because the default is already the conservative "off" path.
+
+When enabled, left-click moves focus and the wheel replays the `↑`/`↓` action in the current focus — i.e. whatever pressing `k` / `j` (or arrows) would do right now. Drag / Up / Moved are filtered out at the input thread so a user holding the terminal's bypass modifier (Shift on iTerm2 / Alacritty / foot / wezterm, Option on Apple Terminal) can still highlight text for native copy.
+
+| Gesture | Action |
+|---|---|
+| Left-click on the Models list | Focus → `List` |
+| Left-click on the right pane (body, not a tab label) | Focus → `RightPane` (keyboard still drives `e` to enter Chat/Embed/Rerank text input) |
+| Left-click on a tab label (`Settings`/`Logs`/`Chat`/`Embed`/`Rerank`) | Switch `right_tab` + focus → `RightPane` |
+| Wheel up/down | Same as pressing `↑`/`↓`: moves the list cursor in `List` focus, scrolls the active buffer in Logs / Chat / Embed / Rerank, cycles fields in the Settings form (scrolls the read-only running view). To scroll Logs without leaving an input, click the right pane first to land focus there. |
+| Drag / Up / Moved | Filtered out — preserves terminal text selection during drag and prevents mouse-motion events from saturating the event channel. |
+| Any mouse event while a modal owns input (HF dialog, confirm popup, help overlay) | Ignored — modals own their own dismissal contract; a stray click cannot confirm a destructive action. |
 
 ### HuggingFace pull dialog (`Focus::HfDialog`, `Shift+P` from the Models list)
 

@@ -141,9 +141,83 @@ pub fn pump_input_with_writer(
 ) -> bool {
   match evt {
     TermEvent::Key(key) if key.kind != KeyEventKind::Release => handle_key(app, key, writer),
+    TermEvent::Mouse(m) => handle_mouse(app, m, writer),
     _ => {}
   }
   app.should_exit
+}
+
+/// Mouse-event dispatch. Active only when the user opted in via
+/// `mouse_focus: true` in `config.yaml` or `--mouse-focus`. The
+/// input thread filters out drag / motion / button-up at the
+/// source so only `Down(Left)` and the two wheel kinds reach here.
+///
+/// The contract:
+/// - `Down(Left)` moves focus / switches tab as described under
+///   [`handle_mouse_click`].
+/// - Wheel up/down is a verbatim replay of `Action::MoveUp` /
+///   `Action::MoveDown` — i.e. whatever `↑` / `↓` would do in the
+///   current focus. That keeps the wheel and the arrow keys
+///   identical in every flow, with no extra contract to remember.
+/// - Mouse events while a true modal owns input (`hf_dialog`,
+///   `confirm_dialog`, the help overlay) are ignored — those flows
+///   own their own dismissal contract and a stray press must not
+///   be able to confirm a destructive action. `launch_picker` is
+///   intentionally *not* in this gate: the picker is inlined into
+///   the Settings tab, not a modal, and gating it here would lock
+///   out the mouse the moment a wheel-driven field cycle auto-
+///   materialised the picker (the previous bug — the TUI looked
+///   hung even though keyboard input still worked).
+fn handle_mouse(
+  app: &mut App,
+  m: crossterm::event::MouseEvent,
+  writer: Option<&mpsc::Sender<WriterCmd>>,
+) {
+  use crossterm::event::{MouseButton, MouseEventKind};
+  if app.hf_dialog.is_some() || app.confirm_dialog.is_some() || app.show_help {
+    return;
+  }
+  match m.kind {
+    MouseEventKind::Down(MouseButton::Left) => handle_mouse_click(app, m.column, m.row),
+    MouseEventKind::ScrollUp => apply_action(app, Action::MoveUp, writer),
+    MouseEventKind::ScrollDown => apply_action(app, Action::MoveDown, writer),
+    _ => {}
+  }
+}
+
+/// Apply a left-click at `(x, y)`. Right-pane tab strip wins over
+/// the right-pane body which wins over the Models list; hits outside
+/// every tracked rect are dropped silently.
+fn handle_mouse_click(app: &mut App, x: u16, y: u16) {
+  let hits = app.hit_rects.borrow().clone();
+  for (tab, rect) in &hits.right_tabs {
+    if point_in_rect(x, y, *rect) {
+      app.right_tab = *tab;
+      app.focus = Focus::RightPane;
+      return;
+    }
+  }
+  if point_in_rect(x, y, hits.right_pane) {
+    app.focus = Focus::RightPane;
+    return;
+  }
+  if point_in_rect(x, y, hits.list_pane) {
+    app.focus = Focus::List;
+  }
+}
+
+/// `true` when `(x, y)` falls inside `rect`. An empty rect (width or
+/// height == 0) never matches — the renderer uses that to signal
+/// "this surface isn't on screen this frame" (e.g. the right pane
+/// when it's hidden).
+fn point_in_rect(x: u16, y: u16, rect: ratatui::layout::Rect) -> bool {
+  if rect.width == 0 || rect.height == 0 {
+    return false;
+  }
+  x >= rect.x
+    && x < rect.x.saturating_add(rect.width)
+    && y >= rect.y
+    && y < rect.y.saturating_add(rect.height)
 }
 
 /// Top-level key dispatcher.
@@ -1944,6 +2018,28 @@ fn spawn_input_thread(tx: mpsc::Sender<Event>) {
       match event::poll(timeout) {
         Ok(true) => match event::read() {
           Ok(evt) => {
+            // Filter motion / drag / button-up at the source.
+            // `crossterm::EnableMouseCapture` turns on mode 1003
+            // (any-event tracking), so every mouse waggle fires a
+            // `Moved` event — thousands per second under a moving
+            // cursor. Forwarding them all would flood the 256-slot
+            // event channel and force a redraw per tick, livelocking
+            // the run loop into what feels like a hang. The TUI only
+            // ever acts on `Down(Left)` and the two wheel kinds, so
+            // dropping the rest at the source is free of behaviour
+            // change and keeps the downstream dispatch trivial.
+            if let TermEvent::Mouse(ref m) = evt {
+              use crossterm::event::{MouseButton, MouseEventKind};
+              let actionable = matches!(
+                m.kind,
+                MouseEventKind::Down(MouseButton::Left)
+                  | MouseEventKind::ScrollUp
+                  | MouseEventKind::ScrollDown
+              );
+              if !actionable {
+                continue;
+              }
+            }
             if tx.blocking_send(Event::Input(evt)).is_err() {
               return;
             }
@@ -1983,7 +2079,8 @@ pub async fn run(
   daemon_opts: Option<crate::daemon::DaemonOptions>,
 ) -> Result<()> {
   use crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
   };
   use crossterm::execute;
   use crossterm::terminal::{
@@ -1994,13 +2091,25 @@ pub async fn run(
 
   enable_raw_mode()?;
   let mut stdout = std::io::stdout();
-  // Mouse capture is deliberately NOT enabled: when the application
-  // captures mouse events, the terminal can't run its own
-  // click-and-drag text selection. j/k/PgUp/PgDn/g/G cover all the
-  // navigation a user would otherwise reach for the wheel; keeping
-  // mouse capture off lets users copy text out of the dashboard the
-  // way they would from any other terminal program.
+  // Mouse capture is off by default: when the application captures
+  // mouse events, the terminal can't run its own click-and-drag
+  // text selection. j/k/PgUp/PgDn/g/G cover all the navigation a
+  // user would otherwise reach for the wheel, so the default keeps
+  // the dashboard copy-friendly.
+  //
+  // `mouse_focus: true` in `config.yaml` (or `--mouse-focus`) opts
+  // into mouse capture: left-click on the Models list / right pane
+  // / tab label moves focus / switches tab, and wheel up/down
+  // replays the `↑`/`↓` action in the current focus. Mouse drag /
+  // motion / button-up are filtered out at the input-thread layer
+  // so a bypass-modifier text selection (Shift on iTerm2 /
+  // Alacritty / foot / wezterm, Option on Apple Terminal) still
+  // works even with capture enabled.
+  let mouse_capture = app.options.mouse_focus;
   execute!(stdout, EnterAlternateScreen)?;
+  if mouse_capture {
+    execute!(stdout, EnableMouseCapture)?;
+  }
   // Opt into the kitty keyboard protocol so Shift+Enter (and any
   // other Shift/Ctrl + Enter variants) arrive as distinct events on
   // supporting terminals (kitty / foot / wezterm / alacritty). On
@@ -2053,6 +2162,9 @@ pub async fn run(
   // doesn't accidentally inherit the disambiguation state.
   if pushed_kitty {
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+  }
+  if mouse_capture {
+    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
   }
   disable_raw_mode()?;
   execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -2245,6 +2357,7 @@ pub async fn launch(
   custom_palette: Option<crate::theme::Palette>,
   keymap: crate::tui::keybindings::KeyMap,
   offline: bool,
+  mouse_focus: bool,
   socket: &Path,
   daemon_opts: Option<crate::daemon::DaemonOptions>,
 ) -> Result<()> {
@@ -2253,6 +2366,7 @@ pub async fn launch(
     custom_palette,
     keymap,
     offline,
+    mouse_focus,
   });
   run(app, socket.to_path_buf(), daemon_opts).await
 }
@@ -3628,15 +3742,16 @@ mod tests {
   }
 
   #[test]
-  fn mouse_events_are_ignored_so_terminal_owns_text_selection() {
+  fn drag_up_and_moved_remain_no_ops_even_with_capture_on() {
     use crate::discovery::{DiscoveredModel, ModelSource};
-    use crossterm::event::{MouseEvent, MouseEventKind};
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use std::path::PathBuf;
-    // Mouse capture is intentionally disabled in `run()` so the
-    // terminal can handle click-and-drag selection. Any mouse event
-    // that does sneak through (e.g. when running under a test
-    // harness with a wrapping terminal) must be a no-op.
+    // Wheel events scroll (covered by the wheel tests below). Drag,
+    // Up, and Moved must stay no-ops so a user holding the
+    // terminal's bypass modifier to copy text doesn't accidentally
+    // scrub the list as they drag a selection box.
     let mut app = App::new(Default::default());
+    app.options.mouse_focus = true;
     app.models = vec![DiscoveredModel {
       path: PathBuf::from("/m/a.gguf"),
       parent: PathBuf::from("/m"),
@@ -3647,14 +3762,241 @@ mod tests {
       display_label: None,
     }];
     app.list_cursor = 2;
-    let evt = TermEvent::Mouse(MouseEvent {
-      kind: MouseEventKind::ScrollDown,
-      column: 0,
-      row: 0,
-      modifiers: KeyModifiers::NONE,
-    });
-    pump_input(&mut app, evt);
-    assert_eq!(app.list_cursor, 2, "mouse events must not move cursor");
+    let original_focus = app.focus;
+    for kind in [
+      MouseEventKind::Drag(MouseButton::Left),
+      MouseEventKind::Up(MouseButton::Left),
+      MouseEventKind::Moved,
+    ] {
+      pump_input(
+        &mut app,
+        TermEvent::Mouse(MouseEvent {
+          kind,
+          column: 0,
+          row: 0,
+          modifiers: KeyModifiers::NONE,
+        }),
+      );
+    }
+    assert_eq!(app.list_cursor, 2, "drag/up/moved must not move cursor");
+    assert_eq!(
+      app.focus, original_focus,
+      "drag/up/moved must not change focus"
+    );
+  }
+
+  #[test]
+  fn left_click_inside_list_rect_focuses_models_list() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    let mut app = App::new(Default::default());
+    app.options.mouse_focus = true;
+    app.focus = Focus::RightPane;
+    {
+      let mut hits = app.hit_rects.borrow_mut();
+      hits.list_pane = Rect::new(0, 5, 40, 20);
+      hits.right_pane = Rect::new(40, 5, 40, 20);
+    }
+    pump_input(
+      &mut app,
+      TermEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 10,
+        row: 10,
+        modifiers: KeyModifiers::NONE,
+      }),
+    );
+    assert_eq!(app.focus, Focus::List);
+  }
+
+  #[test]
+  fn left_click_inside_right_pane_focuses_right_pane() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    let mut app = App::new(Default::default());
+    app.options.mouse_focus = true;
+    app.focus = Focus::List;
+    {
+      let mut hits = app.hit_rects.borrow_mut();
+      hits.list_pane = Rect::new(0, 5, 40, 20);
+      hits.right_pane = Rect::new(40, 5, 40, 20);
+    }
+    pump_input(
+      &mut app,
+      TermEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 50,
+        row: 10,
+        modifiers: KeyModifiers::NONE,
+      }),
+    );
+    assert_eq!(app.focus, Focus::RightPane);
+  }
+
+  #[test]
+  fn left_click_on_tab_label_switches_right_tab() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    let mut app = App::new(Default::default());
+    app.options.mouse_focus = true;
+    app.right_tab = RightTab::Settings;
+    {
+      let mut hits = app.hit_rects.borrow_mut();
+      hits.list_pane = Rect::new(0, 5, 40, 20);
+      hits.right_pane = Rect::new(40, 5, 40, 20);
+      hits.right_tabs = vec![
+        (RightTab::Settings, Rect::new(42, 5, 8, 1)),
+        (RightTab::Logs, Rect::new(53, 5, 4, 1)),
+      ];
+    }
+    pump_input(
+      &mut app,
+      TermEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 54,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+      }),
+    );
+    assert_eq!(app.right_tab, RightTab::Logs);
+    assert_eq!(app.focus, Focus::RightPane);
+  }
+
+  #[test]
+  fn left_click_while_confirm_dialog_open_is_ignored() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    let mut app = App::new(Default::default());
+    app.options.mouse_focus = true;
+    app.focus = Focus::RightPane;
+    app.confirm_dialog = Some(ConfirmAction::KillDaemon);
+    {
+      let mut hits = app.hit_rects.borrow_mut();
+      hits.list_pane = Rect::new(0, 5, 40, 20);
+    }
+    pump_input(
+      &mut app,
+      TermEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 10,
+        row: 10,
+        modifiers: KeyModifiers::NONE,
+      }),
+    );
+    assert_eq!(
+      app.focus,
+      Focus::RightPane,
+      "click must not steal focus while a confirm dialog owns input"
+    );
+    assert!(
+      app.confirm_dialog.is_some(),
+      "click must not dismiss the dialog"
+    );
+  }
+
+  #[test]
+  fn mouse_events_still_dispatch_when_inline_launch_picker_is_open() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    // Regression test: the inline Settings launch picker is NOT a
+    // modal. A wheel-driven field cycle materialises the picker on
+    // the first tick; if we gated mouse input on
+    // `launch_picker.is_some()` the second tick (and every one
+    // after) would be silently dropped, leaving the TUI looking
+    // hung even though keyboard input kept working.
+    let mut app = App::new(Default::default());
+    app.options.mouse_focus = true;
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    app.launch_picker = Some(crate::tui::launch_picker::LaunchPickerState::for_model("m"));
+    {
+      let mut hits = app.hit_rects.borrow_mut();
+      hits.list_pane = Rect::new(0, 5, 40, 20);
+      hits.right_pane = Rect::new(40, 5, 40, 20);
+    }
+    pump_input(
+      &mut app,
+      TermEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 10,
+        row: 10,
+        modifiers: KeyModifiers::NONE,
+      }),
+    );
+    assert_eq!(
+      app.focus,
+      Focus::List,
+      "mouse click must still dispatch when the inline picker is open — \
+       it's not a modal"
+    );
+  }
+
+  #[test]
+  fn wheel_in_list_focus_moves_cursor_like_arrow_keys() {
+    use crate::discovery::{DiscoveredModel, ModelSource};
+    use crossterm::event::{MouseEvent, MouseEventKind};
+    use std::path::PathBuf;
+    let mut app = App::new(Default::default());
+    app.options.mouse_focus = true;
+    app.models = (0..5)
+      .map(|i| DiscoveredModel {
+        path: PathBuf::from(format!("/m/{i}.gguf")),
+        parent: PathBuf::from("/m"),
+        source: ModelSource::UserPath,
+        metadata: None,
+        parse_error: None,
+        split_siblings: Vec::new(),
+        display_label: None,
+      })
+      .collect();
+    app.focus = Focus::List;
+    app.list_cursor = 2;
+    pump_input(
+      &mut app,
+      TermEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+      }),
+    );
+    assert!(
+      app.list_cursor > 2,
+      "wheel down in List focus should advance cursor (was 2 → {})",
+      app.list_cursor
+    );
+  }
+
+  #[test]
+  fn wheel_in_logs_focus_scrolls_logs_buffer() {
+    use crossterm::event::{MouseEvent, MouseEventKind};
+    let mut app = App::new(Default::default());
+    app.options.mouse_focus = true;
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Logs;
+    app.logs_state.set_tail(
+      "L1".to_string(),
+      (0..500).map(|i| format!("line {i}")).collect(),
+    );
+    assert_eq!(app.logs_state.scroll_offset, 0);
+    pump_input(
+      &mut app,
+      TermEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+      }),
+    );
+    assert!(
+      app.logs_state.scroll_offset > 0,
+      "wheel up in Logs focus should advance the scroll offset (got {})",
+      app.logs_state.scroll_offset
+    );
+    assert!(
+      !app.logs_state.auto_scroll,
+      "wheel-up must disable auto-scroll, matching the keyboard contract"
+    );
   }
 
   #[test]

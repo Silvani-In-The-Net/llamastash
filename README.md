@@ -50,6 +50,24 @@ curl -s http://127.0.0.1:41100/v1/chat/completions \
 llamastash stop qwen-coder
 ```
 
+**Tip — mouse focus.** Mouse capture is off by default so the terminal keeps native click-and-drag text selection. To opt in on every TUI run, alias the binary in your shell rc:
+
+```bash
+# bash / zsh
+alias llamastash='llamastash --mouse-focus'
+
+# fish
+alias llamastash 'llamastash --mouse-focus'
+```
+
+Or set it permanently in `config.yaml`:
+
+```yaml
+mouse_focus: true
+```
+
+Either source flips on click-to-focus for the Models list, the right pane, and the tab labels (`Settings`/`Logs`/`Chat`/`Embed`/`Rerank`). Most terminals still expose a bypass modifier (Shift on iTerm2 / Alacritty / foot / wezterm, Option on Apple Terminal) so ad-hoc selection stays reachable.
+
 Full subcommand reference: [`docs/usage.md`](docs/usage.md). Architecture and IPC contract: [`docs/architecture.md`](docs/architecture.md). When things go wrong: [`docs/troubleshooting.md`](docs/troubleshooting.md).
 
 ## Features

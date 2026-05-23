@@ -5,11 +5,12 @@
 //! the TestBackend smoke test and the inline unit tests assert
 //! behaviour without spinning up tokio.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use ratatui::layout::Rect;
 use serde_json::Value;
 
 use crate::daemon::host_metrics::HostMetricsSnapshot;
@@ -106,6 +107,31 @@ pub struct DaemonInfo {
   pub socket_path: Option<String>,
 }
 
+/// Per-frame cache of the screen rectangles that mouse-focus needs
+/// to hit-test against. Populated by [`crate::tui::render`] each
+/// frame; consumed by the click handler in [`crate::tui::events`].
+///
+/// Lives in a `RefCell` because the render path takes `&App` (the
+/// renderer is read-mostly and we keep the borrow non-mutable so the
+/// per-frame memo helpers stay simple). The struct is dirt-cheap to
+/// rewrite each frame — five `Rect`s + a small `Vec` — so there's no
+/// staleness concern: the event loop only ever reads what the most
+/// recent draw produced.
+#[derive(Debug, Clone, Default)]
+pub struct MouseHitRects {
+  /// Models list pane (left half of the body, full-body when the
+  /// right pane is hidden). Empty `Rect` until the first draw.
+  pub list_pane: Rect,
+  /// Right pane outer area (border included). Empty when the right
+  /// pane is hidden for this frame.
+  pub right_pane: Rect,
+  /// Per-tab clickable spans inside the right pane's title strip.
+  /// Each entry is the exact cell range for one label so the hit
+  /// test is `mouse.x ∈ rect && mouse.y == rect.y`. Empty when the
+  /// right pane is hidden.
+  pub right_tabs: Vec<(RightTab, Rect)>,
+}
+
 /// Immutable parts of the App that don't change after construction.
 #[derive(Debug, Clone)]
 pub struct AppOptions {
@@ -127,6 +153,13 @@ pub struct AppOptions {
   /// download dispatch so a pull confirmation can't trigger network
   /// I/O behind the user's back.
   pub offline: bool,
+  /// Opt into terminal mouse capture (`mouse_focus: true` in
+  /// `config.yaml`). When enabled, [`super::events::run`] turns on
+  /// SGR mouse reporting so a left-click on the Models list or a
+  /// right-pane tab label moves focus / switches tab. The default is
+  /// off so the terminal keeps native click-and-drag text selection
+  /// — see the long comment in [`super::events::run`] for the trade.
+  pub mouse_focus: bool,
 }
 
 impl Default for AppOptions {
@@ -136,6 +169,7 @@ impl Default for AppOptions {
       custom_palette: None,
       keymap: KeyMap::default(),
       offline: false,
+      mouse_focus: false,
     }
   }
 }
@@ -248,6 +282,13 @@ pub struct App {
   /// `Vec<RightTab>` each time (audit §F4.1 #2). Same lifetime
   /// rules as `rows_cache`.
   pub(crate) right_tabs_cache: Option<Vec<RightTab>>,
+  /// Hit-test rectangles refreshed every frame by the renderer.
+  /// Read by the mouse-click dispatch in [`crate::tui::events`] so a
+  /// `MouseEventKind::Down(Left)` can resolve `(column, row)` to a
+  /// focus / right-tab without the event handler re-computing the
+  /// layout. Only meaningful when `options.mouse_focus` is true; left
+  /// at its default empty state otherwise.
+  pub(crate) hit_rects: RefCell<MouseHitRects>,
   /// Sender into the unified TUI event channel. `Some(_)` during a
   /// real `run()` session; `None` in unit tests that drive `pump_input`
   /// directly without spinning a runtime. Subsystems (chat stream,
@@ -338,6 +379,7 @@ impl App {
       download_strip: crate::tui::download_strip::DownloadStripState::default(),
       rows_cache: None,
       right_tabs_cache: None,
+      hit_rects: RefCell::new(MouseHitRects::default()),
       events_tx: None,
     }
   }
