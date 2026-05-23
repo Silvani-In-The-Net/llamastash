@@ -1804,7 +1804,12 @@ mod tests {
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
     assert_eq!(
       ids,
-      vec![ColumnId::Arch, ColumnId::Quant, ColumnId::Ctx, ColumnId::Size]
+      vec![
+        ColumnId::Arch,
+        ColumnId::Quant,
+        ColumnId::Ctx,
+        ColumnId::Size
+      ]
     );
   }
 

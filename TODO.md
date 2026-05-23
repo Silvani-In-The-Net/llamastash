@@ -70,6 +70,8 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 ### Follow-up
 
+- [ ] Daemon does not restart on ctrl+r
+- [ ] Remap ctrl+r: think to something else
 - [ ] `show` command shows model info. gguf parses values, full path, size, etc, arch defauklts, last run vals, and any other useful stuff
 - [ ] `start` should support advanced params like TUI.
 - [ ] flag to disable proxy fallback (or flip to off by default?)

@@ -215,7 +215,11 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
       );
     }
     (_, RightTab::Chat | RightTab::Embed | RightTab::Rerank) => {
-      push(&mut chips, 10, app.hint(Focus::RightPane, Action::EnterEdit));
+      push(
+        &mut chips,
+        10,
+        app.hint(Focus::RightPane, Action::EnterEdit),
+      );
     }
     (_, RightTab::Settings) => {
       let running_readonly = app.launch_picker.is_none() && app.focused_managed().is_some();
@@ -690,10 +694,7 @@ mod tests {
   /// `Vec<String>` literals after the function moved to
   /// `Vec<RankedChip>`. Returns the chip texts in source order.
   fn chip_texts(app: &App) -> Vec<String> {
-    bottom_hint_chips(app)
-      .into_iter()
-      .map(|c| c.text)
-      .collect()
+    bottom_hint_chips(app).into_iter().map(|c| c.text).collect()
   }
 
   #[test]
