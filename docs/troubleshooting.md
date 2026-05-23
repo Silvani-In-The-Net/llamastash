@@ -96,7 +96,7 @@ The toast prints the URL inline when every backend fails, so you can still paste
 
 ## Proxy port already in use (`:11434`)
 
-**Symptom:** `llamastash status --json | jq .proxy` shows `"status": "port_in_use"` and `bind_error` carries the OS error. Agents pointed at `http://127.0.0.1:11434/v1` get connection-refused or hit Ollama instead of llamastash.
+**Symptom:** `llamastash status --json | jq .proxy` shows `"status": "port_in_use"` (and `bind_error` is `null`). Agents pointed at `http://127.0.0.1:11434/v1` get connection-refused or hit Ollama instead of llamastash.
 
 **This is the design.** The proxy refuses to auto-roam to a free port — the `:11434` default exists so OpenAI-client wrappers that hard-code Ollama's well-known port discover llamastash without reconfiguration; silently moving would break that contract. The most common cause is Ollama running on the same box.
 
