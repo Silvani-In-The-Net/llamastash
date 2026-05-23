@@ -312,10 +312,9 @@ async fn handle(
   Ok(())
 }
 
-/// Cheap regex-free `body.model` extractor — `serde_json::from_str`
-/// would do the job but the fixture deliberately avoids depending
-/// on serde for the request side so it stays a single-file fake.
-/// Returns `None` if the body isn't JSON or no `model` field is
+/// Cheap `body.model` extractor.
+///
+/// Returns `None` if the body isn't valid JSON or no `model` field is
 /// present.
 fn extract_body_model(body: &str) -> Option<String> {
   let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
