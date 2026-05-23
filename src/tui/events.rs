@@ -804,7 +804,12 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
     Action::PrevFocus => cycle_focus(app, FocusDir::Prev),
     Action::SendChat => apply_send_chat(app),
     Action::ToggleThinkCollapse => {
-      app.chat.collapse_thinks = !app.chat.collapse_thinks;
+      // `r` is bound across the right pane but only meaningful on the
+      // Chat tab; ignore on Logs/Settings/Embed/Rerank so a stray
+      // press doesn't silently flip hidden state.
+      if app.right_tab == RightTab::Chat {
+        app.chat.collapse_thinks = !app.chat.collapse_thinks;
+      }
     }
     Action::ToggleAutoScroll => {
       // `s` toggles the Logs auto-scroll. Stop lives on `Ctrl+S`
@@ -1926,10 +1931,19 @@ pub fn spawn_writer(
 }
 
 /// Two-phase daemon restart: ask the running daemon to shut down,
-/// wait for the socket file to disappear, then `start_detached` a
-/// fresh daemon with the same options the parent dispatcher
-/// resolved. Best-effort throughout — every failure logs and the
-/// TUI keeps running so the user can retry from the keymap.
+/// wait until it has fully released its lockfile, then
+/// `start_detached` a fresh daemon with the same options the parent
+/// dispatcher resolved. Best-effort throughout — every failure logs
+/// and the TUI keeps running so the user can retry from the keymap.
+///
+/// Why poll the lockfile and not just the socket: the daemon's
+/// cleanup sequence is (1) accept-loop exit, (2) up to 2s connection
+/// drain, (3) `stop_all_managed`, (4) remove socket file,
+/// (5) drop lockfile. Waiting only for the socket to become
+/// unconnectable can return before step 5, so the replacement child's
+/// `acquire` contends on the still-held `flock`, exits with
+/// `AlreadyRunning`, and `start_detached` reports a failure. The user
+/// then sees "daemon connecting…" indefinitely until they retry.
 async fn handle_restart_daemon(
   socket: &std::path::Path,
   daemon_opts: Option<crate::daemon::DaemonOptions>,
@@ -1942,13 +1956,6 @@ async fn handle_restart_daemon(
     }
     Err(e) => log::warn!("restart: connect-for-shutdown failed: {e}"),
   }
-  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-  while std::time::Instant::now() < deadline {
-    if Client::connect(socket).await.is_err() {
-      break;
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-  }
   let opts = match daemon_opts {
     Some(o) => o,
     None => match crate::daemon::DaemonOptions::from_defaults() {
@@ -1959,6 +1966,17 @@ async fn handle_restart_daemon(
       }
     },
   };
+  // Wait for the old daemon to fully release its lockfile. 8s covers
+  // the worst case (2s connection drain + 5s `stop_all_managed`
+  // grace + cleanup margin); children that stop cleanly return well
+  // before the grace deadline.
+  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+  while std::time::Instant::now() < deadline {
+    if crate::daemon::existing_daemon_pid(&opts.state_dir).is_none() {
+      break;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+  }
   match crate::daemon::start_detached(opts) {
     Ok(crate::daemon::StartOutcome::AlreadyRunning(_)) => {
       log::warn!("restart: daemon is still running; restart did not spawn a new process");

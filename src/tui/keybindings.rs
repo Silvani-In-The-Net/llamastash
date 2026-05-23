@@ -710,10 +710,16 @@ fn build_default_bindings() -> Vec<Binding> {
     hint: "newline", description: Some("insert newline"),
     chords: [(KeyCode::Enter, KeyModifiers::SHIFT, SHIFT_ENTER_LABEL, CAT_GLOBAL)],
   });
+  // Plain `r` toggles `<think>` collapse on the Chat tab; the handler
+  // gates by `right_tab == RightTab::Chat` so the binding stays inert
+  // on Embed/Rerank/Logs/Settings. Scoped to `RIGHT_PANE` (browsing
+  // mode) so the chord doesn't collide with literal `r` typed into
+  // the chat prompt — the user escapes to the right pane (Esc) and
+  // toggles, then re-enters edit mode.
   v.extend_from_slice(&binds! {
-    action: Action::ToggleThinkCollapse, scopes: FocusSet::CHAT_INPUT,
+    action: Action::ToggleThinkCollapse, scopes: FocusSet::RIGHT_PANE,
     hint: "toggle reasoning", description: Some("toggle <think> blocks"),
-    chords: [(KeyCode::Char('r'), KeyModifiers::CONTROL, crate::ctrl_label!("r"), CAT_INPUT_TABS)],
+    chords: [(KeyCode::Char('r'), KeyModifiers::NONE, "r", CAT_INPUT_TABS)],
   });
   // ─── Esc — five disjoint actions across the focus families. ──
   // The help overlay surfaces a single merged row under Global via
@@ -1434,10 +1440,15 @@ mod tests {
   }
 
   #[test]
-  fn chat_input_ctrl_r_toggles_think_collapse() {
+  fn right_pane_r_toggles_think_collapse() {
     assert_eq!(
-      action_for(Focus::ChatInput, KeyCode::Char('r'), KeyModifiers::CONTROL,),
+      action_for(Focus::RightPane, KeyCode::Char('r'), KeyModifiers::NONE),
       Some(Action::ToggleThinkCollapse),
+    );
+    // No longer bound under ChatInput so it doesn't shadow typing.
+    assert_eq!(
+      action_for(Focus::ChatInput, KeyCode::Char('r'), KeyModifiers::CONTROL),
+      None,
     );
   }
 

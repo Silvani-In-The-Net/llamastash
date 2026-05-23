@@ -156,11 +156,6 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
         app.chat.prompt.is_empty(),
       );
       push(&mut chips, 30, app.hint(Focus::ChatInput, Action::SendChat));
-      push(
-        &mut chips,
-        40,
-        app.hint_with(Focus::ChatInput, Action::ToggleThinkCollapse, "think"),
-      );
     }
     (Focus::EmbedInput, _) => {
       push_input_field_chips(
@@ -220,6 +215,16 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
         10,
         app.hint(Focus::RightPane, Action::EnterEdit),
       );
+      // `r` toggles `<think>` collapse on the Chat tab only; surface
+      // it as a chip so the binding is discoverable from the browsing
+      // focus.
+      if app.right_tab == RightTab::Chat {
+        push(
+          &mut chips,
+          20,
+          app.hint_with(Focus::RightPane, Action::ToggleThinkCollapse, "think"),
+        );
+      }
     }
     (_, RightTab::Settings) => {
       let running_readonly = app.launch_picker.is_none() && app.focused_managed().is_some();
@@ -700,15 +705,16 @@ mod tests {
   #[test]
   fn bottom_hint_chips_match_each_focus_tab_combo() {
     use crate::tui::keybindings::{Focus, ENTER_LABEL};
-    let ctrl_r = crate::ctrl_label!("r");
     // Navigation focuses surface the entry-point keystroke per tab.
     assert_eq!(
       chip_texts(&app_with_focus(Focus::RightPane, RightTab::Logs)),
       vec!["s:auto-scroll".to_string(), "c:copy".to_string()]
     );
+    // Chat tab adds `r:think` alongside `e:edit` so the toggle is
+    // discoverable from the browsing focus.
     assert_eq!(
       chip_texts(&app_with_focus(Focus::RightPane, RightTab::Chat)),
-      vec!["e:edit".to_string()]
+      vec!["e:edit".to_string(), "r:think".to_string()]
     );
     assert_eq!(
       chip_texts(&app_with_focus(Focus::RightPane, RightTab::Embed)),
@@ -726,14 +732,9 @@ mod tests {
     // fresh app the field is *not* editing yet, so the chip strip
     // shows `e:edit` (no `Esc:clear` because the buffer is empty).
     let enter_send = format!("{ENTER_LABEL}:send");
-    let ctrl_r_think = format!("{ctrl_r}:think");
     assert_eq!(
       chip_texts(&app_with_focus(Focus::ChatInput, RightTab::Chat)),
-      vec![
-        "e:edit".to_string(),
-        enter_send.clone(),
-        ctrl_r_think.clone()
-      ]
+      vec!["e:edit".to_string(), enter_send.clone()]
     );
     // Same field after the user enters edit mode — chip switches to
     // `Esc:stop edit` so the user sees how to exit. (Sibling chips
@@ -742,11 +743,7 @@ mod tests {
     chat_app.chat.prompt.enter_edit();
     assert_eq!(
       chip_texts(&chat_app),
-      vec![
-        "Esc:stop edit".to_string(),
-        enter_send.clone(),
-        ctrl_r_think.clone(),
-      ]
+      vec!["Esc:stop edit".to_string(), enter_send.clone()]
     );
     // After exiting edit but with a non-empty buffer (a `Esc` press
     // landed the field in its resting + non-empty state), the chip
@@ -756,12 +753,7 @@ mod tests {
     chat_app.chat.prompt.exit_edit();
     assert_eq!(
       chip_texts(&chat_app),
-      vec![
-        "e:edit".to_string(),
-        "Esc:clear".to_string(),
-        enter_send,
-        ctrl_r_think,
-      ]
+      vec!["e:edit".to_string(), "Esc:clear".to_string(), enter_send,]
     );
     // Embed mirrors the same shape (one fewer trailing chip).
     assert_eq!(
@@ -1000,7 +992,7 @@ mod tests {
     app.right_tab = RightTab::Chat;
     assert_eq!(
       chip_texts(&app),
-      vec!["F4:edit".to_string()],
+      vec!["F4:edit".to_string(), "r:think".to_string()],
       "remapped enter_edit must flow into the chip"
     );
     // Sanity: looking up the action directly through the App also

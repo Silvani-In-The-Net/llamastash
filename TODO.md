@@ -22,9 +22,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 ### Blockers
 
-- [ ] **Ready to merge**: Proxy router that maps a single endpoint to running models by model name. If the model isn't running, start it; if launch fails, fall back to a running model when one is available; otherwise error. Keep it OpenCode / π compatible so agents and tools can hit one URL.
 - [x] ~~**Daemon idle CPU regression** (idle 60% CPU with no `llama-server` children).~~ — host-metrics sampler stopped running the full GPU vendor chain (`nvidia-smi`/`rocm-smi`/`system_profiler`/`vulkaninfo`) every 1 Hz tick. New `gpu::refresh_active` dispatches to just the active vendor's tool; the full chain runs once at task start and every 60 ticks for hotplug. CPU-only / Vulkan / Metal hosts skip per-tick subprocess spawns entirely. Sampler also hoists `Components` out of the loop (was allocating + double-refreshing every tick) and `ollama::enumerate` now consults the shared `MetadataCache` so the 5-min periodic rescan stops re-parsing every blob.
-- [ ] **Daemon idle RSS** (1.5 GB RSS on a long-running supervisor with no children, observed 2026-05-22). Audit ruled out the original suspects (metadata cache is bounded LRU 2048, per-launch log buffers exist only while a child is alive, external-process discovery is one-shot at startup). The CPU fix above may incidentally cure this if subprocess-allocation churn was the driver; if it doesn't, run `heaptrack` / `samply` on a freshly-started daemon attached to a populated HF + Ollama cache and watch RSS over the first hour.
 - [x] ~~**TUI burns ~50% CPU when idle**.~~ — Ported the run loop to a kdash-style single-mpsc / blocking-`recv` architecture. The 8 separate `drain_*` / `try_recv` calls in `events.rs` (refresher, logs, writer feedback, chat stream, embed, rerank, HF dialog, download strip) collapse into `Event` variants on one channel; the main thread blocks on `recv` so an idle TUI consumes ~0% CPU. Background crossterm-poll thread emits `Event::Input` / `Event::Tick` at a 250ms cadence (kdash default). Renders are gated on a per-event dirty flag.
 - [x] ~~Init does not hand off to TUI after all steps.~~ — `init` now prompts to launch the TUI on success (auto-launch with `--recommended`, skip with `--no-tui`).
 - [x] ~~Add copy feature for logs pane. When in log pane, c should copy the full log text to clipboard and show a visual confirmation.~~ — `c` on the Logs tab now copies the full buffer and toasts `copied logs (N lines) via {backend}`.
@@ -55,14 +53,44 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
   - [x] **IP**: Vim-style keybindings (h/j/k/l to navigate list, enter to launch, etc).
   - [x] ~~Mouse capture for pane focus~~ — opt-in via `mouse_focus: true` in `config.yaml` or `--mouse-focus`. Left-click on the Models list, the right pane, or a tab label (`Settings`/`Logs`/`Chat`/`Embed`/`Rerank`) moves focus / switches tab; wheel up/down replays the `↑`/`↓` action in the current focus. Drag / Up / motion are filtered at the input thread (prevents the redraw-flood livelock that masquerades as a hang). Off by default so the terminal keeps native click-and-drag selection. Launch-picker form selection still pending.
 - [x] ~~**Ready to merge**: Proxy router that maps a single endpoint to running models by model name. If the model isn't running, start it; if launch fails, fall back to a running model when one is available; otherwise error. Keep it OpenCode / π compatible so agents and tools can hit one URL.~~ — shipped per the plan; OpenAI-compat proxy listens on `127.0.0.1:11434` by default. Brainstorm at [`docs/brainstorms/2026-05-21-proxy-router-requirements.md`](docs/brainstorms/2026-05-21-proxy-router-requirements.md); plan at [`docs/plans/2026-05-21-001-feat-proxy-router-plan.md`](docs/plans/2026-05-21-001-feat-proxy-router-plan.md); user docs at [`docs/usage.md §Proxy (OpenAI-compatible listener)`](docs/usage.md#proxy-openai-compatible-listener); maintainer smoke runbook at [`tests/proxy_real_client_smoke.md`](tests/proxy_real_client_smoke.md).
-- [x] ~~**TUI burns ~50% CPU when idle**.~~ — Ported the run loop to a kdash-style single-mpsc / blocking-`recv` architecture. The 8 separate `drain_*` / `try_recv` calls in `events.rs` (refresher, logs, writer feedback, chat stream, embed, rerank, HF dialog, download strip) collapse into `Event` variants on one channel; the main thread blocks on `recv` so an idle TUI consumes ~0% CPU. Background crossterm-poll thread emits `Event::Input` / `Event::Tick` at a 250ms cadence (kdash default). Renders are gated on a per-event dirty flag.
-- [ ] **Daemon idle RSS / CPU regression**. Long-running daemon observed at 1.5 GB RSS and ~60% CPU with no `llama-server` children (PID 309346 after 4h uptime, 2026-05-22). Profile before R1 — supervisor with no inference children should be near-idle. Suspects: scanner's per-file metadata cache growing unbounded over periodic rescans; per-launch log ring-buffer not being trimmed; or the external-process discovery loop polling too aggressively. Start with `heaptrack` / `samply` on a freshly-started daemon attached to a populated HF + Ollama cache and watch RSS over the first hour.
+
+### Good to have
+
+- [x] ~~Daemon does not restart on ctrl+r~~ — `handle_restart_daemon` was waiting for the old daemon's socket to become unconnectable, but the daemon releases its lockfile _after_ the listener drops (accept-loop exit → drain → `stop_all_managed` → remove socket → drop lockfile). The replacement child's `acquire` raced into that window, hit a contended `flock`, exited with `AlreadyRunning`, and `start_detached` reported a failure with no new daemon coming up — the TUI then stuck on "daemon connecting…" until the user retried. Fix: poll `existing_daemon_pid` (now `pub(crate)`) for `None` instead of socket connectivity, and bump the deadline from 3s → 8s to cover the worst-case `stop_all_managed` grace.
+- [ ] Remap ctrl+r: think to something else
+- [ ] Proxy port should use next available in 1143x range, not hardcoded to 11434. It should start with 11434 and keep trying next if unavailable, up to 11439.
+- [ ] DRY/YAGNI audit. Move to libs etc.
 
 ### Release checklist
 
 - [ ] **In progress**: Benchmark against ollama, LMStudio and other popular options.
+  - [ ] AMD APU : Linux
+    - [ ] Qwen3.6-27B-Q8_0
+    - [ ] gemma-4-31B-it-Q4_K_M
+    - [ ] gemma-4-E2B-it-Q4_K_M
+    - [ ] Qwen3.6-35B-A3B-Q8_0
+  - [ ] AMD GPU : Linux
+    - [ ] Qwen3.6-27B-Q8_0
+    - [ ] gemma-4-31B-it-Q4_K_M
+    - [ ] gemma-4-E2B-it-Q4_K_M
+    - [ ] Qwen3.6-35B-A3B-Q8_0
+  - [ ] Nvidia : Linux
+    - [ ] Qwen3.6-27B-Q8_0
+    - [ ] gemma-4-31B-it-Q4_K_M
+    - [ ] gemma-4-E2B-it-Q4_K_M
+    - [ ] Qwen3.6-35B-A3B-Q8_0
+  - [ ] Apple Silicon : macOS
+    - [ ] Qwen3.6-27B-Q8_0
+    - [ ] gemma-4-31B-it-Q4_K_M
+    - [ ] gemma-4-E2B-it-Q4_K_M
+    - [ ] Qwen3.6-35B-A3B-Q8_0
+- [ ] Manual UAT smoke run
+  - [ ] AMD APU : Linux
+  - [ ] AMD GPU : Linux
+  - [ ] Nvidia : Linux
+  - [ ] Apple Silicon : macOS
 - [ ] **In progress**: Update Readme, repo, org and website properly
-- [ ] DRY/YAGNI audit. Move to libs etc.
+- [ ] Test Proxy with OpenCode.
 - [ ] Audit (binary size, dependencies, test coverage, security, etc.).
 - [ ] Check and sync all docs, validate all repo docs
 - [ ] Release setup validation (website/CI/CD etc).
@@ -74,28 +102,32 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 ### Follow-up
 
-- [ ] Daemon does not restart on ctrl+r
-- [ ] Remap ctrl+r: think to something else
+- [ ] Add a line in help page about the `*` in the `RAM*` in Host panel.
+- [ ] check and make sure HTTP and CLI surfaces are consistent and reuses code and flow where it makes sense.
 - [ ] `show` command shows model info. gguf parses values, full path, size, etc, arch defauklts, last run vals, and any other useful stuff
 - [ ] `start` should support advanced params like TUI.
 - [ ] flag to disable proxy fallback (or flip to off by default?)
-- [ ] random HF download failure ◓ Downloading 1/1 `Qwen_Qwen3.6-27B-Q8_0.gguf` (~27767.6 MiB) ✗ init download: hf-hub: request error: error sending request for url (https://huggingface.co/bartowski/Qwen_Qwen3.6-27B-GGUF/resolve/main/Qwen_Qwen3.6-27B-Q8_0.gguf): request error: error sending request for url (https://huggingface.co/bartowski/Qwen_Qwen3.6-27B-GGUF/resolve/main/Qwen_Qwen3.6-27B-Q8_0.gguf): error sending request for url (https://huggingface.co/bartowski/Qwen_Qwen3.6-27B-GGUF/resolve/main/Qwen_Qwen3.6-27B-Q8_0.gguf): client error (SendRequest): connection error: Connection timed out (os error 110)
-
-### Good to have
 
 ## R2 (post-v0.0.1 roadmap)
 
 ### Blockers
 
-- [ ] Some HF downloaded models fail to start??
 - [ ] **Need brainstorm/plan**: Plan to prevent llama.cpp version drift/incompatibility issues. Should we bundle/fix version.
 - [ ] No glyphs fallback.
-- [ ] Loopback + LAN binding options for the proxy.
+- [ ] Consider Loopback + LAN binding options for the proxy.
 - [ ] **Deferred (post-c80d638)**: Port whichllm's family-selection / lineage-demotion / generation-bonus logic so `init --only models --json` output matches `whichllm --json --top 10` byte-for-byte. Today 7/10 picks and 3/10 quants match — see [Post-plan refinements §Remaining gap](docs/plans/2026-05-20-001-feat-live-hf-snapshot-discovery-plan.md#remaining-gap-deliberately-not-closed) in plan 2026-05-20-001.
-- [ ] gpu/cpu offload split?
+- [ ] Look into gpu/cpu offload split
+- [ ] **Need brainstorm/plan**: Windows support.
+- [ ] **Need brainstorm/plan**: Anthropic API compatibility.
+- [ ]
 
 ### Follow-up
 
+- [ ] **Need brainstorm/plan**: HTTP and MCP surfaces (origin: R34).
+- [ ] **Need brainstorm/plan**: MLX and vLLM if cheap to add.
+- [ ] **Need brainstorm/plan**: Docker-ready packaging.
+- [ ] random HF download failure ◓ Downloading 1/1 `Qwen_Qwen3.6-27B-Q8_0.gguf` (~27767.6 MiB) ✗ init download: hf-hub: request error: error sending request for url (https://huggingface.co/bartowski/Qwen_Qwen3.6-27B-GGUF/resolve/main/Qwen_Qwen3.6-27B-Q8_0.gguf): request error: error sending request for url (https://huggingface.co/bartowski/Qwen_Qwen3.6-27B-GGUF/resolve/main/Qwen_Qwen3.6-27B-Q8_0.gguf): error sending request for url (https://huggingface.co/bartowski/Qwen_Qwen3.6-27B-GGUF/resolve/main/Qwen_Qwen3.6-27B-Q8_0.gguf): client error (SendRequest): connection error: Connection timed out (os error 110)
+- [ ] **Daemon idle RSS** (1.5 GB RSS on a long-running supervisor with no children, observed 2026-05-22). Audit ruled out the original suspects (metadata cache is bounded LRU 2048, per-launch log buffers exist only while a child is alive, external-process discovery is one-shot at startup). The CPU fix above may incidentally cure this if subprocess-allocation churn was the driver; if it doesn't, run `heaptrack` / `samply` on a freshly-started daemon attached to a populated HF + Ollama cache and watch RSS over the first hour.
 - [ ] **Release pipeline ops** — secret/token plumbing around `release.yml` and the org bootstrap.
   - [ ] Write `docs/runbooks/secret-rotation.md` — operational steps for rotating `CRATES_IO_TOKEN` + `GH_BUMP_TOKEN`. Referenced from [`docs/runbooks/release-0.0.1-bootstrap.md`](docs/runbooks/release-0.0.1-bootstrap.md) §"Token rotation cadence".
 - [ ] **UAT follow-up** — items deferred from [`docs/plans/2026-05-19-002-feat-uat-e2e-hardware-strategy-plan.md`](docs/plans/2026-05-19-002-feat-uat-e2e-hardware-strategy-plan.md) that don't block R1 ship but are tracked against the UAT subsystem.
@@ -107,16 +139,12 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 - [ ] **Proxy perf (R-08)**: Replace the per-request `Vec<CatalogRow>` clone in `proxy::route::decide` with an `ArcSwap<Vec<CatalogRow>>` pre-built by the discovery task. Today every inbound `/v1/...` request walks the catalog snapshot and allocates a fresh `CatalogRow` per row before handing it to the resolver. Origin: PR #7 ce-review (R-08), deferred from this PR's scope. Needs catalog publish-side wiring (`ModelCatalog::publish_view()` → `ArcSwap` slot read by the proxy).
 - [ ] **Proxy stability (R-12)**: Move the GGUF header read inside `ipc::methods::resolve_model_id_and_arch` onto `spawn_blocking`. Today the call is invoked from async IPC handlers but does up to ~16 MiB of synchronous file I/O on the tokio worker, which can stall a worker thread under concurrent IPC load. The proxy-side call site was already fixed in this PR (`proxy::launch::canonical_id_for_row` via `spawn_blocking`); the IPC site is the remaining gap. Origin: PR #7 ce-review (R-12 partial).
 - [ ] **Ollama-compat digest from cached header BLAKE3**: Today `/api/tags` and `/api/ps` both emit `blake3:<hex>` derived from the canonical path string (`ollama_compat::digest_for_path`) — stable across the two endpoints but not the truthful GGUF header BLAKE3 that `ModelId.header_blake3` carries. Lifting the digest to the header hash requires caching `header_blake3` alongside `ModelMetadata` at discovery time (the parser already reads the header bytes; caching the BLAKE3 is incremental cost). Once cached, both endpoints look up the same field and clients that validate the digest against an external source (e.g. an Ollama manifest mirror) get a meaningful answer. Origin: PR #7 follow-up review.
-- [ ] **Need brainstorm/plan**: Ollama-compat Tier 2 — inference endpoints `POST /api/chat`, `POST /api/generate`, `POST /api/embed`. Tier 1 (discovery: `/api/tags`, `/api/version`, `/api/ps`, `/api/show`) ships in this PR and gets llamastash recognised by Ollama-shape discovery libraries; Tier 2 lets tools that *only* speak Ollama's native inference shape (no OpenAI-compat fallback) drive llamastash directly. Tradeoffs: needs request/response body translation (Ollama uses NDJSON streaming with different field names, vs the proxy's current byte-pure SSE forward), and roughly doubles the code surface of the proxy module. Comparison + design notes in [`docs/architecture.md §Proxy comparison`](docs/architecture.md#proxy-comparison--ollama-lm-studio-llamastash) and [`docs/usage.md §Ollama-compat surface`](docs/usage.md#ollama-compat-surface). Worth doing once we see a real userbase-blocking integration.
+- [ ] **Need brainstorm/plan**: Ollama-compat Tier 2 — inference endpoints `POST /api/chat`, `POST /api/generate`, `POST /api/embed`. Tier 1 (discovery: `/api/tags`, `/api/version`, `/api/ps`, `/api/show`) ships in this PR and gets llamastash recognised by Ollama-shape discovery libraries; Tier 2 lets tools that _only_ speak Ollama's native inference shape (no OpenAI-compat fallback) drive llamastash directly. Tradeoffs: needs request/response body translation (Ollama uses NDJSON streaming with different field names, vs the proxy's current byte-pure SSE forward), and roughly doubles the code surface of the proxy module. Comparison + design notes in [`docs/architecture.md §Proxy comparison`](docs/architecture.md#proxy-comparison--ollama-lm-studio-llamastash) and [`docs/usage.md §Ollama-compat surface`](docs/usage.md#ollama-compat-surface). Worth doing once we see a real userbase-blocking integration.
 - [ ] **Need brainstorm/plan**: Idle-TTL eviction for the proxy's auto-started supervisors. Both Ollama (5 min, refcount-gated) and LM Studio (60 min, request-resets) evict idle models so a long-running daemon doesn't pin memory forever. llamastash today keeps models resident until explicit `stop_model`; first-request memory growth is the visible gap. Comparison + rationale in [`docs/architecture.md §Proxy comparison`](docs/architecture.md#proxy-comparison--ollama-lm-studio-llamastash); origin: R34 (the broader HTTP/MCP slice of R34 stays at R2).
+- [ ] More colors in CLI outs, including the --help.
 
 ### Good to have
 
 - [ ] **Need brainstorm/plan**: Per-PID VRAM attribution via NVML's `nvmlDeviceGetComputeRunningProcesses` (Linux + Windows; AMD / Apple parity depends on upstream surface). Check ROCm and Metal for equivalents. Today the right-pane block title surfaces per-model RAM + CPU%; per-model VRAM is reported only at the host level.
 - [ ] Make custom UI components reusable and consistent.
 - [ ] **Deferred (verified 2026-05-21 against a real cache; not biting today)**: TUI list pane shows ambiguous file_stem labels for HF downloads. When a publisher uses a generic GGUF filename (`model.gguf`, `ggml-model-q4_k_m.gguf`), the list pane's `display_name(m) = file_stem(m.path)` renders two rows from different repos identically. The derived `<repo> (<quant>)` friendly-name slice (R118 / R119 / R120) was attempted and reverted in `2e11d65` because real catalogs use descriptive filenames. Revisit if a real catalog starts hitting the ambiguity — wire in a `list_models` lookup keyed by `header_blake3`. Origin: [`docs/plans/2026-05-20-002-feat-hf-pull-tui-dialog-plan.md`](docs/plans/2026-05-20-002-feat-hf-pull-tui-dialog-plan.md).
-- [ ] **Need brainstorm/plan**: Windows support.
-- [ ] **Need brainstorm/plan**: HTTP and MCP surfaces (origin: R34).
-- [ ] **Need brainstorm/plan**: Anthropic API compatibility.
-- [ ] **Need brainstorm/plan**: MLX and vLLM if cheap to add.
-- [ ] **Need brainstorm/plan**: Docker-ready packaging.

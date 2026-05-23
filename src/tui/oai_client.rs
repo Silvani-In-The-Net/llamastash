@@ -152,6 +152,15 @@ pub fn spawn_chat_stream(
     let mut stream = resp.bytes_stream();
     let mut buffer = String::new();
     let mut finish_reason: Option<String> = None;
+    // Tracks whether we have an open synthetic `<think>` block from
+    // a prior `reasoning_content` delta. Newer llama.cpp builds split
+    // chain-of-thought into its own delta field; we wrap those chunks
+    // in `<think>...</think>` so the chat tab's existing collapse
+    // toggle (`r:think`) works against them. The marker is only
+    // emitted at the *boundary* (first reasoning chunk → `<think>`,
+    // first content chunk after reasoning → `</think>`) so a stream
+    // that interleaves the two channels stays well-formed.
+    let mut in_reasoning = false;
     use futures::StreamExt;
     while let Some(next_chunk) = stream.next().await {
       let bytes = match next_chunk {
@@ -177,6 +186,12 @@ pub fn spawn_chat_stream(
             None => continue,
           };
           if payload == "[DONE]" {
+            // Close any open reasoning block before reporting the
+            // terminal frame. `return` makes the local flag dead, so
+            // we don't bother resetting it.
+            if in_reasoning {
+              let _ = send(ChatStreamMsg::Delta("</think>".into())).await;
+            }
             guard.mark_finished();
             let _ = send(ChatStreamMsg::Finished {
               finish_reason: finish_reason.clone(),
@@ -193,14 +208,40 @@ pub fn spawn_chat_stream(
             if let Some(reason) = choice.finish_reason {
               finish_reason = Some(reason);
             }
+            if let Some(reasoning) = choice.delta.reasoning_content {
+              if !reasoning.is_empty() {
+                let chunk = if in_reasoning {
+                  reasoning
+                } else {
+                  in_reasoning = true;
+                  format!("<think>{reasoning}")
+                };
+                let _ = send(ChatStreamMsg::Delta(chunk)).await;
+              }
+            }
             if let Some(content) = choice.delta.content {
               if !content.is_empty() {
-                let _ = send(ChatStreamMsg::Delta(content)).await;
+                // `mem::take` reads the current flag and resets it to
+                // `false` in one step — content closes the reasoning
+                // channel whether or not we just transitioned out of
+                // it. Splitting into `if in_reasoning { in_reasoning =
+                // false; ... }` trips `clippy::unused_assignments`
+                // because the next read lives in a different loop
+                // iteration.
+                let chunk = if std::mem::take(&mut in_reasoning) {
+                  format!("</think>{content}")
+                } else {
+                  content
+                };
+                let _ = send(ChatStreamMsg::Delta(chunk)).await;
               }
             }
           }
         }
       }
+    }
+    if in_reasoning {
+      let _ = send(ChatStreamMsg::Delta("</think>".into())).await;
     }
     guard.mark_finished();
     let _ = send(ChatStreamMsg::Finished { finish_reason }).await;
@@ -225,6 +266,15 @@ struct ChatChoice {
 struct ChatDelta {
   #[serde(default)]
   content: Option<String>,
+  /// Reasoning trace emitted by llama.cpp when `--reasoning-format`
+  /// is set to a value other than `none` (default for DeepSeek-R1 /
+  /// Qwen3 / GPT-OSS chat templates that surface a separate
+  /// `<think>` channel). The wrapper task synthesises `<think>` /
+  /// `</think>` markers around these chunks so the existing
+  /// [`crate::tui::oai_client::collapse_think_blocks`] toggle keeps
+  /// working without per-message metadata plumbing.
+  #[serde(default)]
+  reasoning_content: Option<String>,
 }
 
 /// One-shot embeddings call. Returns the first vector's dimension

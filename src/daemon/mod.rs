@@ -565,14 +565,16 @@ pub fn start_detached_with_exe(_opts: DaemonOptions, _exe: PathBuf) -> Result<St
 
 /// Returns the PID owning the daemon lockfile if (and only if) a live
 /// process currently holds its `flock`. Used by `start_detached` to
-/// short-circuit when an existing daemon already owns the socket.
+/// short-circuit when an existing daemon already owns the socket, and
+/// by the TUI's restart path to wait until an old daemon has fully
+/// released its lock before spawning a replacement.
 ///
 /// Probing via `flock` rather than `kill(pid, 0)` matches `acquire`'s
 /// ownership model: a recycled-PID collision can't masquerade as a live
 /// daemon because the kernel released the lock when the original daemon
 /// died, regardless of what the on-disk PID still says.
 #[cfg(unix)]
-fn existing_daemon_pid(state_dir: &Path) -> Option<i32> {
+pub(crate) fn existing_daemon_pid(state_dir: &Path) -> Option<i32> {
   use std::os::unix::io::AsRawFd;
   let pidfile = state_dir.join("daemon.pid");
   let file = std::fs::OpenOptions::new()

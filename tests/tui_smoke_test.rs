@@ -530,15 +530,25 @@ fn typing_into_chat_input_extends_prompt_buffer() {
 }
 
 #[test]
-fn ctrl_r_in_chat_input_toggles_think_collapse() {
+fn r_in_right_pane_toggles_think_collapse_on_chat_tab() {
   use llamastash::tui::keybindings::Focus;
+  use llamastash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
-  app.focus = Focus::ChatInput;
+  app.focus = Focus::RightPane;
+  app.right_tab = RightTab::Chat;
   assert!(!app.chat.collapse_thinks);
-  pump_input(&mut app, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+  pump_input(&mut app, key(KeyCode::Char('r'), KeyModifiers::NONE));
   assert!(app.chat.collapse_thinks);
-  pump_input(&mut app, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+  pump_input(&mut app, key(KeyCode::Char('r'), KeyModifiers::NONE));
   assert!(!app.chat.collapse_thinks);
+  // Plain `r` typed into the chat prompt is captured as text, not as
+  // the toggle — guards against the previous `Ctrl+R` binding being
+  // reintroduced under ChatInput scope.
+  app.focus = Focus::ChatInput;
+  app.chat.prompt.enter_edit();
+  pump_input(&mut app, key(KeyCode::Char('r'), KeyModifiers::NONE));
+  assert!(!app.chat.collapse_thinks);
+  assert!(app.chat.prompt.buffer().contains('r'));
 }
 
 #[test]
