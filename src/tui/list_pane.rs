@@ -404,8 +404,12 @@ fn mode_hint_label(hint: crate::gguf::metadata::ModeHint) -> String {
 // near-always-empty gutter.
 const HIGHLIGHT_SYMBOL: &str = "";
 const HIGHLIGHT_GUTTER: usize = 0;
-const STATUS_W: usize = 3; // " X " (glyph between two spaces)
-const FAV_W: usize = 3; // 2-cell `=>` / `★ ` / spaces, plus 1 trailing space
+/// Single combined marker column: hosts the selection cursor, the
+/// launch-state glyph, or the favorite star depending on priority
+/// (see [`marker_span`]). Shape is `" {char} "` — leading space for
+/// border breathing room, glyph, trailing separator. Replaces the
+/// pre-split `STATUS_W + FAV_W = 6` chrome with a flat 3 cells.
+const MARKER_W: usize = 3;
 const COL_ARCH_W: usize = 8;
 const COL_QUANT_W: usize = 7;
 const COL_CTX_W: usize = 7;
@@ -571,8 +575,7 @@ fn highlight_style(_palette: &Palette) -> Style {
 /// clipped at the right border, which is the same way a too-narrow
 /// pane has always behaved. Returning a usize keeps callers simple.
 fn column_name_budget(content_w: usize) -> usize {
-  let chrome = STATUS_W + FAV_W;
-  let reserved = chrome.saturating_add(RIGHT_COLS_W);
+  let reserved = MARKER_W.saturating_add(RIGHT_COLS_W);
   if content_w > reserved + MIN_NAME_W {
     content_w - reserved
   } else {
@@ -740,6 +743,47 @@ fn row_fg(state: SurfaceState, palette: &Palette) -> ratatui::style::Color {
   }
 }
 
+/// Single combined marker for a model row. Priority winner from
+/// highest to lowest:
+///   1. Selection cursor `>` — wins on the focused row so the
+///      selection is always unambiguous. No explicit fg so the
+///      `Modifier::REVERSED` on the row flips the whole strip with
+///      the row's semantic colour.
+///   2. Launch-state glyph (`◌ ◐ ● ▲ ○ ⇪`) — wins whenever
+///      [`glyph_for`] returns a non-space char (`NotLaunched` maps
+///      to space, which falls through). Painted with
+///      [`colour_for`] so a Ready row stays green, an Error row
+///      stays red, etc.
+///   3. Favorite star `★` — wins on idle favorited rows.
+///   4. Blank — nothing to surface.
+///
+/// Always returns a 3-cell span (` X `) so the Name column lines
+/// up across every row regardless of which slot won.
+fn marker_span(
+  state: SurfaceState,
+  favorite: bool,
+  is_selected: bool,
+  palette: &Palette,
+) -> Span<'static> {
+  if is_selected {
+    return Span::styled(
+      " > ".to_string(),
+      Style::default().add_modifier(Modifier::BOLD),
+    );
+  }
+  let glyph = glyph_for(state);
+  if glyph != ' ' {
+    return Span::styled(
+      format!(" {glyph} "),
+      Style::default().fg(colour_for(state, palette)),
+    );
+  }
+  if favorite {
+    return Span::styled(" ★ ".to_string(), palette.warning_style());
+  }
+  Span::raw("   ".to_string())
+}
+
 fn render_row<'a>(
   row: &'a ListRow,
   palette: &Palette,
@@ -750,12 +794,11 @@ fn render_row<'a>(
   match row {
     ListRow::TableHeader => {
       // Label cells line up with model-row value cells: same widths,
-      // same separators, same status/favorite gutter (rendered as
-      // blanks). Header is bolded and tinted with the accent colour
-      // to set it apart from group headers and model rows.
+      // same separators, same marker gutter (rendered as blanks).
+      // Header is bolded and tinted with the accent colour to set it
+      // apart from group headers and model rows.
       let mut line = String::with_capacity(content_w);
-      line.push_str(&" ".repeat(STATUS_W));
-      line.push_str(&" ".repeat(FAV_W));
+      line.push_str(&" ".repeat(MARKER_W));
       line.push_str(&cell("Name", name_w));
       line.push(' ');
       line.push_str(&cell("Arch", COL_ARCH_W));
@@ -819,37 +862,12 @@ fn render_row<'a>(
       // when the row gets `Modifier::REVERSED` on selection, every
       // cell flips with the same source colour and the row reads
       // as one inverted block instead of cell-by-cell splotches.
-      // The status glyph keeps its semantic colour so the launch
-      // state stays scannable even on unselected rows.
+      // The marker keeps its semantic colour (state glyph / favorite
+      // star) so the launch state stays scannable even on unselected
+      // rows; the selection cursor leaves fg unset so REVERSED
+      // flips it with the rest of the row.
       let fg = row_fg(*state, palette);
-      let glyph = glyph_for(*state);
-      let mut spans: Vec<Span<'a>> = Vec::with_capacity(7);
-      spans.push(Span::styled(
-        format!(" {glyph} "),
-        Style::default().fg(colour_for(*state, palette)),
-      ));
-      // FAV_W (=3 cells) hosts either the selection cursor `=> ` or
-      // the favorite star `★  ` / a blank `   `. The selection
-      // cursor wins over the favorite mark — the row's REVERSED
-      // selection style still flips colours so the row is
-      // unambiguously selected; the favorite info is recoverable
-      // from the `★ Favorites` section grouping.
-      let (marker, marker_style) = if is_selected {
-        // No explicit fg here so the marker inherits the row's
-        // semantic colour from `ListItem::style().fg(fg)` below.
-        // That way `REVERSED` flips the whole row (marker + name +
-        // columns) with the same source colour, instead of the
-        // marker drifting toward the accent palette.
-        (
-          "=> ".to_string(),
-          Style::default().add_modifier(Modifier::BOLD),
-        )
-      } else if *favorite {
-        ("★  ".to_string(), palette.warning_style())
-      } else {
-        ("   ".to_string(), Style::default())
-      };
-      spans.push(Span::styled(marker, marker_style));
+      let mut spans: Vec<Span<'a>> = vec![marker_span(*state, *favorite, is_selected, palette)];
       spans.push(Span::raw(cell(name.as_str(), name_w)));
       spans.push(Span::raw(" "));
       spans.push(Span::raw(cell(arch.as_str(), COL_ARCH_W)));
@@ -1596,8 +1614,7 @@ mod tests {
   fn name_budget_reserves_columns_when_pane_is_wide() {
     // Pane wide enough for every right column plus generous Name.
     let big = column_name_budget(200);
-    let chrome = STATUS_W + FAV_W;
-    assert_eq!(big, 200 - chrome - RIGHT_COLS_W);
+    assert_eq!(big, 200 - MARKER_W - RIGHT_COLS_W);
   }
 
   #[test]
