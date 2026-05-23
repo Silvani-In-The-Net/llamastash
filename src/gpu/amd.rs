@@ -21,6 +21,24 @@ use super::{run_with_timeout, GpuDevice, GpuInfo};
 /// Falling back to the leaner three-flag and two-flag forms preserves
 /// VRAM data even when util/temp are missing.
 const ROCM_SMI_ARG_VARIANTS: &[&[&str]] = &[
+  // Query VRAM + GTT together so UMA APUs (Strix Halo / Phoenix) can
+  // surface their real GPU memory budget — the BIOS-dedicated VRAM
+  // heap is tiny by design (e.g. 4 GiB on Strix Halo), while GTT is
+  // the system-RAM-backed pool that holds the actual model weights.
+  // Discrete cards have GTT smaller than VRAM, so they keep using the
+  // VRAM-only number (see `combine_uma_memory`).
+  &[
+    "--showmeminfo",
+    "vram",
+    "gtt",
+    "--showuse",
+    "--showtemp",
+    "--json",
+  ],
+  &["--showmeminfo", "vram", "gtt", "--showuse", "--json"],
+  &["--showmeminfo", "vram", "gtt", "--json"],
+  // Backward-compat: older rocm-smi releases that don't accept the
+  // multi-arg `vram gtt` form fall through to VRAM-only queries.
   &["--showmeminfo", "vram", "--showuse", "--showtemp", "--json"],
   &["--showmeminfo", "vram", "--showuse", "--json"],
   &["--showmeminfo", "vram", "--json"],
@@ -63,18 +81,31 @@ pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {
       let Some(card) = gpu_value.as_object() else {
         continue;
       };
-      let total = pick_u64(card, &["VRAM Total Memory (B)", "vram total memory (B)"]);
+      let vram_total = pick_u64(card, &["VRAM Total Memory (B)", "vram total memory (B)"]);
       // Newer rocm-smi releases emit `VRAM Total Used Memory (B)`
       // (note the extra "Total"); older releases drop "Total" from
       // the key. Probe both spellings so we don't silently read 0
       // used VRAM on Strix Halo / RDNA4 boxes.
-      let used = pick_u64(
+      let vram_used = pick_u64(
         card,
         &[
           "VRAM Total Used Memory (B)",
           "VRAM Used Memory (B)",
           "vram total used memory (B)",
           "vram used memory (B)",
+        ],
+      );
+      // GTT (system-RAM-backed pool). Reported when the first
+      // `--showmeminfo vram gtt` variant succeeds; `None` on older
+      // rocm-smi releases that only emit VRAM keys.
+      let gtt_total = pick_u64(card, &["GTT Total Memory (B)", "gtt total memory (B)"]);
+      let gtt_used = pick_u64(
+        card,
+        &[
+          "GTT Total Used Memory (B)",
+          "GTT Used Memory (B)",
+          "gtt total used memory (B)",
+          "gtt used memory (B)",
         ],
       );
       let utilization_pct = pick_f32(card, &["GPU use (%)", "gpu use (%)", "GPU Use (%)"]);
@@ -91,11 +122,17 @@ pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {
           "Temperature (Sensor) (C)",
         ],
       );
-      if let Some(total_bytes) = total {
+      if let Some(vram_total_bytes) = vram_total {
+        let (total_memory_bytes, used_memory_bytes) = combine_uma_memory(
+          vram_total_bytes,
+          vram_used.unwrap_or(0),
+          gtt_total,
+          gtt_used,
+        );
         out.push(GpuDevice {
           name: gpu_key.clone(),
-          total_memory_bytes: total_bytes,
-          used_memory_bytes: used.unwrap_or(0),
+          total_memory_bytes,
+          used_memory_bytes,
           utilization_pct,
           temperature_c,
         });
@@ -103,6 +140,34 @@ pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {
     }
   }
   out
+}
+
+/// Decide whether to report VRAM only or `VRAM + GTT` for a card.
+///
+/// Heuristic: UMA APUs (Strix Halo, Phoenix, …) have a tiny dedicated
+/// VRAM heap (often 4 GiB) with the real GPU memory budget living in
+/// GTT. Discrete cards have it the other way round — large VRAM, GTT
+/// limited to a DMA mapping window. We treat `gtt_total > vram_total`
+/// as the UMA marker and sum both heaps; otherwise stay on the VRAM
+/// number so discrete cards don't have their bar inflated by GTT.
+///
+/// Pre-7.0 kernels on Strix Halo reported the full BIOS UMA carve-out
+/// as static VRAM (e.g. 64 GiB VRAM, ~16 GiB GTT) — that path hits
+/// the discrete branch and keeps the old number, so this change is
+/// backward-compatible for those boots.
+fn combine_uma_memory(
+  vram_total: u64,
+  vram_used: u64,
+  gtt_total: Option<u64>,
+  gtt_used: Option<u64>,
+) -> (u64, u64) {
+  match (gtt_total, gtt_used) {
+    (Some(gt), gu) if gt > vram_total => (
+      vram_total.saturating_add(gt),
+      vram_used.saturating_add(gu.unwrap_or(0)),
+    ),
+    _ => (vram_total, vram_used),
+  }
 }
 
 fn pick_u64(card: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u64> {
@@ -240,6 +305,81 @@ mod tests {
     assert!(parse("").is_empty());
     assert!(parse("not json").is_empty());
     assert!(parse("{}").is_empty());
+  }
+
+  #[test]
+  fn uma_sums_vram_and_gtt_when_gtt_is_larger() {
+    // Strix Halo with kernel 7.0+ amdgpu: 4 GiB BIOS-dedicated VRAM
+    // heap + 61 GiB GTT pool. Real GPU memory is the sum; the bar
+    // should land at 43/65G to match what `llama-server` actually
+    // allocates.
+    let stdout = r#"{
+      "card0": {
+        "VRAM Total Memory (B)": 4294967296,
+        "VRAM Total Used Memory (B)": 268435456,
+        "GTT Total Memory (B)": 65227005952,
+        "GTT Total Used Memory (B)": 46300164096
+      }
+    }"#;
+    let devices = parse(stdout);
+    assert_eq!(devices.len(), 1);
+    assert_eq!(
+      devices[0].total_memory_bytes,
+      4_294_967_296 + 65_227_005_952,
+      "UMA total should sum VRAM + GTT"
+    );
+    assert_eq!(
+      devices[0].used_memory_bytes,
+      268_435_456 + 46_300_164_096,
+      "UMA used should sum VRAM + GTT"
+    );
+  }
+
+  #[test]
+  fn discrete_card_keeps_vram_only_when_gtt_smaller() {
+    // Pre-kernel-7 Strix Halo or any discrete card: VRAM is the big
+    // number, GTT is a smaller DMA-mapping window. We must not
+    // inflate the bar by adding GTT here.
+    let stdout = r#"{
+      "card0": {
+        "VRAM Total Memory (B)": 25769803776,
+        "VRAM Total Used Memory (B)": 5368709120,
+        "GTT Total Memory (B)": 17179869184,
+        "GTT Total Used Memory (B)": 536870912
+      }
+    }"#;
+    let devices = parse(stdout);
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].total_memory_bytes, 25_769_803_776);
+    assert_eq!(devices[0].used_memory_bytes, 5_368_709_120);
+  }
+
+  #[test]
+  fn missing_gtt_falls_back_to_vram_only() {
+    // Older rocm-smi without `gtt` support, or the fallback arg chain
+    // succeeding without GTT — must behave like before this change.
+    let stdout = r#"{
+      "card0": {
+        "VRAM Total Memory (B)": 17163091968,
+        "VRAM Used Memory (B)": 256000000
+      }
+    }"#;
+    let devices = parse(stdout);
+    assert_eq!(devices[0].total_memory_bytes, 17_163_091_968);
+    assert_eq!(devices[0].used_memory_bytes, 256_000_000);
+  }
+
+  #[test]
+  fn combine_uma_memory_branches() {
+    // UMA: gtt > vram → sum.
+    assert_eq!(combine_uma_memory(4, 1, Some(60), Some(40)), (64, 41));
+    // Discrete: gtt <= vram → vram only.
+    assert_eq!(combine_uma_memory(24, 5, Some(16), Some(1)), (24, 5));
+    assert_eq!(combine_uma_memory(24, 5, Some(24), Some(0)), (24, 5));
+    // No GTT data → vram only.
+    assert_eq!(combine_uma_memory(8, 2, None, None), (8, 2));
+    // GTT total without used → still sums, used adds zero.
+    assert_eq!(combine_uma_memory(4, 1, Some(60), None), (64, 1));
   }
 
   #[test]
