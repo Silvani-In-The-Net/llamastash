@@ -416,14 +416,20 @@ const COL_SEP_W: usize = 1; // space before each data column
 /// still gives the model name at least this much room.
 const MIN_NAME_W: usize = 8;
 /// "Comfortable" Name budget: enough cells to display a typical
-/// model name (e.g. `qwen-7b-instruct-Q4_K_M`, ~24 chars) without
-/// the ellipsis truncation glyph. The layout reserves this much
-/// from the content budget *before* picking data columns, so
+/// model name (e.g. `qwen-7b-instruct-Q4_K_M.gguf`, ~30 chars)
+/// without the ellipsis truncation glyph. The layout reserves this
+/// much from the content budget *before* picking data columns, so
 /// columns drop sooner under width pressure to keep the name
 /// readable. Whatever budget the column picker leaves unspent
 /// rolls back into the Name column, so a wide pane still grows
 /// Name beyond this floor.
-const PREFERRED_NAME_W: usize = 24;
+///
+/// Sized so that a 60-cell list pane (compact mode floor, content
+/// width 58) leaves a 22-cell column budget — enough for `Size`
+/// (10) + `Ctx` (20) but not the next-tier `Quant` (30). Small
+/// views show **Name + Ctx + Size** as the user's primary signal
+/// and nothing else.
+const PREFERRED_NAME_W: usize = 33;
 
 /// Identifies which model field a data column renders. Lets the
 /// [`Column`] table stay `const` while the value extraction lives
@@ -457,12 +463,13 @@ struct Column {
 /// the rendered list. Ranks are explicit (lower = stickier):
 ///
 /// - `Size` (10): top decision driver — "will it fit in VRAM".
-/// - `Quant` (20): quality/fit signal, second most asked.
-/// - `Ctx`   (30): use-case fit (context length).
-/// - `Arch`  (40): mostly inferable from the name.
-/// - `Mode`  (50): almost always `Chat`; low entropy.
-/// - `Port`  (60): only meaningful for the small subset of running
-///   rows, and the marker glyph already encodes "this is running".
+/// - `Ctx`  (20): use-case fit (context length).
+/// - `Quant` (30): quality/fit signal.
+/// - `Arch` (40): mostly inferable from the name.
+/// - `Mode` (50): almost always `Chat`; low entropy. Same weight
+///   as `Port` so they drop together once the budget tightens.
+/// - `Port` (50): only meaningful for the small subset of running
+///   rows; the marker glyph already encodes "this is running".
 ///
 /// Source order is the display order. Picker reorders by rank only
 /// for the visibility decision.
@@ -477,13 +484,13 @@ const COLUMNS: &[Column] = &[
     id: ColumnId::Quant,
     label: "Quant",
     width: 7,
-    rank: 20,
+    rank: 30,
   },
   Column {
     id: ColumnId::Ctx,
     label: "Ctx",
     width: 7,
-    rank: 30,
+    rank: 20,
   },
   Column {
     id: ColumnId::Size,
@@ -503,7 +510,7 @@ const COLUMNS: &[Column] = &[
     id: ColumnId::Port,
     label: "Port",
     width: 6,
-    rank: 60,
+    rank: 50,
   },
 ];
 
@@ -1787,51 +1794,76 @@ mod tests {
 
   #[test]
   fn layout_preserves_declaration_order_when_high_rank_columns_drop() {
-    // content_w = 67. PREFERRED_NAME_W (24) reserved up front, so
-    // budget = 67 - 3 - 24 = 40 cells. Strict rank-tail cutoff
-    // takes Size, Quant, Ctx, Arch (sum 32) then stops at Mode
-    // (32+11=43 > 40). Source order preserved: Size (best rank)
-    // does not jump to the front of the strip.
-    let layout = layout_columns(67);
+    // content_w = 76 (the 120-col golden's list pane). budget =
+    // 76 - 3 - PREFERRED_NAME_W = 40 cells. Strict rank-tail
+    // cutoff takes Size, Ctx, Quant, Arch (sum 32) then stops at
+    // Mode (32+11=43 > 40). Port shares Mode's rank so it drops
+    // with Mode (same-rank tier breaks together). Source order
+    // preserved: Size (best rank) does not jump to the front.
+    let layout = layout_columns(76);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
     assert_eq!(
       ids,
       vec![ColumnId::Arch, ColumnId::Quant, ColumnId::Ctx, ColumnId::Size]
+    );
+  }
+
+  #[test]
+  fn layout_small_view_keeps_only_name_ctx_size() {
+    // 60-cell terminal → list owns the full 60 cells → content
+    // width = 58. PREFERRED_NAME_W=33 reserved up front leaves a
+    // 22-cell budget. Size (cost 7) + Ctx (cost 8) = 15 ≤ 22;
+    // Quant (cost 8) → 23 > 22 → break. Result: the user's
+    // primary signal (name) gets ~40 cells, data shrinks to
+    // Ctx + Size only — Ctx wins over Quant because Ctx is rank
+    // 20 (use-case fit) and Quant is rank 30.
+    let layout = layout_columns(58);
+    let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
+    assert_eq!(ids, vec![ColumnId::Ctx, ColumnId::Size]);
+    assert!(
+      layout.name_w >= PREFERRED_NAME_W,
+      "small view keeps name comfortable, got {}",
+      layout.name_w
     );
   }
 
   #[test]
   fn layout_drops_columns_in_strict_rank_order_no_skipping() {
     // Once a column refuses to fit, the picker stops admitting
-    // even smaller higher-rank columns. content_w = 58 (compact
-    // terminal at 60-wide → list content 58 after borders).
-    // Budget = 58-3-24=31. Size(7), Quant(15), Ctx(23) all fit;
-    // Arch(9, 32>31) refuses → break. Port (cost 7) is *not*
-    // smuggled in even though 23+7=30 would have fit, because
-    // that would shuffle column positions as the pane resizes.
-    let layout = layout_columns(58);
+    // even smaller higher-rank columns. content_w = 76 → budget
+    // = 40. Size, Ctx, Quant, Arch fit (sum 32); Mode (11) → 43
+    // > 40 → break. Port (rank 50, cost 7) is *not* smuggled in
+    // even though 32+7=39 would have fit, because it shares
+    // Mode's rank tier — strict cutoff drops the whole tier
+    // atomically once it overruns.
+    let layout = layout_columns(76);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
-    assert_eq!(ids, vec![ColumnId::Quant, ColumnId::Ctx, ColumnId::Size]);
+    assert!(
+      !ids.contains(&ColumnId::Port),
+      "Port (same rank as Mode) drops with Mode rather than slotting in: {ids:?}"
+    );
   }
 
   #[test]
-  fn layout_reserves_preferred_name_before_columns_at_moderate_widths() {
-    // 60-cell content area. PREFERRED_NAME_W=24 is reserved up
-    // front, so the picker only has 60-3-24=33 cells. Mode (rank
-    // 50, cost 11) doesn't fit alongside Size+Quant+Ctx+Arch (32);
-    // strict cutoff stops there. Name keeps the leftover (25
-    // cells) instead of being truncated — the cells that would
-    // otherwise fund Mode/Port go to the user's primary signal.
-    let layout = layout_columns(60);
-    let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
-    assert_eq!(
-      ids,
-      vec![ColumnId::Arch, ColumnId::Quant, ColumnId::Ctx, ColumnId::Size]
-    );
+  fn layout_mode_and_port_drop_together_as_same_rank_tier() {
+    // Mode and Port share rank 50. At a wide width they appear
+    // together; at a width tight enough that Mode can't fit, Port
+    // drops with it (rather than slotting in because it's
+    // cheaper). Predictable visibility: ranks determine drops,
+    // not column widths.
+    let with_both = layout_columns(110);
+    let with_both_ids: Vec<ColumnId> = with_both.visible.iter().map(|c| c.id).collect();
     assert!(
-      layout.name_w >= PREFERRED_NAME_W,
-      "name should hold at the comfortable budget at 60 cells, got {}",
-      layout.name_w
+      with_both_ids.contains(&ColumnId::Mode) && with_both_ids.contains(&ColumnId::Port),
+      "both Mode and Port should survive at 110 cells, got {with_both_ids:?}"
+    );
+    // 76 cells = the golden width. Mode doesn't fit (budget=40,
+    // 32+11=43). Cutoff fires → Port drops too.
+    let neither = layout_columns(76);
+    let neither_ids: Vec<ColumnId> = neither.visible.iter().map(|c| c.id).collect();
+    assert!(
+      !neither_ids.contains(&ColumnId::Mode) && !neither_ids.contains(&ColumnId::Port),
+      "Mode and Port drop together at 76 cells, got {neither_ids:?}"
     );
   }
 

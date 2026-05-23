@@ -612,19 +612,20 @@ fn narrow_terminal_does_not_crash_render() {
 }
 
 #[test]
-fn compact_width_hides_right_pane_and_drops_low_priority_columns() {
+fn compact_width_hides_right_pane_and_keeps_only_name_ctx_size() {
   // At 60 cells the dashboard is in compact mode — the right pane
-  // is hidden by default (focus lives on the List), so the list
-  // gets the whole 60 cells. With PREFERRED_NAME_W (24) reserved
-  // for the model name first, the rank picker fits Quant + Ctx +
-  // Size (cost 7+8+8=23 ≤ 31 budget) and drops Arch/Mode/Port to
-  // protect the name from truncation. Pins three contracts from
-  // the rendered surface: compact pane mode, ranked column drop,
-  // and name-comfort priority over data density.
+  // is hidden (focus lives on the List), so the list gets the
+  // whole 60 cells. With PREFERRED_NAME_W (33) reserved for the
+  // model name first, the rank picker fits Ctx + Size only —
+  // Quant (rank 30) overflows the 22-cell budget. The user's
+  // primary signal (name) gets ~40 cells; data shrinks to the
+  // two highest-priority columns. Pins three contracts from the
+  // rendered surface: compact pane mode, ranked drop, and the
+  // name-comfort priority over data density.
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   let frame = render_to_string(&mut app, 60, 20);
-  for label in [" Quant ", " Ctx ", " Size "] {
+  for label in [" Ctx ", " Size "] {
     assert!(
       frame.contains(label),
       "header {label:?} should survive at 60 cells: {frame}"
@@ -632,7 +633,7 @@ fn compact_width_hides_right_pane_and_drops_low_priority_columns() {
   }
   // Anchored on surrounding spaces so it doesn't false-match
   // strings like `Models [1]` or `model`.
-  for label in [" Arch ", " Mode ", " Port "] {
+  for label in [" Quant ", " Arch ", " Mode ", " Port "] {
     assert!(
       !frame.contains(label),
       "header {label:?} should drop at 60 cells (name takes priority): {frame}"
