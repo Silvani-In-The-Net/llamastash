@@ -94,7 +94,7 @@ Vim-style navigation (`hjkl`), `/` to filter, `f` to favorite, `u`/`c`/`p` to ya
 
 Tab-driven Logs / Chat / Embed / Rerank that hits the same OpenAI-compatible endpoints any external client would use. A successful smoke test in the TUI proves the model is also usable from any external client — there's no special TUI-only path.
 
-- **[Chat tab](docs/usage.md#chat-tab-focuschatinput).** `<think>` blocks collapse with `Ctrl+r`; `Shift+Enter` inserts a newline on kitty-protocol terminals.
+- **[Chat tab](docs/usage.md#chat-tab-focuschatinput).** `<think>` blocks collapse with `r` (from the right-pane browsing focus on the Chat tab); `Shift+Enter` inserts a newline on kitty-protocol terminals.
 - **[Embed tab](docs/usage.md#embed-tab-focusembedinput).** Shows vectors and optional cosine similarity.
 - **[Rerank tab](docs/usage.md#rerank-tab-focusrerankinput).** Stages a query + candidate list; `Tab` cycles fields and stages candidates.
 - **[Logs tab](docs/usage.md#right-pane).** `s` toggles auto-scroll; `c` copies the full buffer to clipboard with a toast confirmation.
@@ -150,6 +150,24 @@ The wizard's recommender without the install / download / config-write steps. Up
 ### Reproducible pulls via `--revision <SHA>`
 
 Pin HF downloads to a specific commit for agent and CI workflows. Threaded into `hf-hub`'s `Repo::with_revision` so the byte-stream resolves at the supplied commit. See [`docs/usage.md` § Pinning a HuggingFace revision](docs/usage.md#pinning-a-huggingface-revision).
+
+## Drop-in OpenAI + Ollama proxy
+
+### OpenAI-compatible endpoint
+
+LlamaStash ships a built-in OpenAI-compatible proxy at `http://127.0.0.1:11434/v1` so any agent that speaks the OpenAI REST shape — OpenCode, Pi (pi.dev), Cline, llm-cli, the OpenAI SDKs — drives every discovered model through one stable URL. Point the client at the base URL, send `body.model: "<discovered-name>"` (substring + fuzzy match, same rules as `llamastash start <ref>`), and any value as the API key — the proxy ignores auth and is loopback-only.
+
+If the named model isn't running yet, the proxy auto-starts it. If the launch fails and another model is already `Ready`, the proxy falls back to it and tags the response with `x-llamastash-served-by` + `x-llamastash-fallback-reason` (`launch_failed` for in-family substitution, `family_mismatch` for cross-arch picks) so clients can audit the substitution. The listener is enabled by default; flip `proxy.enabled: false` in `config.yaml` to turn it off.
+
+The full endpoint table, error envelopes, response headers, and config keys live in [`docs/usage.md` § Proxy (OpenAI-compatible listener)](docs/usage.md#proxy-openai-compatible-listener); the manual OpenCode + Pi smoke runbook is at [`tests/proxy_real_client_smoke.md`](tests/proxy_real_client_smoke.md).
+
+### Ollama discovery surface
+
+The proxy also exposes Ollama's discovery surface (`GET /api/tags`, `GET /api/version`, `GET /api/ps`, `POST /api/show`) so tools that auto-detect Ollama via `OLLAMA_HOST` or by probing `GET /api/tags` recognise llamastash and fall through to the OpenAI-compat endpoints for inference. Ollama's _inference_ endpoints (`/api/chat`, `/api/generate`, `/api/embed`) are not implemented — point Ollama-shape inference clients at the OpenAI-compat endpoints above. Tracked in [`TODO.md`](TODO.md) §R2.
+
+### Auth posture
+
+The proxy has **no authentication**. This is intentional for the local-machine single-user threat model — anyone with localhost access on your box can issue requests. Don't bind to a LAN address (the proxy refuses anyway: host is hard-coded to `127.0.0.1`); don't expose loopback to other UIDs you don't trust; don't run the daemon on a shared host.
 
 ## Built to be safe to run
 

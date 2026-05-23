@@ -154,7 +154,7 @@ Bare letters are for tool actions (`f` favorite, `e` edit, `u/c/p` yank, `t` the
 | `enter_edit` / `exit_edit` | `e` / `Esc` | Right pane → tab input |
 | `send_chat` | `Enter` | Chat input |
 | `insert_newline` | `Shift+Enter` | All input focuses (kitty-protocol terminals only) |
-| `toggle_think_collapse` | `Ctrl+r` | Chat input |
+| `toggle_think_collapse` | `r` | Right pane (Chat tab) |
 | `toggle_auto_scroll` | `s` | Right pane (Logs) |
 
 The "nav focuses" alias means `List` + `RightPane`; "input focuses" means `ChatInput` + `EmbedInput` + `RerankInput`; "TUI focuses" is both groups combined.
@@ -639,6 +639,7 @@ inheritance is visible at the row level.
 | `Shift+L` / `Shift+C` / `Shift+S` / `Shift+E` / `Shift+R` | Jump to Logs / Chat / Settings tab. `L` and `C/E/R` are gated on a running model. |
 | `s` | Toggle Logs auto-scroll |
 | `c` (or `y`) | Logs tab: copy the full log buffer to clipboard |
+| `r` | Chat tab: toggle `<think>` block collapse (reasoning trace) |
 | `Ctrl+S` | Stop the focused running launch (confirmation popup) |
 | `e` | Enter edit mode on the active tab's input field |
 
@@ -649,7 +650,6 @@ inheritance is visible at the row level.
 | (alphanumerics / Backspace) | Edit prompt buffer |
 | `Enter` | Send prompt |
 | `Shift+Enter` | Insert newline (only on kitty-protocol terminals; collapses to send elsewhere) |
-| `Ctrl+r` | Toggle `<think>` block collapse |
 
 ### Embed tab (`Focus::EmbedInput`)
 
