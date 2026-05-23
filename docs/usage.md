@@ -342,7 +342,7 @@ Shape, all four states:
 { "enabled": true,  "listen": "127.0.0.1:80",    "status": "unbound",     "bind_error": "permission denied" }
 ```
 
-The same block is on the IPC `status` method response. The TUI's Daemon info pane shows the proxy state on row 3 — the static `server <path>` line swaps to `proxy <status> 127.0.0.1:<port>` whenever the proxy is up; a toast fires on the transition into `port_in_use`. `proxy.enabled: false` leaves the static `server <path>` row in place.
+The same block is on the IPC `status` method response. The TUI's Daemon info pane shows the proxy state on row 3 as `proxy <status> 127.0.0.1:<port>` (always present alongside the `server <path>` row above it); a toast fires on the transition into `port_in_use`. `proxy.enabled: false` renders the row as `proxy disabled`.
 
 ### Endpoints
 
