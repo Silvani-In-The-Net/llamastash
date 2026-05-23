@@ -29,7 +29,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 - [x] ~~wrong favorites count~~ — `N ★` in the info pane now filters `app.favorites` against the catalog before counting, so stale favorites (file deleted / moved out of watched dirs) drop off and the number matches what the user can actually find in the list. Running favorites still count once (star stays visible in the folder group).
 - [x] fake_llama_server from tests should not get added to config
 - [ ] UI/UX UI beatifications/tweaks.
-  - [ ] adjust min h x w supported.
+  - [x] ~~adjust min h x w supported.~~ — Floor bumped from 40×10 to **80×20** (POSIX terminal baseline; below this the Models list truncated past readability). `MIN_HEIGHT_FOR_INFO_ROW` bumped 18→24 to preserve the gradient: <80×20 placeholder, 80×20–23 title+body, ≥80×24 +info row, ≥120 +logo. `--render-size` parser matches.
   - [ ] Adaptive Panes.
   - [ ] Adaptive hints with priority ranks so that order doesn't matter.
   - [ ] Adaptive columns in model list. With priority ranks so that order doesn't matter.
@@ -58,6 +58,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 - [ ] **In progress**: Benchmark against ollama, LMStudio and other popular options.
 - [ ] **In progress**: Update Readme, repo, org and website properly
+- [ ] DRY/YAGNI audit. Move to libs etc.
 - [ ] Audit (binary size, dependencies, test coverage, security, etc.).
 - [ ] Check and sync all docs, validate all repo docs
 - [ ] Release setup validation (website/CI/CD etc).

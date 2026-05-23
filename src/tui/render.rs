@@ -30,14 +30,20 @@ use crate::tui::{
 };
 
 const INFO_ROW_HEIGHT: u16 = 7;
-const MIN_HEIGHT_FOR_INFO_ROW: u16 = 18;
+/// Threshold below which the info row (Host + Daemon + Logo) hides so
+/// the Models pane gets every row. Sits above [`MIN_RENDER_HEIGHT`]
+/// so the gradient is `< 20 → placeholder`, `20–23 → title + body`,
+/// `≥ 24 → title + info row + body`.
+const MIN_HEIGHT_FOR_INFO_ROW: u16 = 24;
 const HOST_PANEL_WIDTH: u16 = 28;
 /// Lower bound on what `render()` will paint a full dashboard into.
-/// Matches the `--render-size` parser's minimum (40×10). Anything
+/// Matches the `--render-size` parser's minimum (80×20). Anything
 /// smaller renders the placeholder instead so a sub-minimum terminal
-/// doesn't silently clip every panel (audit §5 #9).
-const MIN_RENDER_WIDTH: u16 = 40;
-const MIN_RENDER_HEIGHT: u16 = 10;
+/// doesn't silently clip every panel (audit §5 #9). 80×20 matches the
+/// classic POSIX terminal baseline — narrower, and the Models pane
+/// columns truncate past the point of readability.
+const MIN_RENDER_WIDTH: u16 = 80;
+const MIN_RENDER_HEIGHT: u16 = 20;
 // COMPACT_BANNER is 8 cells wide; +1 cell padding each side + 2
 // border cells = 12.
 const LOGO_PANEL_WIDTH: u16 = 12;
@@ -844,10 +850,11 @@ mod tests {
 
   #[test]
   fn narrow_height_collapses_info_row() {
-    // A 16-row terminal is below MIN_HEIGHT_FOR_INFO_ROW; the info
-    // row drops and only title + body render.
+    // A 22-row terminal is above MIN_RENDER_HEIGHT (20) but below
+    // MIN_HEIGHT_FOR_INFO_ROW (24); the info row drops and only
+    // title + body render.
     let app = App::new(AppOptions::default());
-    let rows = render_into(80, 16, app);
+    let rows = render_into(80, 22, app);
     let body = rows.join("\n");
     assert!(body.contains("LlamaStash"), "title still renders");
     assert!(body.contains("Models"), "body still renders");

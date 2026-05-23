@@ -62,7 +62,7 @@ run:
 ## Render a single TUI frame at a handful of representative terminal sizes.
 ## Useful for eyeballing the adaptive layout (split breakpoints, info-row /
 ## logo cutoffs) without resizing your real terminal. Override with SIZES=...
-SIZES ?= 80x24 100x30 120x30 139x30 140x30 160x40 200x50
+SIZES ?= 80x20 100x30 120x30 139x30 140x30 160x40 200x50
 render:
 	@for s in $(SIZES); do \
 		printf '\n\033[1m── %s ──\033[0m\n' "$$s"; \

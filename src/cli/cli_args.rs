@@ -101,9 +101,9 @@ pub fn parse_render_size(raw: &str) -> Result<(u16, u16), String> {
     .trim()
     .parse()
     .map_err(|_| format!("invalid height in `{raw}`"))?;
-  if w < 40 || h < 10 {
+  if w < 80 || h < 20 {
     return Err(format!(
-      "render size `{raw}` is too small; minimum is 40x10"
+      "render size `{raw}` is too small; minimum is 80x20"
     ));
   }
   Ok((w, h))
