@@ -1,10 +1,12 @@
 //! CLI handlers for the `daemon` subcommand.
 //!
-//! `start [--detach]` — launch the daemon. Default is foreground: the
-//! daemon holds the terminal until shut down. A one-line notice is
-//! printed first so the user sees *why* the prompt isn't coming back
-//! (the historical complaint was that bare `daemon start` looked stuck).
-//! `--detach` returns once the socket is bound.
+//! `start [--foreground]` — launch the daemon. Default is detached: a
+//! one-line "starting in background" notice prints, the parent re-execs
+//! a child, waits for the socket to bind, and returns control to the
+//! shell. `--foreground` (`-f`) keeps the daemon attached to the
+//! controlling terminal for `systemd` / supervisor wrappers that own
+//! stdout/stderr. The historical complaint was that bare `daemon start`
+//! ran in the foreground and looked stuck.
 //! `stop` — connect to the daemon and call `shutdown`.
 //! `status` — connect to the daemon and report PID + uptime; emits "not
 //! running" if the socket is missing or the connection fails.
@@ -30,14 +32,14 @@ use crate::util::paths::{home_dir, runtime_socket_path};
 pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<()> {
   match action {
     DaemonAction::Start {
-      detach,
+      foreground,
       state_dir,
       socket_path,
       proxy_port,
       ollama_compat,
     } => {
       handle_start(
-        detach,
+        foreground,
         state_dir,
         socket_path,
         proxy_port,
@@ -53,7 +55,7 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
 }
 
 async fn handle_start(
-  detach: bool,
+  foreground: bool,
   state_dir: Option<PathBuf>,
   socket_path: Option<PathBuf>,
   proxy_port: Option<u16>,
@@ -69,7 +71,43 @@ async fn handle_start(
     cli,
     config,
   )?;
-  if detach {
+  if foreground {
+    // `--foreground` (or `-f`) keeps the daemon attached to the
+    // controlling terminal. Print a one-line notice up front so the
+    // user sees *why* the prompt isn't coming back — otherwise the
+    // silent hand-off makes a fresh `daemon start --foreground` look
+    // stuck. Suppressed when an existing daemon already owns the
+    // lockfile (we'd flash the notice then immediately fall through
+    // to "already running", which would be confusing).
+    if existing_daemon_pid(&opts.state_dir).is_none() {
+      println!(
+        "{}",
+        crate::cli::colors::dim(
+          "daemon: running in foreground — Ctrl+C to stop, or omit -f to background it",
+        )
+      );
+    }
+    match run_foreground(opts).await? {
+      StartOutcome::RanToCompletion => Ok(()),
+      StartOutcome::AlreadyRunning(pid) => {
+        print_already_running(pid);
+        Ok(())
+      }
+    }
+  } else {
+    // Default: detach into the background. The hand-off looks like
+    // a hang otherwise (the parent waits for the child to bind its
+    // socket — usually <100 ms, but a slow disk can stretch it), so
+    // print a "starting" notice first and a green-check confirmation
+    // once `start_detached` returns. Suppressed when an existing
+    // daemon already owns the lockfile (skips straight to the
+    // "already running" line below).
+    if existing_daemon_pid(&opts.state_dir).is_none() {
+      println!(
+        "{}",
+        crate::cli::colors::dim("daemon: starting in background…")
+      );
+    }
     // `start_detached` blocks until the child reports socket bound.
     match start_detached(opts)? {
       StartOutcome::RanToCompletion => {
@@ -79,30 +117,6 @@ async fn handle_start(
         );
         Ok(())
       }
-      StartOutcome::AlreadyRunning(pid) => {
-        print_already_running(pid);
-        Ok(())
-      }
-    }
-  } else {
-    // Foreground holds the terminal until SIGINT / `daemon stop`.
-    // Print a one-line notice up front so the user understands the
-    // prompt isn't coming back — otherwise the silent hand-off makes
-    // a fresh `daemon start` look stuck. `--detach` is mentioned so
-    // anyone who actually wanted the background flavour has the next
-    // step in their face. Suppressed when an existing daemon already
-    // owns the lockfile (we'd flash the notice then immediately fall
-    // through to "already running", which would be confusing).
-    if existing_daemon_pid(&opts.state_dir).is_none() {
-      println!(
-        "{}",
-        crate::cli::colors::dim(
-          "daemon: running in foreground — Ctrl+C to stop, or rerun with --detach",
-        )
-      );
-    }
-    match run_foreground(opts).await? {
-      StartOutcome::RanToCompletion => Ok(()),
       StartOutcome::AlreadyRunning(pid) => {
         print_already_running(pid);
         Ok(())

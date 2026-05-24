@@ -53,6 +53,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
   - [x] **IP**: Vim-style keybindings (h/j/k/l to navigate list, enter to launch, etc).
   - [x] ~~Mouse capture for pane focus~~ — opt-in via `mouse_focus: true` in `config.yaml` or `--mouse-focus`. Left-click on the Models list, the right pane, or a tab label (`Settings`/`Logs`/`Chat`/`Embed`/`Rerank`) moves focus / switches tab; wheel up/down replays the `↑`/`↓` action in the current focus. Drag / Up / motion are filtered at the input thread (prevents the redraw-flood livelock that masquerades as a hang). Off by default so the terminal keeps native click-and-drag selection. Launch-picker form selection still pending.
 - [x] ~~**Ready to merge**: Proxy router that maps a single endpoint to running models by model name. If the model isn't running, start it; if launch fails, fall back to a running model when one is available; otherwise error. Keep it OpenCode / π compatible so agents and tools can hit one URL.~~ — shipped per the plan; OpenAI-compat proxy listens on `127.0.0.1:11434` by default. Brainstorm at [`docs/brainstorms/2026-05-21-proxy-router-requirements.md`](docs/brainstorms/2026-05-21-proxy-router-requirements.md); plan at [`docs/plans/2026-05-21-001-feat-proxy-router-plan.md`](docs/plans/2026-05-21-001-feat-proxy-router-plan.md); user docs at [`docs/usage.md §Proxy (OpenAI-compatible listener)`](docs/usage.md#proxy-openai-compatible-listener); maintainer smoke runbook at [`tests/proxy_real_client_smoke.md`](tests/proxy_real_client_smoke.md).
+- [x] ~~daemon start seems to get stuck and maybe not starting the daemon.~~ — `daemon start` was foregrounding by default, which looked like a hang from a fresh shell. Flipped the default so `daemon start` now detaches into the background and returns once the socket is bound, with a "starting in background…" → "✓ daemon: started (detached)" trace so the user sees progress. `--foreground` (alias `-f`) keeps the daemon attached for systemd / supervisor wrappers. The re-exec'd child gets `--foreground` on its argv so it doesn't recursively detach (the alternative was a fork bomb).
 
 ### Good to have
 
@@ -60,6 +61,11 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 - [x] ~~Remap ctrl+r: think to something else~~ r should work when editing is not active (hint should show as well)
 - [x] ~~Proxy port should use next available in 1143x range, not hardcoded to 11434. It should start with 11434 and keep trying next if unavailable, up to 11439.~~ — `ServeOptions::port_scan_max_offset` (default `5`) drives a sequential `bind_with_scan` over `port..=port+5`; the listener binds the first free slot and reports the actual address via `proxy.listen`. `AddrInUse` advances; any other bind error is fatal (no point pretending the next port will fare better than `EACCES`). All six taken → `proxy.status: "port_in_use"` (same surface as v0). Strict single-port behaviour is preserved for callers (and the regression test) that pass `port_scan_max_offset: 0`.
 - [ ] DRY/YAGNI audit. Move to libs etc.
+  - Q: Do a full audit of the codebase for the below. Do not use agents, do a sanity check for the below. Cut the noise and report only what actually will matter
+  - 1.  Major security or perfromance issues.
+  - 2.  Too much code duplication. cut the noise just look for anyting that is dumb and can be easily fixed.
+  - 3. Something that can easily be from a library. We should cutdown LoC if its easily replaceable.
+  - any other major issue based on your own intuition and experience.
 
 ### Release checklist
 

@@ -490,6 +490,12 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   cmd
     .arg("daemon")
     .arg("start")
+    // The re-exec'd child must run in the foreground — otherwise it
+    // hits the same "detach by default" branch we just executed and
+    // spawns *its own* grandchild, recursing into a fork bomb. The
+    // child IS the daemon; `setsid` (applied below) is what actually
+    // backgrounds it from the original shell's perspective.
+    .arg("--foreground")
     // Propagate the caller-supplied paths to the re-exec'd child via
     // hidden flags. Without this, the child rebuilt `DaemonOptions`
     // from XDG defaults and silently ignored the parent's choices.

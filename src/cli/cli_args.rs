@@ -162,11 +162,17 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum DaemonAction {
-  /// Start the daemon (no-op if already running).
+  /// Start the daemon (no-op if already running). Detaches into the
+  /// background by default; pass `--foreground` (or `-f`) to keep the
+  /// daemon attached to the terminal (e.g. for `systemd` / supervisor
+  /// wrappers that own stdout/stderr).
   Start {
-    /// Background the daemon by detaching from the controlling terminal.
-    #[arg(long)]
-    detach: bool,
+    /// Keep the daemon attached to the controlling terminal instead of
+    /// detaching into the background. Use this when a process
+    /// supervisor (systemd, runit, foreman, container `CMD`) owns the
+    /// lifecycle and needs to see stdout/stderr directly.
+    #[arg(long, short = 'f')]
+    foreground: bool,
     /// Internal hand-off: state directory to use instead of XDG defaults.
     /// `start_detached` propagates this to the re-exec'd child so tests
     /// and alternate deployments can drive the daemon at a custom path.
@@ -1174,23 +1180,43 @@ mod tests {
 
   #[test]
   fn daemon_subcommands_parse() {
-    let cli_start = parse(&["daemon", "start", "--detach"]);
+    // Bare `daemon start` parses with `foreground = false` — the
+    // default flips to detached so the prompt comes back on its own.
+    let cli_start = parse(&["daemon", "start"]);
     match cli_start.command {
       Some(Command::Daemon(DaemonAction::Start {
-        detach,
+        foreground,
         state_dir,
         socket_path,
         proxy_port,
         ollama_compat,
       })) => {
-        assert!(detach);
+        assert!(!foreground);
         assert!(state_dir.is_none());
         assert!(socket_path.is_none());
         assert!(proxy_port.is_none());
         assert!(!ollama_compat);
       }
-      other => panic!("expected daemon start --detach, got {other:?}"),
+      other => panic!("expected daemon start, got {other:?}"),
     }
+
+    // `--foreground` (and its `-f` alias) flips the bool back on.
+    let cli_fg = parse(&["daemon", "start", "--foreground"]);
+    assert!(matches!(
+      cli_fg.command,
+      Some(Command::Daemon(DaemonAction::Start {
+        foreground: true,
+        ..
+      }))
+    ));
+    let cli_fg_short = parse(&["daemon", "start", "-f"]);
+    assert!(matches!(
+      cli_fg_short.command,
+      Some(Command::Daemon(DaemonAction::Start {
+        foreground: true,
+        ..
+      }))
+    ));
 
     let cli_with_paths = parse(&[
       "daemon",
@@ -1202,13 +1228,13 @@ mod tests {
     ]);
     match cli_with_paths.command {
       Some(Command::Daemon(DaemonAction::Start {
-        detach,
+        foreground,
         state_dir,
         socket_path,
         proxy_port,
         ollama_compat,
       })) => {
-        assert!(!detach);
+        assert!(!foreground);
         assert_eq!(state_dir, Some(PathBuf::from("/tmp/llamastash-test-state")));
         assert_eq!(
           socket_path,
@@ -1223,13 +1249,13 @@ mod tests {
     let cli_with_proxy_port = parse(&["daemon", "start", "--proxy-port", "8080"]);
     match cli_with_proxy_port.command {
       Some(Command::Daemon(DaemonAction::Start {
-        detach,
+        foreground,
         state_dir,
         socket_path,
         proxy_port,
         ollama_compat,
       })) => {
-        assert!(!detach);
+        assert!(!foreground);
         assert!(state_dir.is_none());
         assert!(socket_path.is_none());
         assert_eq!(proxy_port, Some(8080));

@@ -25,7 +25,7 @@ What this plan covers that integration tests don't:
   `/api/show`) recognised by Ollama-shape clients
 - Cross-endpoint digest stability (regression coverage for the
   path-vs-header divergence fixed in `3afae7a`)
-- `--proxy-port` override surviving `--detach` re-exec
+- `--proxy-port` override surviving the default detached re-exec
 
 ## Preflight
 
@@ -186,14 +186,15 @@ mv "$DPATH.tmp-hidden" "$DPATH"
 
 ## Test 3 — `--proxy-port` CLI override
 
-The CLI flag must beat config, and survive `--detach`.
+The CLI flag must beat config, and survive the default detached re-exec.
 
 ```bash
 llamastash daemon stop || true
 sleep 1
 
-# 3a — override beats default (no config involved)
-llamastash daemon start --detach --proxy-port 18080
+# 3a — override beats default (no config involved). `daemon start`
+# detaches by default; no `--detach` flag exists any more.
+llamastash daemon start --proxy-port 18080
 llamastash status --json | jq -e '.proxy.listen == "127.0.0.1:18080"'
 curl -sS http://127.0.0.1:18080/api/version | jq -e '.version != ""'
 llamastash daemon stop && sleep 1
@@ -206,19 +207,19 @@ proxy:
   enabled: true
   port: 19999
 YAML
-llamastash --config "$TMPCFG" daemon start --detach --proxy-port 18081
+llamastash --config "$TMPCFG" daemon start --proxy-port 18081
 llamastash status --json | jq -e '.proxy.listen == "127.0.0.1:18081"'
 llamastash daemon stop && sleep 1
 
 # 3c — no override → config wins (regression for the silent-ignore bug
 # fixed alongside the flag)
-llamastash --config "$TMPCFG" daemon start --detach
+llamastash --config "$TMPCFG" daemon start
 llamastash status --json | jq -e '.proxy.listen == "127.0.0.1:19999"'
 llamastash daemon stop && sleep 1
 
 # 3d — ephemeral port (--proxy-port 0). Useful in dev scripts that
 # don't want to collide with anything else running.
-llamastash daemon start --detach --proxy-port 0
+llamastash daemon start --proxy-port 0
 PORT=$(llamastash status --json | jq -r '.proxy.listen' | cut -d: -f2)
 test "$PORT" != "0" && test "$PORT" -gt 1024 \
   && echo "ephemeral bound to $PORT" \
