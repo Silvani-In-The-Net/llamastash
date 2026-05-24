@@ -63,6 +63,13 @@ bench-overhead: .venv/bin/python
 bench-test: .venv/bin/python
 	@.venv/bin/python -m pytest scripts/bench/ -v
 
+## Pivot the existing bench JSONs under docs/benchmarks/runs/ into a
+## per-model summary table (markdown). Auto-detects engine variants
+## from `host_id` suffixes. Forwards extra args (e.g. `--host`,
+## `--json`, `--engine-map`) to the underlying module.
+bench-table: .venv/bin/python
+	@.venv/bin/python -m scripts.bench.end_to_end.table $(filter-out $@,$(MAKECMDGOALS))
+
 ## Run llamastash against the local daemon (auto-spawns one if missing).
 ## Extra goals are forwarded to cargo as subcommand args, so:
 ##   make run                     -> cargo run --                (launches TUI)

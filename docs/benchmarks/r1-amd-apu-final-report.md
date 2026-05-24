@@ -201,3 +201,13 @@ Each JSON is schema-validated by [`scripts/bench/end_to_end/schema.py`](../../sc
 ```
 
 Anyone re-running the harness on Strix Halo gfx1151 with the same llama.cpp commit should land within the variance gate of these numbers.
+
+The summary table at the top of this report can be regenerated from the raw JSONs anytime via:
+
+```sh
+make bench-table                              # all hosts
+make bench-table -- --host deepu-flowz13-arch # this machine only
+make bench-table -- --json > pivot.json       # machine-readable pivot
+```
+
+The `bench-table` tool auto-detects engine variants from `host_id` suffixes (`-vulkan`, `-rocm`, `-hip-rocwmma-on`, etc.) and pivots into a `model × tool × mode × engine × workload` grid. Use `--engine-map host=label,host=label` to override for hosts whose names don't follow the convention.
