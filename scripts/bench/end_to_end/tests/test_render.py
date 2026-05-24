@@ -171,25 +171,37 @@ def test_load_runs_succeeds_on_valid_report(tmp_path: Path) -> None:
 
 
 def test_render_cell_table_includes_clean_and_flagged_omits_dropped() -> None:
-  cells = [
-    _cell("llamastash", "chat_turn", 50.0, 5.0),  # clean
-    _cell("llamacpp", "chat_turn", 48.0, 15.0),  # flagged
-    _cell("ollama", "chat_turn", 40.0, 30.0),  # dropped
+  rows = [
+    (_cell("llamastash", "chat_turn", 50.0, 5.0), "host-a"),  # clean
+    (_cell("llamacpp", "chat_turn", 48.0, 15.0), "host-a"),  # flagged
+    (_cell("ollama", "chat_turn", 40.0, 30.0), "host-a"),  # dropped
   ]
-  table = render_cell_table(cells)
+  table = render_cell_table(rows, show_host_column=False)
   assert "LlamaStash" in table
   assert "llama-server (raw)" in table
   assert "Ollama" not in table  # dropped → not in table
   assert "±15%" in table  # flagged → inline ±
+  assert "Host" not in table  # column suppressed when not shown
 
 
 def test_render_cell_table_surfaces_unfair_knobs_per_row() -> None:
-  cells = [
-    _cell("lmstudio", "chat_turn", 30.0, 5.0, unfair_knobs=["flash_attn", "ubatch_size"]),
+  rows = [
+    (_cell("lmstudio", "chat_turn", 30.0, 5.0, unfair_knobs=["flash_attn", "ubatch_size"]), "h"),
   ]
-  table = render_cell_table(cells)
+  table = render_cell_table(rows, show_host_column=False)
   assert "flash_attn" in table
   assert "ubatch_size" in table
+
+
+def test_render_cell_table_shows_host_column_when_requested() -> None:
+  rows = [
+    (_cell("llamastash", "chat_turn", 80.0, 5.0), "deepu-rocm"),
+    (_cell("llamastash", "chat_turn", 95.0, 5.0), "deepu-vulkan"),
+  ]
+  table = render_cell_table(rows, show_host_column=True)
+  assert "| Host |" in table
+  assert "`deepu-rocm`" in table
+  assert "`deepu-vulkan`" in table
 
 
 def test_render_dropped_footer_lists_each_dropped_cell() -> None:
@@ -292,7 +304,9 @@ def test_render_results_page_writes_charts_and_table(tmp_path: Path) -> None:
   # Inline ± on the flagged cell.
   assert "±15%" in body
   # Dropped cell isn't in the main table, but is in the footer.
-  assert "LM Studio" not in render_cell_table(rep.cells)
+  assert "LM Studio" not in render_cell_table(
+    [(c, "host-x") for c in rep.cells], show_host_column=False
+  )
   assert "Re-run needed" in body
   # Charts written to disk.
   assert (charts_dir / "mid-chat_turn-decode.svg").exists()

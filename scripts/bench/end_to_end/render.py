@@ -98,14 +98,19 @@ def load_runs(paths: Iterable[Path]) -> list[LoadedRun]:
 # ---- Cell grouping for tables -----------------------------------
 
 
-def group_cells_by_model_workload(runs: list[LoadedRun]) -> dict[tuple[str, str], list[Cell]]:
+def group_cells_by_model_workload(
+  runs: list[LoadedRun],
+) -> dict[tuple[str, str], list[tuple[Cell, str]]]:
   """Cells across all runs, keyed by (model.size_class, workload)
-  for cross-tool comparison."""
-  by_key: dict[tuple[str, str], list[Cell]] = {}
+  for cross-tool comparison. Each value is a list of (cell, host_id)
+  so the renderer can surface which run a row came from when the
+  same (tool, mode) appears across hosts (e.g. an engine A/B run)."""
+  by_key: dict[tuple[str, str], list[tuple[Cell, str]]] = {}
   for run in runs:
+    host_id = run.report.host.host_id
     for cell in run.report.cells:
       key = (cell.model.size_class, cell.workload)
-      by_key.setdefault(key, []).append(cell)
+      by_key.setdefault(key, []).append((cell, host_id))
   return by_key
 
 
@@ -131,14 +136,26 @@ def _tool_pretty(tool: str) -> str:
   }.get(tool, tool)
 
 
-def render_cell_table(cells: list[Cell]) -> str:
+def render_cell_table(
+  rows_in: list[tuple[Cell, str]],
+  show_host_column: bool,
+) -> str:
   """Markdown table for one (model, workload) group. Includes the
   ± inline for flagged cells. Dropped cells are NOT in this table —
-  they go to the footer section."""
-  header = "| Tool | Mode | decode tok/s | TTFT | prompt tok/s | reps | status |\n"
-  sep = "|---|---|---|---|---|---|---|\n"
-  rows = []
-  for c in sorted(cells, key=lambda x: (x.tool, x.mode)):
+  they go to the footer section.
+
+  `show_host_column` adds a "Host" column when the input spans
+  multiple host_ids (e.g. an engine A/B run) so the reader can
+  tell HIP rows from Vulkan rows. Single-host pages omit the
+  column to keep the table narrow."""
+  if show_host_column:
+    header = "| Tool | Mode | Host | decode tok/s | TTFT | prompt tok/s | reps | status |\n"
+    sep = "|---|---|---|---|---|---|---|---|\n"
+  else:
+    header = "| Tool | Mode | decode tok/s | TTFT | prompt tok/s | reps | status |\n"
+    sep = "|---|---|---|---|---|---|---|\n"
+  rows: list[str] = []
+  for c, host_id in sorted(rows_in, key=lambda x: (x[0].tool, x[0].mode, x[1])):
     status = classify_cell(c)
     if status == CellStatus.DROPPED:
       continue
@@ -147,10 +164,17 @@ def render_cell_table(cells: list[Cell]) -> str:
     prompt = _format_metric(c.summary.prompt_tps_mean, c.summary.prompt_tps_stddev_pct, "tok/s")
     status_str = "flagged" if status == CellStatus.FLAGGED else "ok"
     unfair = f" ({', '.join(c.unfair_knobs)})" if c.unfair_knobs else ""
-    rows.append(
-      f"| {_tool_pretty(c.tool)}{unfair} | {c.mode} | {decode} | {ttft} | {prompt} "
-      f"| {c.summary.measured_rep_count} | {status_str} |"
-    )
+    tool_cell = f"{_tool_pretty(c.tool)}{unfair}"
+    if show_host_column:
+      rows.append(
+        f"| {tool_cell} | {c.mode} | `{host_id}` | {decode} | {ttft} | {prompt} "
+        f"| {c.summary.measured_rep_count} | {status_str} |"
+      )
+    else:
+      rows.append(
+        f"| {tool_cell} | {c.mode} | {decode} | {ttft} | {prompt} "
+        f"| {c.summary.measured_rep_count} | {status_str} |"
+      )
   return header + sep + "\n".join(rows) + "\n"
 
 
@@ -240,10 +264,12 @@ def render_results_page(
   ]
 
   grouped = group_cells_by_model_workload(runs)
-  for (model, workload), cells in sorted(grouped.items()):
+  show_host_column = len(hosts) > 1
+  for (model, workload), rows in sorted(grouped.items()):
     out_lines.append(f"## {model} — {workload}")
     out_lines.append("")
-    headline_cells = [c for c in cells if classify_cell(c) != CellStatus.DROPPED]
+    headline_rows = [(c, h) for (c, h) in rows if classify_cell(c) != CellStatus.DROPPED]
+    headline_cells = [c for (c, _h) in headline_rows]
     chart_dir = charts_dir
     decode_chart = chart_dir / f"{model}-{workload}-decode.svg"
     ttft_chart = chart_dir / f"{model}-{workload}-ttft.svg"
@@ -258,7 +284,7 @@ def render_results_page(
     out_lines.append("")
     out_lines.append(f"![TTFT]({rel}/{ttft_chart.name})")
     out_lines.append("")
-    out_lines.append(render_cell_table(cells))
+    out_lines.append(render_cell_table(rows, show_host_column))
     out_lines.append("")
 
   out_lines.append(render_determinism_callouts(all_cells))
