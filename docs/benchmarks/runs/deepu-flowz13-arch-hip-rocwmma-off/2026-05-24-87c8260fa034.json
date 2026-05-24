@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "suite": "end_to_end",
+  "host": {
+    "host_id": "deepu-flowz13-arch-hip-rocwmma-off",
+    "os": "Linux 7.0.7-arch2-1",
+    "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "cpu_threads": 32,
+    "ram_gb": 121.49,
+    "gpu_backend": "rocm",
+    "gpu_name": "AMD Radeon 8060S Graphics",
+    "gpu_vram_gb": 4.0
+  },
+  "provenance": {
+    "llamastash_version": "llamastash 0.0.1-beta.0",
+    "llama_server_version": "version: 9245 (b39a7bf1b)",
+    "llama_cpp_commit": "b39a7bf1b",
+    "ollama_version": "ollama version is 0.0.1-beta.0",
+    "ollama_llama_cpp_commit": null,
+    "lmstudio_version": "\u001b[38;5;166m   __   __  ___  ______          ___        _______   ____\u001b[0m",
+    "python_version": "3.12.13"
+  },
+  "started_at_utc": "2026-05-24T10:15:50.805937+00:00",
+  "finished_at_utc": "2026-05-24T10:16:10.254874+00:00",
+  "git_sha": "87c8260fa034492727b887082a01df74a2e81459",
+  "cells": [
+    {
+      "tool": "llamacpp",
+      "model": {
+        "size_class": "small",
+        "hf_repo": "gemma-4-E2B-it-GGUF",
+        "hf_file": "gemma-4-E2B-it-Q4_K_M.gguf",
+        "sha256": "6c950d754366dd8b372fd17a40497ba5f130a46d833b4c5bccc9f6bb6382ce1e",
+        "bytes": 3427877696
+      },
+      "mode": "defaults",
+      "workload": "chat_turn",
+      "argv_recorded": [
+        "/mnt/work/Workspace/llms/llama.cpp/build-hip/bin/llama-server",
+        "--host",
+        "127.0.0.1",
+        "-m",
+        "/mnt/work/lmstudio-models/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf"
+      ],
+      "reps": [
+        {
+          "rep_index": 0,
+          "is_warmup": true,
+          "ttft_ms": 85.47010700567625,
+          "ttft_ms_first_request": null,
+          "ttft_ms_post_load": null,
+          "prompt_tokens": 48,
+          "decode_tokens": 64,
+          "prompt_tps": 561.5998584956985,
+          "decode_tps": 82.26707736154547,
+          "e2e_latency_ms": 851.2685530004092,
+          "rss_peak_mb": null,
+          "gpu_mem_peak_mb": null,
+          "error": null,
+          "truncated": true
+        },
+        {
+          "rep_index": 1,
+          "is_warmup": false,
+          "ttft_ms": 51.22640999616124,
+          "ttft_ms_first_request": null,
+          "ttft_ms_post_load": null,
+          "prompt_tokens": 48,
+          "decode_tokens": 64,
+          "prompt_tps": 937.0166678398308,
+          "decode_tps": 82.83870038717936,
+          "e2e_latency_ms": 811.7405139782932,
+          "rss_peak_mb": null,
+          "gpu_mem_peak_mb": null,
+          "error": null,
+          "truncated": true
+        },
+        {
+          "rep_index": 2,
+          "is_warmup": false,
+          "ttft_ms": 49.19241898460314,
+          "ttft_ms_first_request": null,
+          "ttft_ms_post_load": null,
+          "prompt_tokens": 48,
+          "decode_tokens": 64,
+          "prompt_tps": 975.7601067559546,
+          "decode_tps": 83.14900771108366,
+          "e2e_latency_ms": 806.8683279852849,
+          "rss_peak_mb": null,
+          "gpu_mem_peak_mb": null,
+          "error": null,
+          "truncated": true
+        },
+        {
+          "rep_index": 3,
+          "is_warmup": false,
+          "ttft_ms": 50.69768300745636,
+          "ttft_ms_first_request": null,
+          "ttft_ms_post_load": null,
+          "prompt_tokens": 48,
+          "decode_tokens": 64,
+          "prompt_tps": 946.7888304272287,
+          "decode_tps": 82.4966002178294,
+          "e2e_latency_ms": 814.3655169988051,
+          "rss_peak_mb": null,
+          "gpu_mem_peak_mb": null,
+          "error": null,
+          "truncated": true
+        }
+      ],
+      "summary": {
+        "ttft_ms_mean": 50.372170662740245,
+        "ttft_ms_stddev_pct": 2.0950911114648756,
+        "prompt_tps_mean": 953.1885350076714,
+        "prompt_tps_stddev_pct": 2.1138485710179733,
+        "decode_tps_mean": 82.8281027720308,
+        "decode_tps_stddev_pct": 0.39398805452227886,
+        "e2e_latency_ms_mean": 810.991452987461,
+        "rss_peak_mb_max": null,
+        "gpu_mem_peak_mb_max": null,
+        "measured_rep_count": 3,
+        "error_rep_count": 0
+      },
+      "unfair_knobs": [],
+      "determinism": {
+        "prompt_sha256": null,
+        "first_n_token_ids_sha256": null,
+        "n_compared_tokens": 0,
+        "determinism_mismatch": false,
+        "notes": ""
+      },
+      "notes": ""
+    },
+    {
+      "tool": "llamacpp",
+      "model": {
+        "size_class": "small",
+        "hf_repo": "gemma-4-E2B-it-GGUF",
+        "hf_file": "gemma-4-E2B-it-Q4_K_M.gguf",
+        "sha256": "6c950d754366dd8b372fd17a40497ba5f130a46d833b4c5bccc9f6bb6382ce1e",
+        "bytes": 3427877696
+      },
+      "mode": "defaults",
+      "workload": "agent_decode",
+      "argv_recorded": [
+        "/mnt/work/Workspace/llms/llama.cpp/build-hip/bin/llama-server",
+        "--host",
+        "127.0.0.1",
+        "-m",
+        "/mnt/work/lmstudio-models/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf"
+      ],
+      "reps": [
+        {
+          "rep_index": 0,
+          "is_warmup": true,
+          "ttft_ms": 85.93226701486856,
+          "ttft_ms_first_request": null,
+          "ttft_ms_post_load": null,
+          "prompt_tokens": 56,
+          "decode_tokens": 256,
+          "prompt_tps": 651.6760460923313,
+          "decode_tps": 82.55852323895157,
+          "e2e_latency_ms": 3174.6503059985116,
+          "rss_peak_mb": null,
+          "gpu_mem_peak_mb": null,
+          "error": null,
+          "truncated": true
+        },
+        {
+          "rep_index": 1,
+          "is_warmup": false,
+          "ttft_ms": 57.37034999765456,
+          "ttft_ms_first_request": null,
+          "ttft_ms_post_load": null,
+          "prompt_tokens": 56,
+          "decode_tokens": 256,
+          "prompt_tps": 976.113968317945,
+          "decode_tps": 82.49757853830454,
+          "e2e_latency_ms": 3148.3701649995055,
+          "rss_peak_mb": null,
+          "gpu_mem_peak_mb": null,
+          "error": null,
+          "truncated": true
+        },
+        {
+          "rep_index": 2,
+          "is_warmup": false,
+          "ttft_ms": 54.42172600305639,
+          "ttft_ms_first_request": null,
+          "ttft_ms_post_load": null,
+          "prompt_tokens": 56,
+          "decode_tokens": 256,
+          "prompt_tps": 1029.0008074505938,
+          "decode_tps": 81.68182796678917,
+          "e2e_latency_ms": 3176.291134994244,
+          "rss_peak_mb": null,
+          "gpu_mem_peak_mb": null,
+          "error": null,
+          "truncated": true
+        },
+        {
+          "rep_index": 3,
+          "is_warmup": false,
+          "ttft_ms": 54.05543700908311,
+          "ttft_ms_first_request": null,
+          "ttft_ms_post_load": null,
+          "prompt_tokens": 56,
+          "decode_tokens": 256,
+          "prompt_tps": 1035.9734949620358,
+          "decode_tps": 81.59329245672103,
+          "e2e_latency_ms": 3179.3123340175953,
+          "rss_peak_mb": null,
+          "gpu_mem_peak_mb": null,
+          "error": null,
+          "truncated": true
+        }
+      ],
+      "summary": {
+        "ttft_ms_mean": 55.282504336598016,
+        "ttft_ms_stddev_pct": 3.28743976202776,
+        "prompt_tps_mean": 1013.6960902435248,
+        "prompt_tps_stddev_pct": 3.229100255283012,
+        "decode_tps_mean": 81.92423298727158,
+        "decode_tps_stddev_pct": 0.6084905653790167,
+        "e2e_latency_ms_mean": 3167.991211337115,
+        "rss_peak_mb_max": null,
+        "gpu_mem_peak_mb_max": null,
+        "measured_rep_count": 3,
+        "error_rep_count": 0
+      },
+      "unfair_knobs": [],
+      "determinism": {
+        "prompt_sha256": null,
+        "first_n_token_ids_sha256": null,
+        "n_compared_tokens": 0,
+        "determinism_mismatch": false,
+        "notes": ""
+      },
+      "notes": ""
+    }
+  ],
+  "notes": ""
+}
