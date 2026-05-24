@@ -115,8 +115,9 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 
 ### [Drop-in OpenAI + Ollama proxy](FEATURES.md#drop-in-openai--ollama-proxy)
 
-- [OpenAI-compatible endpoint](FEATURES.md#openai-compatible-endpoint) at `http://127.0.0.1:11434/v1` (or the next free port up to `11439` if Ollama is already on `11434`) — drives every discovered model through one URL; OpenCode, Pi (pi.dev), Cline, llm-cli, the OpenAI SDKs all work as-is. Auto-starts the requested model; falls back to a Ready peer with audit headers (`x-llamastash-served-by`, `x-llamastash-fallback-reason`) when launch fails.
+- [OpenAI-compatible endpoint](FEATURES.md#openai-compatible-endpoint) at `http://127.0.0.1:11435/v1` by default (or the next free port up to `11440`) — drives every discovered model through one URL; OpenCode, Pi (pi.dev), Cline, llm-cli, the OpenAI SDKs all work as-is. Auto-starts the requested model; falls back to a Ready peer with audit headers (`x-llamastash-served-by`, `x-llamastash-fallback-reason`) when launch fails. The default port is `11435` (one above Ollama's well-known `11434`) so a llamastash daemon and an Ollama install can co-exist without a port collision.
 - [Ollama discovery surface](FEATURES.md#ollama-discovery-surface) — `GET /api/tags` / `/api/version` / `/api/ps`, `POST /api/show` so tools that auto-detect Ollama via `OLLAMA_HOST` recognise llamastash and fall through to the OpenAI-compat endpoints for inference.
+- **Ollama drop-in mode is opt-in.** Enable with `--ollama-compat` (or `proxy.ollama_compat: true` / `LLAMASTASH_OLLAMA_COMPAT=1`) and the proxy claims port `11434`, answers `GET /` with the byte-exact `"Ollama is running"` handshake string, and works as a transparent replacement for the official `ollama` CLI and other Ollama-Go-based clients. Leaving compat off keeps the safe coexistence default (port `11435`, `"LlamaStash is running"` identity).
 - [Loopback-only, no authentication](FEATURES.md#auth-posture) — single-user local threat model; the proxy refuses LAN binds.
 
 ### [Built to be safe to run](FEATURES.md#built-to-be-safe-to-run)

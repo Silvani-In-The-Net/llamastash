@@ -69,7 +69,11 @@ mouse_focus: false          # Opt into mouse capture for click-to-focus / click-
 
 proxy:                      # OpenAI-compat proxy router. See §"Proxy
   enabled: true             # (OpenAI-compatible listener)" below for
-  port: 11434               # the full endpoint + error contract.
+  ollama_compat: false      # Opt in for full Ollama drop-in identity
+                            # ("Ollama is running" on `GET /`, default
+                            # port 11434). Off → "LlamaStash is
+                            # running", default port 11435.
+  # port: 11435             # Pin to override the mode default.
 
 keybindings:                # Action-name → key-spec overrides.
   quit: ctrl+q
@@ -306,11 +310,31 @@ llamastash daemon status [--json]   # PID + uptime + connections + managed launc
 
 ## Proxy (OpenAI-compatible listener)
 
-The daemon binds a single OpenAI-compatible HTTP proxy on `127.0.0.1:11434` (default) so any agent that speaks the OpenAI REST shape — OpenCode, Pi (pi.dev), the OpenAI SDKs, Cline, llm-cli — can talk to every discovered model through one stable URL. If `11434` is taken (e.g. a real Ollama install is already running), the listener walks `proxy.port..=proxy.port+5` and binds the first free port — the actual address is reported via `llamastash status` / the TUI Daemon pane under `proxy.listen`. The proxy resolves `body.model` against the same fuzzy matcher `llamastash start <ref>` uses, forwards the request byte-for-byte to the matching `llama-server` child, and streams the response back. If the named model isn't running, the proxy auto-starts it (replaying `last_params`, else `arch_defaults`). If the launch fails and another model is already Ready, the proxy falls back to it and stamps `x-llamastash-served-by` + `x-llamastash-fallback-reason: launch_failed` headers on the response. Substitution is observable; no extra round-trip is needed to discover what served the request. The full mechanism — coalesced launches, family-MRU fallback selection, scope boundaries — is documented in [`docs/plans/2026-05-21-001-feat-proxy-router-plan.md`](plans/2026-05-21-001-feat-proxy-router-plan.md).
+The daemon binds a single OpenAI-compatible HTTP proxy on `127.0.0.1:11435` (default mode) so any agent that speaks the OpenAI REST shape — OpenCode, Pi (pi.dev), the OpenAI SDKs, Cline, llm-cli — can talk to every discovered model through one stable URL. The default port is `11435` (one above Ollama's `11434`) so llamastash co-exists with an installed Ollama daemon without a collision. If the base port is taken the listener walks up to `11440` and binds the first free slot — the actual address is reported via `llamastash status` / the TUI Daemon pane under `proxy.listen`.
+
+The proxy resolves `body.model` against the same fuzzy matcher `llamastash start <ref>` uses, forwards the request byte-for-byte to the matching `llama-server` child, and streams the response back. If the named model isn't running, the proxy auto-starts it (replaying `last_params`, else `arch_defaults`). If the launch fails and another model is already Ready, the proxy falls back to it and stamps `x-llamastash-served-by` + `x-llamastash-fallback-reason: launch_failed` headers on the response. Substitution is observable; no extra round-trip is needed to discover what served the request. The full mechanism — coalesced launches, family-MRU fallback selection, scope boundaries — is documented in [`docs/plans/2026-05-21-001-feat-proxy-router-plan.md`](plans/2026-05-21-001-feat-proxy-router-plan.md).
+
+### Ollama drop-in mode (opt-in)
+
+The official `ollama` CLI (and other Ollama-Go-based clients) issue a `HEAD /` handshake before any `/api/*` call and bail when the body isn't the literal `"Ollama is running"`. Default mode answers that probe with `"LlamaStash is running"` so the identity is honest; opt in to full Ollama impersonation when the goal is "this tool that natively speaks Ollama just works":
+
+| Source | Form |
+|---|---|
+| CLI | `llamastash daemon start --ollama-compat` |
+| Config | `proxy.ollama_compat: true` in `config.yaml` |
+| Env | `LLAMASTASH_OLLAMA_COMPAT=1` |
+
+The three are OR-ed; any one of them turns compat mode on. Effects:
+
+- `GET /` returns the byte-exact `"Ollama is running"` string Go-clients sometimes strcmp against.
+- Default port shifts from `11435` → `11434` (Ollama's well-known port). Stop your real Ollama daemon first, or pin `proxy.port: <N>` (CLI: `--proxy-port N`) to avoid the collision.
+- Everything else — OpenAI compat `/v1/...`, Ollama discovery `/api/...`, headers, error envelope — is identical to default mode.
+
+Default mode (no compat) is fine when clients reach `/api/tags` directly without doing the handshake (`ollama-python`'s default code path, most IDE plugins, curl scripts). Compat mode is required when the client is `ollama` CLI or links the Ollama-Go SDK.
 
 ### Connecting an agent
 
-Set the OpenAI base URL to `http://127.0.0.1:11434/v1` and use any string as the API key — the proxy ignores authentication. The base-URL pattern works with any OpenAI-compatible client; the standard env var names across the ecosystem are:
+Set the OpenAI base URL to `http://127.0.0.1:11435/v1` (default mode) or `http://127.0.0.1:11434/v1` (Ollama-compat mode) and use any string as the API key — the proxy ignores authentication. The base-URL pattern works with any OpenAI-compatible client; the standard env var names across the ecosystem are:
 
 | Client | Env var(s) |
 |---|---|
@@ -419,19 +443,23 @@ Upstream non-2xx responses (e.g. `llama-server` returns 500 for a malformed comp
 
 ```yaml
 proxy:
-  enabled: true   # Default true. false => the daemon runs but no
-                  # listener is bound; status.proxy.status = "disabled".
-  port: 11434     # Default 11434 (matches Ollama's well-known port so
-                  # OpenAI-client wrappers find llamastash without
-                  # reconfiguration). Loopback only — there is no
-                  # `host` knob; LAN binding is a deferred follow-up.
+  enabled: true          # Default true. false => the daemon runs but no
+                         # listener is bound; status.proxy.status = "disabled".
+  ollama_compat: false   # Default false. true => GET / returns "Ollama is running"
+                         # (Go-client handshake) and the default port shifts to
+                         # 11434. See "Ollama drop-in mode" above. CLI: --ollama-compat;
+                         # env: LLAMASTASH_OLLAMA_COMPAT=1. All three sources are OR-ed.
+  # port: 11435          # Pin to override the mode default. Omitted = derived from
+                         # ollama_compat (11434 when true, 11435 when false).
+                         # Loopback only — there is no `host` knob; LAN binding is
+                         # a deferred follow-up.
 ```
 
 Unknown keys inside `[proxy]` are **rejected loudly** (`#[serde(deny_unknown_fields)]`) — a typo never silently falls back to defaults. The top-level config still tolerates unknown keys for forward-compat. There is no `host`, no `api_key`, no `tls_*`, no fallback-tuning knob; these are all deferred per the plan's Scope Boundaries.
 
-`llamastash daemon start --proxy-port <PORT>` overrides `proxy.port` for that daemon process — CLI flag beats config beats default. `--proxy-port 0` binds an ephemeral port; the actual address is reported via `llamastash status --json | jq .proxy.listen`. The flag survives `--detach` (the re-exec'd child receives it on its argv).
+`llamastash daemon start --proxy-port <PORT>` overrides the mode default for that daemon process — CLI flag beats config beats mode default. `--proxy-port 0` binds an ephemeral port; the actual address is reported via `llamastash status --json | jq .proxy.listen`. The flag survives `--detach` (the re-exec'd child receives it on its argv). `--ollama-compat` is similarly propagated across `--detach`.
 
-Port collision (Ollama running on the same machine, another listener on `11434`, …) leaves the daemon up and reports `proxy.status: "port_in_use"`. Edit `proxy.port` and restart the daemon, or restart with `--proxy-port <free-port>`. The proxy does not auto-roam to a free port — that would break the "single stable URL" contract.
+Port collision (Ollama-compat mode against a running Ollama on `11434`, another listener on the base port, …) leaves the daemon up and reports `proxy.status: "port_in_use"`. Edit `proxy.port` and restart the daemon, or restart with `--proxy-port <free-port>`. The proxy does not auto-roam outside the `base..=base+5` scan window — that would break the "single stable URL" contract.
 
 ## Setup subcommands
 

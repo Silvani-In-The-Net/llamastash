@@ -155,9 +155,9 @@ Pin HF downloads to a specific commit for agent and CI workflows. Threaded into 
 
 ### OpenAI-compatible endpoint
 
-LlamaStash ships a built-in OpenAI-compatible proxy at `http://127.0.0.1:11434/v1` so any agent that speaks the OpenAI REST shape — OpenCode, Pi (pi.dev), Cline, llm-cli, the OpenAI SDKs — drives every discovered model through one stable URL. Point the client at the base URL, send `body.model: "<discovered-name>"` (substring + fuzzy match, same rules as `llamastash start <ref>`), and any value as the API key — the proxy ignores auth and is loopback-only.
+LlamaStash ships a built-in OpenAI-compatible proxy at `http://127.0.0.1:11435/v1` (default mode) so any agent that speaks the OpenAI REST shape — OpenCode, Pi (pi.dev), Cline, llm-cli, the OpenAI SDKs — drives every discovered model through one stable URL. Point the client at the base URL, send `body.model: "<discovered-name>"` (substring + fuzzy match, same rules as `llamastash start <ref>`), and any value as the API key — the proxy ignores auth and is loopback-only.
 
-If `11434` is already taken (e.g. an actual Ollama install is running), the listener walks `11434..=11439` and binds the first free port — `llamastash status` (and the TUI's Settings tab) shows the chosen address under `proxy.listen`. Configure a different base via `proxy.port` in `config.yaml`; the same `port..=port+5` window applies.
+The default port is `11435` (one above Ollama's well-known `11434`) so a llamastash daemon and an Ollama install can co-exist without colliding. If `11435` is also taken, the listener walks `11435..=11440` and binds the first free slot — `llamastash status` (and the TUI's Daemon info pane) shows the chosen address under `proxy.listen`. Pin a different base via `proxy.port` in `config.yaml` or `--proxy-port N` on the CLI; the same six-port scan window applies.
 
 If the named model isn't running yet, the proxy auto-starts it. If the launch fails and another model is already `Ready`, the proxy falls back to it and tags the response with `x-llamastash-served-by` + `x-llamastash-fallback-reason` (`launch_failed` for in-family substitution, `family_mismatch` for cross-arch picks) so clients can audit the substitution. The listener is enabled by default; flip `proxy.enabled: false` in `config.yaml` to turn it off.
 
@@ -166,6 +166,22 @@ The full endpoint table, error envelopes, response headers, and config keys live
 ### Ollama discovery surface
 
 The proxy also exposes Ollama's discovery surface (`GET /api/tags`, `GET /api/version`, `GET /api/ps`, `POST /api/show`) so tools that auto-detect Ollama via `OLLAMA_HOST` or by probing `GET /api/tags` recognise llamastash and fall through to the OpenAI-compat endpoints for inference. Ollama's _inference_ endpoints (`/api/chat`, `/api/generate`, `/api/embed`) are not implemented — point Ollama-shape inference clients at the OpenAI-compat endpoints above. Tracked in [`TODO.md`](TODO.md) §R2.
+
+### Ollama drop-in mode (opt-in)
+
+The official `ollama` CLI (and other Ollama-Go-based clients like Cline's Ollama provider) issue a `HEAD /` server-identity probe before any `/api/*` call. In **default mode** (`ollama_compat: false`) the proxy answers that probe with `"LlamaStash is running"` — direct `/api/*` callers (`curl`, ollama-python's default code path) keep working, but a Go client that strcmp's the body for the literal `"Ollama is running"` will reject the daemon. Enable **Ollama drop-in mode** to make the proxy fully impersonate Ollama for those clients:
+
+- CLI: `llamastash daemon start --ollama-compat`
+- Config: `proxy.ollama_compat: true` in `config.yaml`
+- Env: `LLAMASTASH_OLLAMA_COMPAT=1`
+
+Any one of the three sources turns it on (OR-ed). Effects:
+
+- `GET /` returns the byte-exact `"Ollama is running"` string the `ollama` CLI checks for.
+- The default port shifts from `11435` → `11434` (Ollama's well-known port). Stop your real Ollama daemon first, or pin `proxy.port: <N>` to avoid the collision.
+- Every other surface (OpenAI compat `/v1/...`, Ollama discovery `/api/...`) is identical to default mode.
+
+When the goal is "a tool that natively speaks Ollama just works against llamastash without reconfiguration", compat mode is the path. When the goal is "llamastash runs alongside an installed Ollama", default mode is the path (and Ollama-shape clients still get the discovery surface; only the Go-CLI handshake declines).
 
 ### Auth posture
 

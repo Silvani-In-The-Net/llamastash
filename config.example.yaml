@@ -159,19 +159,34 @@ proxy:
   # Toggle the listener. When false the daemon still runs but no
   # port is bound and `status.proxy.status` reports "disabled".
   enabled: true
-  # TCP port on 127.0.0.1. Default matches Ollama's well-known port
-  # so OpenAI-client wrappers that hard-code that target see
-  # llamastash without reconfiguration. If another process already
-  # owns the port the daemon stays up and reports
-  # `status.proxy.status: "port_in_use"` — the proxy does not
-  # auto-roam (would break the "single stable URL" promise). Edit
-  # `port` and restart to recover.
+  # Ollama drop-in mode. When true, `GET /` returns the byte-exact
+  # `"Ollama is running"` string the official `ollama` CLI checks for
+  # (and other Ollama-Go clients), and the default port shifts to
+  # 11434 (Ollama's well-known port). When false (the default), the
+  # identity is `"LlamaStash is running"` and the default port is
+  # 11435 so llamastash coexists with an installed Ollama daemon.
+  #
+  # Enable when the goal is "this tool that natively speaks Ollama
+  # just works against llamastash". Leave off when the goal is "run
+  # alongside Ollama on the same box". The three sources (this
+  # field, the `--ollama-compat` CLI flag, the
+  # `LLAMASTASH_OLLAMA_COMPAT` env var) are OR-ed; any one of them
+  # enables the mode.
+  ollama_compat: false
+  # TCP port on 127.0.0.1. Comment out to use the mode default
+  # (11434 when `ollama_compat: true`, 11435 otherwise). Set to pin a
+  # specific port regardless of mode. If the base port is taken the
+  # listener walks `port..=port+5` and binds the first free slot;
+  # when all six slots are taken the daemon stays up and reports
+  # `status.proxy.status: "port_in_use"` (the proxy does not roam
+  # outside the scan window — that would break the "single stable
+  # URL" promise). Edit `port` and restart to recover.
   #
   # Override at startup with `llamastash daemon start --proxy-port N`
   # (CLI flag beats this config value). Use `--proxy-port 0` to bind
   # an ephemeral port — `llamastash status --json | jq .proxy.listen`
   # reports the actual bound address.
-  port: 11434
+  # port: 11435
   # Seconds hyper waits for a client to finish sending request
   # headers before dropping the connection. Bounds the impact of
   # partial-request clients (crashed agents leaving sockets
