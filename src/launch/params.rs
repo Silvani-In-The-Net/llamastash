@@ -202,7 +202,7 @@ pub fn argvify(knobs: &TypedKnobs) -> Vec<OsString> {
       KnobField::CacheTypeK => push_str(&mut out, spec.canonical, knobs.cache_type_k.as_deref()),
       KnobField::CacheTypeV => push_str(&mut out, spec.canonical, knobs.cache_type_v.as_deref()),
       KnobField::Parallel => push_u32(&mut out, spec.canonical, knobs.parallel),
-      KnobField::FlashAttn => push_bool(&mut out, spec.canonical, knobs.flash_attn),
+      KnobField::FlashAttn => push_flash_attn(&mut out, spec.canonical, knobs.flash_attn),
       KnobField::Mlock => push_bool(&mut out, spec.canonical, knobs.mlock),
       KnobField::NoMmap => push_bool(&mut out, spec.canonical, knobs.no_mmap),
       KnobField::BatchSize => push_u32(&mut out, spec.canonical, knobs.batch_size),
@@ -247,6 +247,28 @@ fn push_str(out: &mut Vec<OsString>, canonical: &str, value: Option<&str>) {
 fn push_bool(out: &mut Vec<OsString>, canonical: &str, value: Option<bool>) {
   if value == Some(true) {
     out.push(canonical.into());
+  }
+}
+
+/// Upstream llama.cpp [PR #15434](https://github.com/ggml-org/llama.cpp/pull/15434)
+/// (merged 2025-08-30, first in tag **b6325**) made `--flash-attn`
+/// a tri-state argument requiring `on|off|auto` and defaulted it to
+/// `auto`. Any `llama-server` >= b6325 rejects the bare flag —
+/// passing `--flash-attn` alone causes the next argv entry to be
+/// parsed as the flash-attn value. We always emit the explicit
+/// `on`/`off` form so a user-level `Some(false)` actually disables
+/// an inherited `Some(true)` rather than silently dropping.
+fn push_flash_attn(out: &mut Vec<OsString>, canonical: &str, value: Option<bool>) {
+  match value {
+    Some(true) => {
+      out.push(canonical.into());
+      out.push("on".into());
+    }
+    Some(false) => {
+      out.push(canonical.into());
+      out.push("off".into());
+    }
+    None => {}
   }
 }
 
@@ -547,6 +569,7 @@ mod tests {
         "--parallel",
         "4",
         "--flash-attn",
+        "on",
         "--mlock",
         "--no-mmap",
         "--batch-size",
@@ -569,18 +592,36 @@ mod tests {
       ..TypedKnobs::default()
     };
     let argv = strs(&argvify(&knobs));
-    assert_eq!(argv, vec!["--n-gpu-layers", "99", "--flash-attn"]);
+    assert_eq!(argv, vec!["--n-gpu-layers", "99", "--flash-attn", "on"]);
   }
 
   #[test]
-  fn argvify_some_false_omits_boolean_flag() {
+  fn argvify_some_false_omits_bare_bool_flags() {
+    // True bare flags (`--mlock`, `--no-mmap`) are absent when set to
+    // false — there's no `--no-mlock` form in llama-server.
     let knobs = TypedKnobs {
-      flash_attn: Some(false),
       mlock: Some(false),
+      no_mmap: Some(false),
       ..TypedKnobs::default()
     };
     let argv = strs(&argvify(&knobs));
-    assert!(argv.is_empty(), "Some(false) bools must not emit the flag");
+    assert!(
+      argv.is_empty(),
+      "Some(false) bare bools must not emit the flag"
+    );
+  }
+
+  #[test]
+  fn argvify_flash_attn_false_emits_off() {
+    // `--flash-attn` takes a value (`on|off|auto`); Some(false) MUST
+    // emit `--flash-attn off` so a user override actually disables it
+    // when an inherited layer set Some(true).
+    let knobs = TypedKnobs {
+      flash_attn: Some(false),
+      ..TypedKnobs::default()
+    };
+    let argv = strs(&argvify(&knobs));
+    assert_eq!(argv, vec!["--flash-attn", "off"]);
   }
 
   #[test]

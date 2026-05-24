@@ -29,14 +29,32 @@ pub fn parse_tail_args(tokens: &[OsString]) -> Result<(TypedKnobs, Vec<OsString>
     match recognised {
       Some((field, kind, inline)) => {
         let value = match kind {
-          // Booleans default to `Some(true)` when the user supplies a
-          // bare flag (`--flash-attn`). The equals-form
-          // (`--flash-attn=false`) is honoured so users can override a
-          // built-in `Some(true)` to `Some(false)` without having to
-          // edit YAML or use the TUI. Space-form (`--flash-attn false`)
-          // is *not* consumed — the next token is left for normal
-          // parsing, matching the bare-flag convention of llama-server.
-          ValueKind::Bool => inline.clone(),
+          // Booleans default to `Some(true)` for a bare flag
+          // (`--flash-attn`). The equals-form (`--flash-attn=false`)
+          // is honoured so a user override actually disables a knob
+          // an inherited layer set to `true`. Space-form is consumed
+          // only when the next token is a recognised on/off spelling
+          // — upstream llama.cpp PR #15434 (merged 2025-08-30,
+          // first in tag b6325) made `--flash-attn` tri-state
+          // requiring `on|off|auto`, so we mirror the new syntax
+          // here. Anything else stays unconsumed and routes through
+          // extras like before.
+          ValueKind::Bool => {
+            if let Some(v) = inline.clone() {
+              Some(v)
+            } else {
+              match iter
+                .peek()
+                .map(|t| t.to_string_lossy().to_ascii_lowercase())
+              {
+                Some(p) if is_bool_value_token(&p) => {
+                  iter.next();
+                  Some(p)
+                }
+                _ => None,
+              }
+            }
+          }
           _ => Some(consume_value(&lossy, inline.as_deref(), &mut iter)?),
         };
         apply_knob(&mut knobs, field, kind, value.as_deref(), &lossy)?;
@@ -45,6 +63,19 @@ pub fn parse_tail_args(tokens: &[OsString]) -> Result<(TypedKnobs, Vec<OsString>
     }
   }
   Ok((knobs, extras))
+}
+
+/// `parse_bool`-spellings that may follow a bool flag in space form,
+/// matching the `on|off|true|false|...` spellings `parse_bool` accepts.
+/// `auto` (llama-server's tri-state default for `--flash-attn`) is
+/// intentionally NOT consumed — the bench never uses it and consuming
+/// it would force `parse_bool` to invent a meaning. A user passing
+/// `--flash-attn auto` instead routes `auto` to extras unchanged.
+fn is_bool_value_token(s: &str) -> bool {
+  matches!(
+    s,
+    "on" | "off" | "true" | "false" | "1" | "0" | "yes" | "no"
+  )
 }
 
 fn consume_value<'a, I>(
@@ -230,6 +261,33 @@ mod tests {
     let (knobs, _) = parse_tail_args(&osvec(&["--flash-attn", "--threads", "8"])).unwrap();
     assert_eq!(knobs.flash_attn, Some(true));
     assert_eq!(knobs.threads, Some(8));
+  }
+
+  #[test]
+  fn boolean_space_form_consumes_on_off_value() {
+    // Upstream llama.cpp PR #15434 (first in tag b6325, 2025-08-30)
+    // made `--flash-attn` tri-state: the user's space-form value
+    // must be absorbed rather than left as an orphan positional that
+    // llama-server then rejects.
+    let (knobs_on, extras_on) = parse_tail_args(&osvec(&["--flash-attn", "on"])).unwrap();
+    assert_eq!(knobs_on.flash_attn, Some(true));
+    assert!(
+      extras_on.is_empty(),
+      "`on` must be consumed, not routed to extras: {extras_on:?}"
+    );
+
+    let (knobs_off, extras_off) = parse_tail_args(&osvec(&["--flash-attn", "off"])).unwrap();
+    assert_eq!(knobs_off.flash_attn, Some(false));
+    assert!(extras_off.is_empty());
+  }
+
+  #[test]
+  fn boolean_space_form_leaves_auto_to_extras() {
+    // `auto` isn't a parse_bool spelling — pass it through to the
+    // child via extras so llama-server can interpret it natively.
+    let (knobs, extras) = parse_tail_args(&osvec(&["--flash-attn", "auto"])).unwrap();
+    assert_eq!(knobs.flash_attn, Some(true));
+    assert_eq!(extras, vec![OsString::from("auto")]);
   }
 
   #[test]
