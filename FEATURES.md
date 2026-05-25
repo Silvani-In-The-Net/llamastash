@@ -72,6 +72,12 @@ Run as many models as your hardware can hold. Each launch gets its own port, aut
 
 A static `(architecture, gpu_backend) → flags` table ships in the binary covering `llama*`, `qwen2*`, `qwen3*`, `mistral`, `mixtral`, `gemma*`, `phi*`, `deepseek*`, `granite`, `falcon`, `stablelm`, `command-r`, plus a `*` fallback. A fresh install gets sensible `n_gpu_layers` / `flash_attn` on every supported GPU backend with zero YAML to touch.
 
+### Intelligent context auto-fit
+
+When `ctx` is left unset in every layer of the resolver (caller didn't pass one, no last-params, no YAML override, the built-in arch table doesn't set one), llamastash computes the largest context length that fits the current free VRAM budget — or RAM, on CPU-only runs — before spawning. The math reads the GGUF attention geometry (`block_count`, `head_count_kv`, `head_dim` or `embedding_length / head_count`, `context_length`), the file's tensor table for weight bytes, and the daemon's host-metrics snapshot for free memory, then solves `(free - weights - 1.5 GiB overhead) / (n_parallel * kv_per_token)`. The result is clamped to `[4096, n_ctx_train]` and aligned to 256 tokens, then emitted as `-c <N>` on the spawned `llama-server`. The chosen value lands in the daemon log under `[INFO] auto-fit ctx=<N> for <path>`.
+
+This sidesteps llama.cpp's own `--fit`, which on Linux 7+ AMD iGPUs (Strix Halo, Phoenix) reads the unified-memory pool as a few hundred MiB and collapses every launch to the 4096 floor. With auto-fit, a 27B Q4_K_M on a 64 GiB iGPU lands around 46k context per slot instead of 4096; a 0.6B reranker rides all the way to its 40,960 native limit. If the snapshot isn't ready or the GGUF lacks attention metadata, llamastash leaves `ctx` unset and `--fit` still gets the last word. An explicit `ctx` from the user, last-params, or YAML always wins.
+
 ### Typed launch-knob editor
 
 The Settings tab in the TUI exposes the launch knobs that actually matter: `ctx`, `reasoning`, `n_gpu_layers`, `threads`, `cache_type_k/v`, `flash_attn`, `mlock`, `no_mmap`, `parallel`, `batch_size`, `ubatch_size`, `rope_freq_scale`, `keep`, plus a free-text `extras` row for the long tail. Each row shows its **source chip** — `(user)`, `(last used)`, `(arch default)`, `(model default)`, `(server default)` — so you always know where the current value came from.

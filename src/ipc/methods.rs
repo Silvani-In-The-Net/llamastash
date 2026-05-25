@@ -109,7 +109,7 @@ pub struct MethodContext {
   /// that never bring the proxy up — the response then omits the
   /// `proxy` field entirely so existing test fixtures keep their
   /// shape. Production wiring always sets this; if `proxy.enabled:
-  /// false` the cell holds [`ProxyStatus::Disabled`].
+  /// false` the cell holds the disabled proxy status variant.
   pub proxy_status: Option<crate::proxy::StatusCell>,
 }
 
@@ -1191,6 +1191,40 @@ pub(crate) async fn start_model_inner(
   launch_params.ctx = resolved.knobs.ctx;
   launch_params.reasoning = resolved.knobs.reasoning.unwrap_or(false);
   launch_params.knobs = resolved.knobs;
+
+  // VRAM-aware ctx auto-fit. When every resolver layer left ctx
+  // unset, the spawn would otherwise rely on llama.cpp's `--fit`,
+  // which mis-reports unified-memory free space on Linux 7+ iGPUs
+  // (Strix Halo) and collapses to the 4096 floor. Compute the right
+  // ctx from the GGUF attention geometry + the daemon's
+  // host-metrics snapshot. `None` (header missing the attention
+  // fields, snapshot not ready, budget too tight) leaves ctx unset
+  // so `--fit` still gets the final word.
+  if launch_params.ctx.is_none() {
+    if let Some(host_slot) = ctx.host_metrics.as_ref() {
+      let snapshot = host_slot.read().await.clone();
+      let model_path = launch_params.model_path.clone();
+      let knobs = launch_params.knobs.clone();
+      // GGUF header read is sync file I/O — push it onto the blocking
+      // pool so the tokio worker stays free (matches the proxy's
+      // `canonical_id_for_row` pattern).
+      let fitted = tokio::task::spawn_blocking(move || {
+        crate::launch::ctx_fit::compute_ctx(&model_path, &knobs, &snapshot)
+      })
+      .await
+      .ok()
+      .flatten();
+      if let Some(fitted) = fitted {
+        launch_params.ctx = Some(fitted);
+        launch_params.knobs.ctx = Some(fitted);
+        log::info!(
+          target: "llamastash::ctx_fit",
+          "auto-fit ctx={fitted} for {}",
+          launch_params.model_path.display(),
+        );
+      }
+    }
+  }
 
   // Reject loopback-breaking / auth-bypass extras flags before
   // spawn. `compose` strips defensively too, but failing fast here

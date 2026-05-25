@@ -8,6 +8,7 @@
 //!   [`crate::daemon::state_store`].
 
 pub mod binary;
+pub mod ctx_fit;
 pub mod defaults_table;
 pub mod favorites;
 pub mod flag_aliases;

@@ -92,6 +92,7 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 - [Daemon-on-demand](FEATURES.md#daemon-on-demand) — one binary as TUI + CLI + daemon; running models survive TUI close.
 - [Multi-model concurrency](FEATURES.md#multi-model-concurrency) — per-model port from a configurable range, `/health`-probed state machine.
 - [GPU-aware built-in arch defaults](FEATURES.md#gpu-aware-built-in-arch-defaults) — sensible flags per `(architecture, gpu_backend)` with zero YAML.
+- [Intelligent context auto-fit](FEATURES.md#intelligent-context-auto-fit) — when `ctx` is unset, llamastash picks the largest context that fits free VRAM (or RAM, CPU-only) from the GGUF attention geometry. Sidesteps llama.cpp `--fit`'s 4096 collapse on Linux 7+ iGPUs (AMD Strix Halo) where unified-memory free space is mis-reported.
 - [Typed launch-knob editor](FEATURES.md#typed-launch-knob-editor) with `(source)` chips and a layered preset → last-params → arch-defaults → built-ins resolver.
 - [Named presets, favorites, last-params recall](FEATURES.md#named-presets-favorites-last-params-recall).
 
@@ -132,12 +133,12 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 
 LlamaStash spawns the unmodified upstream `llama-server`. Three suites track what that means in practice — **Suite A** asserts the wrapper adds no measurable overhead vs raw `llama-server`, **Suite B** compares LlamaStash-as-shipped against Ollama + LM Studio on the same hardware through their OpenAI-compatible endpoints, **Suite C** measures the proxy hop vs hitting `llama-server` directly (TTFT p50 +0.45 ms, decode unchanged). Full write-up + per-workload tables: [`docs/benchmarks.md`](docs/benchmarks.md).
 
-### AMD APU - Linux (Ryzen AI Max+ 395 / Radeon 8060S, `gfx1151`, llama.cpp `b9282`)
+### AMD APU - Linux (Ryzen AI Max+ 395 / Radeon 8060S, `gfx1151`, llama.cpp build `9245 (b39a7bf1b)`)
 
 | Tool | small (E2B Q4) | mid (31B Q4) | large_dense (27B Q8) | large_moe (35B-A3B Q8) | Engine notes |
 |---|---:|---:|---:|---:|---|
-| **LlamaStash** | **86.9 / 51** | 9.8 / 467 | **7.4 / 417** | **42.6 / 181** | b9282 HIP/ROCm |
-| raw `llama-server` | 84.9 / 52 | 9.9 / 468 | 7.4 / 414 | 42.7 / 186 | b9282 HIP/ROCm |
+| **LlamaStash** | **86.9 / 51** | 9.8 / 467 | **7.4 / 417** | **42.6 / 181** | local HIP/ROCm |
+| raw `llama-server` | 86.0 / 51 | 9.9 / 468 | 7.4 / 414 | 42.7 / 186 | local HIP/ROCm |
 | LM Studio 2.16.0 | **91.1** / 187 | **11.6** / 1 477 | **7.9** / 1 274 | 37.0 / 683 | small=ROCm, mid/large=Vulkan |
 | Ollama 0.24.0 | 50.4 / 223 | 4.8 / 1 092 | 2.6 / 1 745 | 12.1 / 476 | bundled |
 

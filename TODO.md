@@ -16,7 +16,10 @@ Two release tracks:
 
 ## In-code TODOs
 
-_None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-19-001-feat-vendor-benchmark-scrapers-plan.md`](docs/plans/2026-05-19-001-feat-vendor-benchmark-scrapers-plan.md). The Open LLM Leaderboard + Aider polyglot adapters now run live against upstream in the daily CI cron at the pinned whichllm commit `73cd92f`; both `TODO(unit7-v2-ga)` placeholders in `scripts/regenerate-benchmark-snapshot.py` are gone._
+- [ ] Ollama-compat Tier 2 inference surface (`/api/chat`, `/api/generate`, `/api/embed`) remains deferred. See [`src/proxy/router.rs`](src/proxy/router.rs) and [`tests/proxy_ollama_compat.rs`](tests/proxy_ollama_compat.rs).
+- [ ] Ollama-compat digest should switch from path-derived `blake3:` to cached header BLAKE3 when the catalog exposes it. See [`src/proxy/ollama_compat.rs`](src/proxy/ollama_compat.rs).
+- [ ] Proxy idle-TTL eviction is still deferred for `/api/ps` expiry reporting. See [`src/proxy/ollama_compat.rs`](src/proxy/ollama_compat.rs).
+- [ ] Per-model VRAM attribution for Ollama-compat `/api/ps` still emits `0`. See [`src/proxy/ollama_compat.rs`](src/proxy/ollama_compat.rs).
 
 ## R1 (v0.0.1) — first release
 
@@ -84,14 +87,15 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
     - [ ] gemma-4-E2B-it-Q4_K_M defaults
 - [ ] **IP**: Test Proxy with OpenCode.
   - [x] ~~Proxy quick benchmark~~ — Suite C orchestrator at [`scripts/bench/proxy/orchestrator.py`](scripts/bench/proxy/orchestrator.py); brings up a model via the existing `LlamaStashDriver` and runs `chat_turn` alternating between the direct `llama-server` port and the proxy (`127.0.0.1:11434`). On `deepu-flowz13-arch` with `gemma-4-E2B-it-Q4_K_M` (15 reps, alternating order): TTFT p50 +0.45 ms (52.37 → 52.82 ms), decode p50 unchanged (92.80 → 92.70 tok/s). Result + method at [`docs/benchmarks/proxy/results.md`](docs/benchmarks/proxy/results.md); raw JSON under [`docs/benchmarks/proxy/deepu-flowz13-arch/`](docs/benchmarks/proxy/).
+- [ ] **Auto-start retry cap**: when the proxy/supervisor relaunches a failing model, cap the attempts (e.g. 3 retries within a short window) and surface a clear error instead of looping. Observed 2026-05-25 with `Qwen3.6-27B-Q4_K_M` via OpenCode — 10+ failed launches in ~30s spamming logs while the real cause was VRAM pressure from the previously-loaded `gemma-4-E2B-it-Q4_K_M`. See `~/.cache/llamastash/logs/Qwen3.6-27B-Q4_K_M-113ab00c-17797117{36..823}.log`.
 - [ ] Manual UAT smoke run
   - [ ] AMD APU : Linux
   - [ ] AMD GPU : Linux
   - [ ] Nvidia : Linux
   - [ ] Apple Silicon : macOS
 - [ ] **IP**: Update Readme, repo, org and website properly
-- [ ] Audit (binary size, dependencies, test coverage, security, etc.).
-- [ ] Check and sync all docs, validate all repo docs
+- [ ] **IP**: Audit (binary size, dependencies, test coverage, security, etc.).
+- [x] ~~Check and sync all docs, validate all repo docs~~
 - [ ] Release setup validation (website/CI/CD etc).
 - [ ] Add llamastash to cli.rs https://github.com/zackify/cli.rs/pull/1/changes — Unit 7 cutover step, post-org-bootstrap.
 - [ ] Add Agent Skills.
@@ -141,7 +145,8 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 - [ ] **Ollama-compat digest from cached header BLAKE3**: Today `/api/tags` and `/api/ps` both emit `blake3:<hex>` derived from the canonical path string (`ollama_compat::digest_for_path`) — stable across the two endpoints but not the truthful GGUF header BLAKE3 that `ModelId.header_blake3` carries. Lifting the digest to the header hash requires caching `header_blake3` alongside `ModelMetadata` at discovery time (the parser already reads the header bytes; caching the BLAKE3 is incremental cost). Once cached, both endpoints look up the same field and clients that validate the digest against an external source (e.g. an Ollama manifest mirror) get a meaningful answer. Origin: PR #7 follow-up review.
 - [ ] **Need brainstorm/plan**: Ollama-compat Tier 2 — inference endpoints `POST /api/chat`, `POST /api/generate`, `POST /api/embed`. Tier 1 (discovery: `/api/tags`, `/api/version`, `/api/ps`, `/api/show`) ships in this PR and gets llamastash recognised by Ollama-shape discovery libraries; Tier 2 lets tools that _only_ speak Ollama's native inference shape (no OpenAI-compat fallback) drive llamastash directly. Tradeoffs: needs request/response body translation (Ollama uses NDJSON streaming with different field names, vs the proxy's current byte-pure SSE forward), and roughly doubles the code surface of the proxy module. Comparison + design notes in [`docs/architecture.md §Proxy comparison`](docs/architecture.md#proxy-comparison--ollama-lm-studio-llamastash) and [`docs/usage.md §Ollama-compat surface`](docs/usage.md#ollama-compat-surface). Worth doing once we see a real userbase-blocking integration.
 - [ ] **Need brainstorm/plan**: Idle-TTL eviction for the proxy's auto-started supervisors. Both Ollama (5 min, refcount-gated) and LM Studio (60 min, request-resets) evict idle models so a long-running daemon doesn't pin memory forever. llamastash today keeps models resident until explicit `stop_model`; first-request memory growth is the visible gap. Comparison + rationale in [`docs/architecture.md §Proxy comparison`](docs/architecture.md#proxy-comparison--ollama-lm-studio-llamastash); origin: R34 (the broader HTTP/MCP slice of R34 stays at R2).
-- [ ] **GGUF parser revisit**: re-evaluate external crate adoption only if a crate can preserve llamastash's load-bearing identity contract: exact parsed raw header bytes for `ModelId.header_blake3`, split-GGUF naming behavior, and HF snapshot-symlink path handling. Current audit conclusion remains "not worth a swap" until those constraints are met.
+- [ ] **GGUF parser revisit**: web scan found lighter crates (`gguf`) and fuller readers (`gguf-rs-lib`, `gguf-rs`), but none are yet proven to satisfy llamastash's real constraints together: cheap header-only parsing, exact raw parsed header bytes for `ModelId.header_blake3`, split-GGUF behavior, and HF snapshot-symlink path semantics. Do not do a wholesale crate swap unless a spike proves those constraints hold against the current fixtures and integration paths.
+- [ ] **GGUF scope-reduction audit**: the research did _not_ prove every line under `src/gguf/` is necessary. Keep the custom header/split/HF-path behavior unless replaced by a proven crate, but audit `metadata.rs` / `memory.rs` / helpers for code that is not serving a shipped feature. Separate question from "use a crate": can the current custom subsystem be materially smaller while keeping header-only parsing and current UX/identity behavior?
 - [ ] **IPC framing revisit**: re-evaluate swapping the hand-rolled length-prefixed codec for `tokio-util::codec::LengthDelimitedCodec` only if the surrounding IPC layer grows enough that the extra dependency meaningfully simplifies maintenance. Current framing is small, bounded, and fully tested; a swap is not justified today.
 - [ ] More colors in CLI outs, including the --help.
 
