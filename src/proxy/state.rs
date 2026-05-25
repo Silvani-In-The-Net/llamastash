@@ -14,6 +14,7 @@ use std::time::Duration;
 use crate::ipc::methods::MethodContext;
 
 use super::coalesce::Coalesce;
+use super::failure_tracker::FailureTracker;
 use super::mru::MruTracker;
 
 /// Cheap-to-clone bundle of the daemon-side handles the proxy needs.
@@ -45,6 +46,12 @@ pub struct ProxyState {
   /// forwarding starts (per the plan's "as it starts forwarding,
   /// not on completion" rule).
   pub(crate) mru: MruTracker,
+  /// Per-`ModelId` recent-failure log for the auto-start path. Once a
+  /// model trips the threshold, further auto-start requests
+  /// short-circuit with a clear cause instead of spawning another
+  /// llama-server child that will fail the same way. Cleared on a
+  /// successful launch.
+  pub(crate) failures: Arc<FailureTracker>,
   /// Full IPC context handle. Cheap to clone (every field is
   /// already `Arc`-wrapped); the proxy reads catalog / supervisors /
   /// persisted state / launch env through it so there is no
@@ -69,6 +76,7 @@ impl ProxyState {
       http_client: Arc::new(build_http_client()),
       coalesce: Coalesce::new(),
       mru: MruTracker::new(),
+      failures: Arc::new(FailureTracker::new()),
       ctx: ctx.clone(),
       ollama_compat,
     })

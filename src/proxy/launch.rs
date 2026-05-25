@@ -97,12 +97,36 @@ pub(crate) async fn auto_start(state: &Arc<ProxyState>, resolved: &CatalogRow) -
     }
   };
 
+  // Cap the auto-start retry storm. If `model_id` has racked up
+  // `MAX_FAILURES` launch failures within `WINDOW_SECS`, refuse the
+  // attempt up front — sidesteps the observed 10+ identical-failure
+  // launches per 30 s when an agent loops on a model that can't load.
+  // The check is *before* the coalesce acquire so followers don't
+  // sit on a slot that we already know won't recover.
+  if let Some(cause) = state
+    .failures
+    .over_limit(&model_id, std::time::Instant::now())
+  {
+    return LaunchOutcome::Failed { cause };
+  }
+
   // Single-flight acquire. Leaders run the launch and stamp the
   // outcome on the slot; followers read the outcome directly when
   // the leader finishes (or wake to `None` on cancellation).
   match state.coalesce.acquire(model_id.clone()).await {
     AcquireOutcome::Leader(leader) => {
-      let outcome = drive_launch_as_leader(state, resolved, model_id).await;
+      let outcome = drive_launch_as_leader(state, resolved, model_id.clone()).await;
+      // Record outcome against the failure tracker before publishing
+      // to followers so a follower that wakes up immediately and asks
+      // `over_limit` sees a coherent count.
+      match &outcome {
+        LaunchOutcome::Ready { .. } => state.failures.clear(&model_id),
+        LaunchOutcome::Failed { .. } => {
+          state
+            .failures
+            .note_failure(&model_id, std::time::Instant::now());
+        }
+      }
       leader.finish(outcome.clone().into()).await;
       outcome
     }
