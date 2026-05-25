@@ -2,7 +2,7 @@
 
 ![Logo](./assets/logo-h.jpg)
 
-A fast, keyboard-driven TUI **and** CLI with init wizard for launching local LLMs via [llama.cpp](https://github.com/ggml-org/llama.cpp) with zero overhead. See [benchmarks](todo).
+A fast, keyboard-driven TUI **and** CLI with init wizard for launching local LLMs via [llama.cpp](https://github.com/ggml-org/llama.cpp) with zero overhead. See [benchmarks](docs/benchmarks.md).
 
 ## Why
 
@@ -127,6 +127,21 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 - [Archive-bomb defenses on installers](FEATURES.md#archive-bomb-defenses-on-installers) — entry/size/ratio caps; SHA-256 verified before extract.
 - [Atomic, mode-checked config + state writes](FEATURES.md#atomic-mode-checked-config--state-writes) — `0600` final mode; corrupt state quarantined, not fatal.
 - [Side-by-side daemons](FEATURES.md#side-by-side-daemons) — isolated instances via `LLAMASTASH_*_DIR` + `LLAMASTASH_SOCKET`.
+
+## Benchmarks
+
+LlamaStash spawns the unmodified upstream `llama-server`. Two suites track what that means in practice — **Suite A** asserts the wrapper adds no measurable overhead vs raw `llama-server`, **Suite B** compares LlamaStash-as-shipped against Ollama + LM Studio on the same hardware through their OpenAI-compatible endpoints. Full write-up + per-workload tables: [`docs/benchmarks.md`](docs/benchmarks.md).
+
+### AMD APU - Linux (Ryzen AI Max+ 395 / Radeon 8060S, `gfx1151`, llama.cpp `b9282`)
+
+| Tool | small (E2B Q4) | mid (31B Q4) | large_dense (27B Q8) | large_moe (35B-A3B Q8) | Engine notes |
+|---|---:|---:|---:|---:|---|
+| **LlamaStash** | **86.9 / 51** | 9.8 / 467 | **7.4 / 417** | **42.6 / 181** | b9282 HIP/ROCm |
+| raw `llama-server` | 84.9 / 52 | 9.9 / 468 | 7.4 / 414 | 42.7 / 186 | b9282 HIP/ROCm |
+| LM Studio 2.16.0 | **91.1** / 187 | **11.6** / 1 477 | **7.9** / 1 274 | 37.0 / 683 | small=ROCm, mid/large=Vulkan |
+| Ollama 0.24.0 | 50.4 / 223 | 4.8 / 1 092 | 2.6 / 1 745 | 12.1 / 476 | bundled |
+
+Each cell is **decode tok/s / TTFT ms** on the `chat_turn` workload (50-token prompt → 64 tokens decode), averaged across `defaults` + `normalized` modes. LlamaStash matches raw `llama-server` within ≤1% on every cell. Curated report with seven findings: [`r1-amd-apu-final-report.md`](docs/benchmarks/r1-amd-apu-final-report.md). Re-run on your hardware: `make bench-end-to-end` (Suite B) or `make bench-overhead` (Suite A).
 
 ## Configuration
 

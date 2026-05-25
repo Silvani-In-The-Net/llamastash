@@ -250,14 +250,9 @@ fn push_bool(out: &mut Vec<OsString>, canonical: &str, value: Option<bool>) {
   }
 }
 
-/// Upstream llama.cpp [PR #15434](https://github.com/ggml-org/llama.cpp/pull/15434)
-/// (merged 2025-08-30, first in tag **b6325**) made `--flash-attn`
-/// a tri-state argument requiring `on|off|auto` and defaulted it to
-/// `auto`. Any `llama-server` >= b6325 rejects the bare flag —
-/// passing `--flash-attn` alone causes the next argv entry to be
-/// parsed as the flash-attn value. We always emit the explicit
-/// `on`/`off` form so a user-level `Some(false)` actually disables
-/// an inherited `Some(true)` rather than silently dropping.
+/// Modern llama-server (b9000+) requires `--flash-attn on|off|auto`
+/// and rejects the bare flag — passing `--flash-attn` alone causes
+/// the next argv entry to be parsed as the flash-attn value.
 fn push_flash_attn(out: &mut Vec<OsString>, canonical: &str, value: Option<bool>) {
   match value {
     Some(true) => {
@@ -342,7 +337,38 @@ pub struct Resolved {
 /// `spec.fallback_label` — `ModelDefault` for ctx/reasoning (read
 /// from the model file when omitted), `ServerDefault` for everything
 /// else (llama-server's hardcoded default).
+///
+/// When `LLAMASTASH_BENCH_DISABLE_DEFAULTS=1` is set in the
+/// environment, the resolver collapses to "User-labeled layers only"
+/// — preset, last-used, yaml-arch, and compiled-in arch defaults are
+/// all skipped. The benchmark harness sets this to make
+/// `llamastash start` produce byte-identical argv to raw
+/// `llama-server` for the same explicit knobs. Documented as
+/// maintainer / bench-internal; not a public knob.
 pub fn resolve_layered(layers: &[(LayerLabel, &TypedKnobs)]) -> Resolved {
+  resolve_layered_with_disable_defaults(layers, bench_disable_defaults_from_env())
+}
+
+/// Inner resolver used by [`resolve_layered`]. Split out so tests
+/// can exercise the bench-disable-defaults branch without mutating
+/// process environment (env-var mutation in tests is racy across
+/// `cargo test`'s thread pool).
+pub fn resolve_layered_with_disable_defaults(
+  layers: &[(LayerLabel, &TypedKnobs)],
+  disable_defaults: bool,
+) -> Resolved {
+  if disable_defaults {
+    let user_only: Vec<(LayerLabel, &TypedKnobs)> = layers
+      .iter()
+      .filter(|(l, _)| matches!(l, LayerLabel::User))
+      .copied()
+      .collect();
+    return resolve_layered_inner(&user_only);
+  }
+  resolve_layered_inner(layers)
+}
+
+fn resolve_layered_inner(layers: &[(LayerLabel, &TypedKnobs)]) -> Resolved {
   let mut knobs = TypedKnobs::default();
   let mut sources: BTreeMap<KnobField, LayerLabel> = BTreeMap::new();
   for spec in knob_specs() {
@@ -357,6 +383,16 @@ pub fn resolve_layered(layers: &[(LayerLabel, &TypedKnobs)]) -> Resolved {
     }
   }
   Resolved { knobs, sources }
+}
+
+/// Strict-`"1"` env-var read for `LLAMASTASH_BENCH_DISABLE_DEFAULTS`.
+/// Any other value (including `"0"`, `"true"`, `"yes"`, empty
+/// string, or unset) is treated as "not set." This matches the
+/// existing `LLAMASTASH_ASSUME_NON_TTY` pattern in
+/// `src/init/prompts.rs` so users have a consistent contract across
+/// the bench-internal env vars.
+fn bench_disable_defaults_from_env() -> bool {
+  std::env::var_os("LLAMASTASH_BENCH_DISABLE_DEFAULTS").is_some_and(|v| v == "1")
 }
 
 /// If `field` is `Some` on `from` and `None` on `into`, copy it.
@@ -783,6 +819,7 @@ mod tests {
 
   #[test]
   fn resolve_layered_first_some_wins_per_field() {
+    let _lock = crate::cli::test_lock::serialize();
     let upper = TypedKnobs {
       threads: Some(8),
       ..TypedKnobs::default()
@@ -825,6 +862,7 @@ mod tests {
 
   #[test]
   fn resolve_layered_walks_full_precedence_chain() {
+    let _lock = crate::cli::test_lock::serialize();
     // R106: preset > last_used > yaml-arch > built-in. Same field
     // contributed by every layer — the highest precedence wins.
     let preset = TypedKnobs {
@@ -855,6 +893,7 @@ mod tests {
 
   #[test]
   fn resolve_layered_yaml_and_builtin_both_report_arch_default() {
+    let _lock = crate::cli::test_lock::serialize();
     // Yaml and the compiled-in arch table share the `ArchDefault`
     // chip — only their per-field precedence differs.
     let yaml = TypedKnobs {
@@ -877,6 +916,153 @@ mod tests {
       r.sources.get(&KnobField::NGpuLayers),
       Some(&LayerLabel::ArchDefault)
     );
+  }
+
+  #[test]
+  fn resolve_with_disable_defaults_drops_non_user_layers() {
+    // Bench-disable: only the User-labeled layer's knobs survive.
+    // LastUsed and ArchDefault contributions are dropped — even
+    // fields the user didn't set fall through to fallback_label
+    // (ServerDefault / ModelDefault) rather than inheriting.
+    let user = TypedKnobs {
+      n_gpu_layers: Some(99),
+      ctx: Some(4096),
+      ..TypedKnobs::default()
+    };
+    let last = TypedKnobs {
+      threads: Some(8),
+      flash_attn: Some(true),
+      ..TypedKnobs::default()
+    };
+    let arch = TypedKnobs {
+      batch_size: Some(2048),
+      ubatch_size: Some(512),
+      ..TypedKnobs::default()
+    };
+    let r = resolve_layered_with_disable_defaults(
+      &[
+        (LayerLabel::User, &user),
+        (LayerLabel::LastUsed, &last),
+        (LayerLabel::ArchDefault, &arch),
+      ],
+      true,
+    );
+    assert_eq!(r.knobs.n_gpu_layers, Some(99));
+    assert_eq!(r.knobs.ctx, Some(4096));
+    assert_eq!(
+      r.knobs.threads, None,
+      "last_used.threads must NOT inherit when bench-disable is on"
+    );
+    assert_eq!(
+      r.knobs.flash_attn, None,
+      "last_used.flash_attn must NOT inherit when bench-disable is on"
+    );
+    assert_eq!(
+      r.knobs.batch_size, None,
+      "arch_default.batch_size must NOT inherit when bench-disable is on"
+    );
+    assert_eq!(
+      r.sources.get(&KnobField::Threads),
+      Some(&LayerLabel::ServerDefault),
+      "skipped knob falls through to ServerDefault"
+    );
+    assert_eq!(
+      r.sources.get(&KnobField::NGpuLayers),
+      Some(&LayerLabel::User),
+      "user knob still labeled User"
+    );
+  }
+
+  #[test]
+  fn resolve_with_disable_defaults_off_preserves_full_chain() {
+    // Bench-disable off: identical to plain resolve_layered. Verifies
+    // the new branch doesn't accidentally alter the default path.
+    let user = TypedKnobs {
+      n_gpu_layers: Some(99),
+      ..TypedKnobs::default()
+    };
+    let last = TypedKnobs {
+      threads: Some(8),
+      ..TypedKnobs::default()
+    };
+    let arch = TypedKnobs {
+      batch_size: Some(2048),
+      ..TypedKnobs::default()
+    };
+    let layers = [
+      (LayerLabel::User, &user),
+      (LayerLabel::LastUsed, &last),
+      (LayerLabel::ArchDefault, &arch),
+    ];
+    let with_flag = resolve_layered_with_disable_defaults(&layers, false);
+    let baseline = resolve_layered_inner(&layers);
+    assert_eq!(with_flag.knobs, baseline.knobs);
+    assert_eq!(with_flag.sources, baseline.sources);
+    // Sanity: full chain inherits threads + batch_size.
+    assert_eq!(with_flag.knobs.threads, Some(8));
+    assert_eq!(with_flag.knobs.batch_size, Some(2048));
+  }
+
+  #[test]
+  fn resolve_with_disable_defaults_and_no_user_layer_yields_empty_knobs() {
+    // Edge: bench-disable but caller passed no User layer (only
+    // last_used + arch defaults). Result is empty knobs with every
+    // field at its fallback_label — never a stale arch-default leak.
+    let last = TypedKnobs {
+      threads: Some(8),
+      ..TypedKnobs::default()
+    };
+    let arch = TypedKnobs {
+      n_gpu_layers: Some(99),
+      ..TypedKnobs::default()
+    };
+    let r = resolve_layered_with_disable_defaults(
+      &[
+        (LayerLabel::LastUsed, &last),
+        (LayerLabel::ArchDefault, &arch),
+      ],
+      true,
+    );
+    assert_eq!(r.knobs, TypedKnobs::default());
+    assert_eq!(
+      r.sources.get(&KnobField::Threads),
+      Some(&LayerLabel::ServerDefault)
+    );
+    assert_eq!(
+      r.sources.get(&KnobField::NGpuLayers),
+      Some(&LayerLabel::ServerDefault)
+    );
+  }
+
+  #[test]
+  fn bench_disable_defaults_env_var_is_strict_one() {
+    // Mirrors the LLAMASTASH_ASSUME_NON_TTY contract: only "1" is on.
+    // Test via the env var directly with set/restore. Holds the shared
+    // `cli::test_lock` so the sibling `resolve_layered_*` tests (which
+    // also grab the lock) can't observe our temporary "1" and collapse
+    // to user-only layers mid-assertion.
+    let _lock = crate::cli::test_lock::serialize();
+    let saved = std::env::var_os("LLAMASTASH_BENCH_DISABLE_DEFAULTS");
+    let restore = || match &saved {
+      Some(v) => std::env::set_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS", v),
+      None => std::env::remove_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS"),
+    };
+
+    std::env::remove_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS");
+    assert!(!bench_disable_defaults_from_env(), "unset → false");
+
+    std::env::set_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS", "1");
+    assert!(bench_disable_defaults_from_env(), "\"1\" → true");
+
+    for v in ["0", "true", "yes", "TRUE", ""] {
+      std::env::set_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS", v);
+      assert!(
+        !bench_disable_defaults_from_env(),
+        "{v:?} must be treated as off (strict-\"1\" contract)"
+      );
+    }
+
+    restore();
   }
 
   #[test]

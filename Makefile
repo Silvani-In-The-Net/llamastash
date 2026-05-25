@@ -46,6 +46,30 @@ snapshot: .venv/bin/python
 		.venv/bin/python scripts/regenerate-benchmark-snapshot.py; \
 	fi
 
+## Suite B end-to-end benchmark runner (maintainer-only — see
+## docs/benchmarks/methodology.md). Honours env vars LLAMASTASH_BENCH_*;
+## any forwarded args go straight to the orchestrator (e.g. `--dry-run`).
+bench-end-to-end: .venv/bin/python
+	@scripts/bench/end_to_end/run.sh $(filter-out $@,$(MAKECMDGOALS))
+
+## Suite A overhead-band runner: `llamastash start` vs raw `llama-server`
+## byte-equal argv check + two-tier delta thresholds.
+bench-overhead: .venv/bin/python
+	@scripts/bench/overhead/run.sh $(filter-out $@,$(MAKECMDGOALS))
+
+## Run the bench harness's own pytest suite (unit tests for schema,
+## drivers, workloads, render). Real benchmarks are launched via the
+## `bench-*` targets above; this only exercises the harness code.
+bench-test: .venv/bin/python
+	@.venv/bin/python -m pytest scripts/bench/ -v
+
+## Pivot the existing bench JSONs under docs/benchmarks/runs/ into a
+## per-model summary table (markdown). Auto-detects engine variants
+## from `host_id` suffixes. Forwards extra args (e.g. `--host`,
+## `--json`, `--engine-map`) to the underlying module.
+bench-table: .venv/bin/python
+	@.venv/bin/python -m scripts.bench.end_to_end.table $(filter-out $@,$(MAKECMDGOALS))
+
 ## Run llamastash against the local daemon (auto-spawns one if missing).
 ## Extra goals are forwarded to cargo as subcommand args, so:
 ##   make run                     -> cargo run --                (launches TUI)

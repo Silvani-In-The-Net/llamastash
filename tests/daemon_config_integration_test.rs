@@ -193,6 +193,15 @@ async fn ollama_default_cache_surfaces_through_list_models() {
   // `known_caches::default_set` find it the way the production
   // daemon does. We assert the daemon's `list_models` surfaces the
   // manifest-backed blob under `source: "ollama"`.
+  //
+  // `default_set` honors `$OLLAMA_MODELS` per known_caches.rs; if the
+  // dev box has it pointing at a real Ollama install the discovery
+  // pulls those blobs in *alongside* the synthetic ones and the
+  // assertion below picks up the wrong row. `EnvIsolation::acquire()`
+  // above already removed it for the lifetime of this test under the
+  // crate-local `ENV_LOCK`; other consumers (e.g. unit tests in
+  // `src/discovery/known_caches.rs`) live in a separate test binary,
+  // so cross-process races aren't possible.
   let state = unique_temp("ollama-state");
   let home = unique_temp("ollama-home");
   let ollama_root = home.join(".ollama/models");
