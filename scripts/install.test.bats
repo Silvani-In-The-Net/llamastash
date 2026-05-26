@@ -26,7 +26,14 @@ _sha256() {
 # Detect the native Rust target triple from the host's uname output.
 _native_target() {
   case "$(uname -s)" in
-    Linux) os_part=unknown-linux-gnu ;;
+    Linux)
+      if ldd --version 2>&1 | grep -qi musl; then
+        libc_part=musl
+      else
+        libc_part=gnu
+      fi
+      os_part=unknown-linux-"${libc_part}"
+      ;;
     Darwin) os_part=apple-darwin ;;
     *) echo "unsupported-host"; return ;;
   esac
@@ -283,6 +290,18 @@ EOF
   echo "$stub_dir"
 }
 
+_install_ldd_stub() {
+  ldd_output="$1"
+  stub_dir="$TEST_TMP/stubs"
+  mkdir -p "$stub_dir"
+  cat >"$stub_dir/ldd" <<EOF
+#!/bin/sh
+printf '%s\n' '${ldd_output}'
+EOF
+  chmod +x "$stub_dir/ldd"
+  echo "$stub_dir"
+}
+
 @test "Windows host is refused with exit 64 and a clear message" {
   stub_dir=$(_install_uname_stub "MINGW64_NT-10.0" "x86_64")
   PATH="$stub_dir:$PATH" LLAMASTASH_QUIET= run "$INSTALL_SH"
@@ -295,6 +314,30 @@ EOF
   PATH="$stub_dir:$PATH" LLAMASTASH_QUIET= run "$INSTALL_SH"
   [ "$status" -eq 64 ]
   echo "$output" | grep -q "unsupported Linux arch"
+}
+
+@test "Linux musl x86_64 resolves to the musl asset" {
+  uname_stub=$(_install_uname_stub "Linux" "x86_64")
+  ldd_stub=$(_install_ldd_stub "musl libc (x86_64)")
+  PATH="$ldd_stub:$uname_stub:$PATH" LLAMASTASH_QUIET= run "$INSTALL_SH" --version "v9.9.9"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "x86_64-unknown-linux-musl"
+}
+
+@test "Linux armv7 glibc resolves to the armv7 gnu asset" {
+  uname_stub=$(_install_uname_stub "Linux" "armv7l")
+  ldd_stub=$(_install_ldd_stub "ldd (GNU libc) 2.39")
+  PATH="$ldd_stub:$uname_stub:$PATH" LLAMASTASH_QUIET= run "$INSTALL_SH" --version "v9.9.9"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "armv7-unknown-linux-gnueabihf"
+}
+
+@test "Linux armv6 musl resolves to the armv6 musl asset" {
+  uname_stub=$(_install_uname_stub "Linux" "armv6l")
+  ldd_stub=$(_install_ldd_stub "musl libc (armhf)")
+  PATH="$ldd_stub:$uname_stub:$PATH" LLAMASTASH_QUIET= run "$INSTALL_SH" --version "v9.9.9"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "arm-unknown-linux-musleabihf"
 }
 
 @test "unsupported macOS arch is refused with exit 64" {

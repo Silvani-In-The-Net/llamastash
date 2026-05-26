@@ -9,7 +9,8 @@ name: release
 #   3. create-release       — `gh release create` (idempotent). Releases are
 #                             made exactly once so the build matrix never races
 #                             to create them.
-#   4. build                — matrix builds 4 target tarballs; each job uploads
+#   4. build                — matrix builds 10 non-Windows target tarballs; each
+#                             job uploads
 #                             its own tarball + .sha256 sidecar via `gh release
 #                             upload`, which is purely additive (no create).
 #   5. publish-shasums      — aggregates per-target .sha256 into a sorted
@@ -33,9 +34,10 @@ name: release
 #
 # Pre-release tags (vX.Y.Z-suffix) still exercise prepare-release +
 # release-gate + create-release + build + publish-shasums so dry runs catch
-# test/UAT regressions, but never write to the tap, site, or crates.io. The
-# downstream cleanup needed after an rc1 dry run is therefore just
-# `git push --delete origin <tag>` plus `gh release delete`.
+# test/UAT regressions across the full non-Windows matrix, but never write to
+# the tap, site, or crates.io. The downstream cleanup needed after an rc1 dry
+# run is therefore just `git push --delete origin <tag>` plus `gh release
+# delete`.
 #
 # Steps 6-8 run in parallel; all gate on publish-shasums. cargo publish is
 # parallel with tap/site by intent (per the kdash pattern); failure modes
@@ -218,12 +220,44 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            use_cross: false
+            verify_regex: 'ELF .*x86-64'
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            verify_regex: 'ELF .*x86-64'
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            use_cross: true
+            verify_regex: 'ELF .*(aarch64|ARM aarch64)'
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            verify_regex: 'ELF .*(aarch64|ARM aarch64)'
+          - target: arm-unknown-linux-gnueabi
+            os: ubuntu-latest
+            use_cross: true
+            verify_regex: 'ELF .*ARM'
+          - target: arm-unknown-linux-musleabihf
+            os: ubuntu-latest
+            use_cross: true
+            verify_regex: 'ELF .*ARM'
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            use_cross: true
+            verify_regex: 'ELF .*ARM'
+          - target: armv7-unknown-linux-musleabihf
+            os: ubuntu-latest
+            use_cross: true
+            verify_regex: 'ELF .*ARM'
           - target: aarch64-apple-darwin
             os: macos-latest
+            use_cross: false
+            verify_regex: 'Mach-O .*(arm64|aarch64)'
           - target: x86_64-apple-darwin
             os: macos-latest
+            use_cross: false
+            verify_regex: 'Mach-O .*x86_64'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -238,20 +272,27 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
-
-      - name: install cross-linker (linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - uses: taiki-e/install-action@efefed674a25e760aca7952da429419e28e6c0a7  # cross
+        if: matrix.use_cross
+      - uses: taiki-e/setup-cross-toolchain-action@3d9770ce98eb7dbcf378563182a5e8031165f75b  # v1
+        if: matrix.use_cross
+        with:
+          target: ${{ matrix.target }}
 
       - name: cargo build --release --locked
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         # The shipped binary must NEVER include `--features uat` — the
         # maintainer-only UAT subcommand is gated behind that feature so
         # it never reaches crates.io / Homebrew users. Audit per the
         # plan §R10: `grep -F "features uat" .github/workflows/release.yml`
         # should return only this comment line.
-        run: cargo build --release --target ${{ matrix.target }} --bin llamastash --locked
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target "${{ matrix.target }}" --bin llamastash --locked
+          else
+            cargo build --release --target "${{ matrix.target }}" --bin llamastash --locked
+          fi
 
       - name: verify binary is an executable for the target arch
         shell: bash
@@ -259,26 +300,7 @@ jobs:
           set -euo pipefail
           out=$(file "target/${{ matrix.target }}/release/llamastash")
           echo "$out"
-          case "${{ matrix.target }}" in
-            x86_64-unknown-linux-gnu)
-              echo "$out" | grep -Eq 'ELF .*x86-64' || { echo "::error::wrong arch"; exit 1; } ;;
-            aarch64-unknown-linux-gnu)
-              echo "$out" | grep -Eq 'ELF .*(aarch64|ARM aarch64)' || { echo "::error::wrong arch"; exit 1; } ;;
-            aarch64-apple-darwin)
-              echo "$out" | grep -Eq 'Mach-O .*(arm64|aarch64)' || { echo "::error::wrong arch"; exit 1; } ;;
-            x86_64-apple-darwin)
-              echo "$out" | grep -Eq 'Mach-O .*x86_64' || { echo "::error::wrong arch"; exit 1; } ;;
-          esac
-
-      - name: strip binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            aarch64-linux-gnu-strip "target/${{ matrix.target }}/release/llamastash"
-          else
-            strip "target/${{ matrix.target }}/release/llamastash"
-          fi
+          echo "$out" | grep -Eq "${{ matrix.verify_regex }}" || { echo "::error::wrong arch"; exit 1; }
 
       - name: package tarball
         shell: bash
@@ -343,7 +365,7 @@ jobs:
           # Concatenate per-target .sha256 sidecars into a single SHA256SUMS,
           # sorted for deterministic line order across runs.
           cat sha-stash/*.tar.gz.sha256 | LC_ALL=C sort >dist/SHA256SUMS
-          # Verify shape: hex(64) + whitespace + filename, exactly 4 lines.
+          # Verify shape: hex(64) + whitespace + filename, exactly 10 lines.
           awk '
             NF < 2 || $1 !~ /^[a-fA-F0-9]{64}$/ {
               printf "::error::bad SHA256SUMS line: %s\n", $0 > "/dev/stderr"
@@ -351,8 +373,8 @@ jobs:
             }
           ' dist/SHA256SUMS
           line_count=$(wc -l <dist/SHA256SUMS)
-          if [ "$line_count" -ne 4 ]; then
-            echo "::error::SHA256SUMS has $line_count lines; expected 4 (one per target)"
+          if [ "$line_count" -ne 10 ]; then
+            echo "::error::SHA256SUMS has $line_count lines; expected 10 (one per target)"
             cat dist/SHA256SUMS
             exit 1
           fi

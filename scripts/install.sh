@@ -27,11 +27,17 @@
 #   2   checksum verification failed
 #   64  unsupported platform or invalid usage
 #
-# Target detection (uname -s, uname -m) -> Rust target triple:
-#   linux x86_64  -> x86_64-unknown-linux-gnu
-#   linux aarch64 -> aarch64-unknown-linux-gnu
-#   darwin x86_64 -> x86_64-apple-darwin
-#   darwin arm64  -> aarch64-apple-darwin
+# Target detection (uname -s, uname -m, libc) -> Rust target triple:
+#   linux x86_64  + glibc -> x86_64-unknown-linux-gnu
+#   linux x86_64  + musl  -> x86_64-unknown-linux-musl
+#   linux aarch64 + glibc -> aarch64-unknown-linux-gnu
+#   linux aarch64 + musl  -> aarch64-unknown-linux-musl
+#   linux armv6l + glibc  -> arm-unknown-linux-gnueabi
+#   linux armv6l + musl   -> arm-unknown-linux-musleabihf
+#   linux armv7l + glibc  -> armv7-unknown-linux-gnueabihf
+#   linux armv7l + musl   -> armv7-unknown-linux-musleabihf
+#   darwin x86_64         -> x86_64-apple-darwin
+#   darwin arm64          -> aarch64-apple-darwin
 #
 # This script must run under POSIX sh and Bash 3.2+ (macOS default). It avoids
 # Bash 4-only features (mapfile, readarray, ${var,,}) so it works everywhere.
@@ -118,11 +124,30 @@ detect_target() {
 
   case "$uname_s" in
     Linux)
+      libc_flavor=$(detect_linux_libc)
       case "$uname_m" in
-        x86_64|amd64) echo "x86_64-unknown-linux-gnu" ;;
-        aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
+        x86_64|amd64)
+          echo "x86_64-unknown-linux-${libc_flavor}"
+          ;;
+        aarch64|arm64)
+          echo "aarch64-unknown-linux-${libc_flavor}"
+          ;;
+        armv6l|armv6)
+          if [ "$libc_flavor" = "musl" ]; then
+            echo "arm-unknown-linux-musleabihf"
+          else
+            echo "arm-unknown-linux-gnueabi"
+          fi
+          ;;
+        armv7l|armv7)
+          if [ "$libc_flavor" = "musl" ]; then
+            echo "armv7-unknown-linux-musleabihf"
+          else
+            echo "armv7-unknown-linux-gnueabihf"
+          fi
+          ;;
         *)
-          err "unsupported Linux arch: $uname_m (supported: x86_64, aarch64)"
+          err "unsupported Linux arch: $uname_m (supported: x86_64, aarch64, armv6l, armv7l)"
           exit 64
           ;;
       esac
@@ -146,6 +171,32 @@ detect_target() {
       exit 64
       ;;
   esac
+}
+
+detect_linux_libc() {
+  if [ -f /etc/alpine-release ]; then
+    echo "musl"
+    return
+  fi
+
+  if command -v ldd >/dev/null 2>&1; then
+    ldd_out=$(ldd --version 2>&1 || true)
+    case "$ldd_out" in
+      *musl*)
+        echo "musl"
+        return
+        ;;
+      *glibc*|*GLIBC*|*"GNU libc"*)
+        echo "gnu"
+        return
+        ;;
+    esac
+  fi
+
+  # Default to glibc when detection is inconclusive: Debian/Ubuntu/Fedora
+  # land here when `ldd --version` emits a distro-specific preamble before
+  # mentioning GLIBC, and the released gnu artefacts are the common case.
+  echo "gnu"
 }
 
 # ----- network helpers ---------------------------------------------------------
