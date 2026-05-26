@@ -187,12 +187,12 @@ standard `LLAMASTASH_LLAMA_SERVER=...` environment variable.
 `--host-backend cpu_only` is a **host-probe** expectation, not a
 "disable GPU offload on any box" flag. On a machine like the maintainer's
 AMD Linux host, the UAT preflight still detects `amd`, so the true
-CPU-only lane lives on GitHub Actions instead:
+CPU-only lanes live in the release workflow instead:
 
-- Workflow: `.github/workflows/uat-cpu-only-nightly.yml`
-- Runner: `ubuntu-latest`
+- Workflow: `.github/workflows/release.yml` (`release-gate` job)
+- Runners: `ubuntu-latest` and `macos-14`
 - Mode: `cold` (covers install + pull + launch, not just a cached warm run)
-- Artifact: `uat-cpu-only.json`
+- Artifacts: `uat-linux-cpu-only-<run-id>` and `uat-macos-cpu-only-<run-id>`
 
 Use the local `make uat-cpu-only` shortcut only on a box that actually
 probes as `cpu_only`.

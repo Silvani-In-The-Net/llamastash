@@ -208,18 +208,19 @@ jobs:
         # the release workflow tries to use it.
         run: python3 deployment/homebrew/packager_test.py
 
-      - name: uat — R4 audit (release binary never carries --features uat)
+      - name: uat — R4 audit (release build never ships --features uat)
         # The shipped binary on crates.io / Homebrew must not carry the
-        # maintainer-only `uat` Cargo feature. Plan §R4 + `release.yml`'s
-        # build-step comment both document this. A non-comment match
-        # means somebody added `--features uat` to the release build.
+        # maintainer-only `uat` Cargo feature. The release workflow may
+        # legitimately use `--features uat` in pre-build validation jobs;
+        # what must never happen is adding it to a `cargo build ... --bin
+        # llamastash --locked` line that produces the shipped tarballs.
         run: |
           set -euo pipefail
-          if grep -nE '^[^#]*--features[[:space:]]+uat' .github/workflows/release.yml; then
-            echo "::error::release.yml carries '--features uat' in a non-comment line — that ships the maintainer-only UAT subcommand to end users."
+          if grep -nE '^[^#]*cargo build .*--features[[:space:]]+uat.*--bin[[:space:]]+llamastash' .github/workflows/release.yml; then
+            echo "::error::release.yml adds '--features uat' to a shipped cargo build line — that would ship the maintainer-only UAT subcommand to end users."
             exit 1
           fi
-          echo "R4: release.yml does not pass --features uat to the build step; OK"
+          echo "R4: shipped cargo build lines in release.yml do not pass --features uat; OK"
 
       - name: uat — synthetic exit codes documented
         # Agents parsing `failure_summary.exit_code` rely on the synthetic

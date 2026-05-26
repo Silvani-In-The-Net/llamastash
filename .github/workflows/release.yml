@@ -2,38 +2,42 @@ name: release
 
 # Triggered by a vX.Y.Z tag push. Pipeline shape (kdash cd.yml lineage):
 #
-#   1. create-release       — extract version from tag, cross-check it against
-#                             Cargo.toml + CHANGELOG, then `gh release create`
-#                             (idempotent). Releases are made exactly once so
-#                             the build matrix never races to create them.
-#   2. build                — matrix builds 4 target tarballs; each job uploads
+#   1. prepare-release      — extract version from tag and cross-check it
+#                             against Cargo.toml + CHANGELOG.
+#   2. release-gate         — run tests + cold CPU-only UAT on Linux and
+#                             macOS runners before any GH Release is created.
+#   3. create-release       — `gh release create` (idempotent). Releases are
+#                             made exactly once so the build matrix never races
+#                             to create them.
+#   4. build                — matrix builds 4 target tarballs; each job uploads
 #                             its own tarball + .sha256 sidecar via `gh release
 #                             upload`, which is purely additive (no create).
-#   3. publish-shasums      — aggregates per-target .sha256 into a sorted
+#   5. publish-shasums      — aggregates per-target .sha256 into a sorted
 #                             SHA256SUMS, uploads SHA256SUMS + install.sh +
 #                             install.sh.sha256 to the GH Release.
-#   4. publish-homebrew     — runs deployment/homebrew/packager.py, clones the
+#   6. publish-homebrew     — runs deployment/homebrew/packager.py, clones the
 #                             tap via GH_BUMP_TOKEN (GIT_ASKPASS — token never
 #                             touches argv or URL strings), rewrites the
 #                             formula, lints with `brew style`, commits with
 #                             rebase-and-retry. Skipped on pre-release tags.
-#   5. publish-site         — fetches install.sh + sidecar from the release,
+#   7. publish-site         — fetches install.sh + sidecar from the release,
 #                             re-verifies SHA-256, prepends a provenance header,
 #                             recomputes the sidecar over the headered file
 #                             (so curl https://.../install.sh.sha256 matches
 #                             curl https://.../install.sh), writes version.ts
 #                             via a quoted heredoc, clones + pushes the site
 #                             repo. Skipped on pre-release tags.
-#   6. publish-cargo        — `cargo publish` with retries on transient
+#   8. publish-cargo        — `cargo publish` with retries on transient
 #                             crates.io failures, idempotent against re-runs.
 #                             Skipped on pre-release tags.
 #
-# Pre-release tags (vX.Y.Z-suffix) exercise only create-release + build +
-# publish-shasums so feature-branch dry runs never write to the tap, site,
-# or crates.io. The downstream cleanup needed after an rc1 dry run is
-# therefore just `git push --delete origin <tag>` plus `gh release delete`.
+# Pre-release tags (vX.Y.Z-suffix) still exercise prepare-release +
+# release-gate + create-release + build + publish-shasums so dry runs catch
+# test/UAT regressions, but never write to the tap, site, or crates.io. The
+# downstream cleanup needed after an rc1 dry run is therefore just
+# `git push --delete origin <tag>` plus `gh release delete`.
 #
-# Steps 4-6 run in parallel; all gate on publish-shasums. cargo publish is
+# Steps 6-8 run in parallel; all gate on publish-shasums. cargo publish is
 # parallel with tap/site by intent (per the kdash pattern); failure modes
 # are catalogued in docs/plans/2026-05-19-003-feat-0.2.0-release-setup-plan.md
 # §Risks & Dependencies.
@@ -60,8 +64,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  create-release:
-    name: create-release
+  prepare-release:
+    name: prepare-release
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -129,10 +133,60 @@ jobs:
             fi
           fi
 
+  release-gate:
+    name: release-gate (${{ matrix.label }})
+    needs: [prepare-release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-cpu-only
+            os: ubuntu-latest
+          - label: macos-cpu-only
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --features test-fixtures,uat
+        run: cargo test --features test-fixtures,uat --workspace --no-fail-fast
+        env:
+          RUST_BACKTRACE: 1
+          TMPDIR: /tmp
+
+      - name: cold CPU-only UAT
+        run: cargo run --features uat -- uat --host-backend cpu_only --mode cold --report-out uat-${{ matrix.label }}.json
+        env:
+          RUST_BACKTRACE: 1
+          TMPDIR: /tmp
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uat-${{ matrix.label }}-${{ github.run_id }}
+          path: uat-${{ matrix.label }}.json
+          retention-days: 7
+
+  create-release:
+    name: create-release
+    needs: [prepare-release, release-gate]
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ needs.prepare-release.outputs.tag }}
+      version: ${{ needs.prepare-release.outputs.version }}
+      is_prerelease: ${{ needs.prepare-release.outputs.is_prerelease }}
+    steps:
       - name: create release (idempotent)
         env:
-          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
-          IS_PRERELEASE: ${{ steps.tag.outputs.is_prerelease }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+          IS_PRERELEASE: ${{ needs.prepare-release.outputs.is_prerelease }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |

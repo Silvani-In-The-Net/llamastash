@@ -112,7 +112,7 @@ Look at the `Makefile` for more commands, including `make uat-*` for the manual 
 - the `_test_sleep` IPC method used by drain-timeout tests (never exposed in release builds because the feature is opt-in and not in the default set).
 - `src/gguf/test_fixtures` (`FixtureBuilder`, `build_minimal_gguf`).
 
-`--features uat` enables the maintainer-only `llamastash uat` subcommand (hidden from `--help`; the release binary on crates.io and Homebrew bottles never ships it). The orchestrator drives a 5-step real-hardware lifecycle and emits a structured JSON report — see [`docs/testing/hardware-uat.md`](docs/testing/hardware-uat.md) for setup and run instructions. The release workflow audits that `--features uat` is never enabled in shipped binaries.
+`--features uat` enables the maintainer-only `llamastash uat` subcommand (hidden from `--help`; the release binary on crates.io and Homebrew bottles never ships it). The orchestrator drives a 5-step real-hardware lifecycle and emits a structured JSON report — see [`docs/testing/hardware-uat.md`](docs/testing/hardware-uat.md) for setup and run instructions. The release workflow audits that `--features uat` is never enabled in shipped binaries, while its pre-build `release-gate` job runs cold CPU-only UAT on Linux and macos.
 
 Two-space indentation is enforced by `rustfmt.toml`. Clippy denies `shadow_unrelated` crate-wide; rename rather than reuse `let` bindings inside the same scope.
 
@@ -240,7 +240,7 @@ A TODO entry tracks the AMD/HIP `no_mmap` measurement follow-up.
 
 ## Release & distribution
 
-- Steady-state contract: `git tag vX.Y.Z && git push --tags` triggers `.github/workflows/release.yml`, which builds 4 target tarballs, uploads release assets, pushes the new Homebrew formula to `llamastash/homebrew-llamastash`, pushes the verified `install.sh` mirror to `llamastash/llamastash.github.io`, and publishes to crates.io. The full pipeline takes ~10-15 minutes on cold caches.
+- Steady-state contract: `git tag vX.Y.Z && git push --tags` triggers `.github/workflows/release.yml`, which first runs `release-gate` (tests + cold CPU-only UAT on Linux and macos), then builds 4 target tarballs, uploads release assets, pushes the new Homebrew formula to `llamastash/homebrew-llamastash`, pushes the verified `install.sh` mirror to `llamastash/llamastash.github.io`, and publishes to crates.io. The full pipeline takes ~10-15 minutes on cold caches plus the pre-build validation time.
 - First-time setup (creating org repos, minting tokens, configuring Pages) lives in [`docs/runbooks/release-0.0.1-bootstrap.md`](docs/runbooks/release-0.0.1-bootstrap.md) — every step has a `gh` CLI primitive.
 - Pre-tag CI guards in `release-readiness` (ci.yml) catch most release-breaking PRs before tag time: `cargo publish --dry-run --locked`, crates.io name-availability against a publisher allowlist, CHANGELOG `[Unreleased]` header presence, Cargo.toml ↔ CHANGELOG version alignment, packager.py unit tests.
 - Action SHA-pinning policy: trust-critical actions in release.yml (those alongside secrets) are pinned to commit SHAs; first-party `actions/*` are tag-pinned. Updates flow through Dependabot PRs (`.github/dependabot.yml`).

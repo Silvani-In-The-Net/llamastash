@@ -301,16 +301,14 @@ git commit -m "chore(uat): remove spike workflow after metal-exposure confirmed 
 
 Paste the run URL into the merge PR description.
 
-**If the spike fails:** swap to the fallback (Tier 3 collapses to a
-macOS build verification lane):
+**If the spike fails:** the historical fallback was a macOS build-only
+lane. That lane has since been removed; current repo policy is to rely
+on the release workflow's Linux + macOS CPU-only UAT gates instead.
 
 ```sh
-git mv .github/workflows-fallback/macos-build-nightly.yml .github/workflows/
 git rm .github/workflows/uat-metal-nightly.yml
 git rm .github/workflows/uat-metal-spike.yml
-# Update docs/plans/2026-05-19-002-feat-uat-e2e-hardware-strategy-plan.md §R3
-# to honestly downgrade "nightly Metal lane" → "nightly macOS build lane".
-git commit -m "chore(uat): collapse Tier 3 to macOS build (spike falsified metal exposure)"
+git commit -m "chore(uat): remove nightly metal lane after spike falsified runner exposure"
 ```
 
 Clean up the test branch either way:
