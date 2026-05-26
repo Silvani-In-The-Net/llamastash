@@ -379,11 +379,13 @@ mod tests {
   #[cfg(target_os = "linux")]
   #[test]
   fn linux_state_dir_uses_xdg_or_home_dot_local() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _override = EnvVarGuard::unset("LLAMASTASH_STATE_DIR");
     // On Linux the resolved state_dir must live under either
     // `$XDG_STATE_HOME/llamastash` or the conventional fallback
-    // `~/.local/state/llamastash`. We assert by string-contains on the
-    // canonical segment, not by re-setting env vars (which would
-    // race with parallel tests).
+    // `~/.local/state/llamastash`. Clear the explicit override first so
+    // the assertion checks the platform/XDG path rather than a developer's
+    // shell-local `LLAMASTASH_STATE_DIR`.
     let path = state_dir().unwrap().display().to_string();
     assert!(
       path.contains(".local/state/llamastash") || path.contains("/llamastash"),
