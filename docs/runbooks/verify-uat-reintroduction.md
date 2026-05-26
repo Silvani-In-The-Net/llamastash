@@ -82,7 +82,7 @@ build behaves correctly.
 ```sh
 cargo build --release                              # default features, no `uat`
 ./target/release/llamastash --help | grep -i uat   # should be empty
-./target/release/llamastash uat --backend nvidia
+./target/release/llamastash uat --host-backend nvidia
 echo "exit=$?"
 ```
 
@@ -114,7 +114,7 @@ cargo build --release --features uat
 
 - Top-level `--help` still does NOT mention `uat` (the `#[command(hide = true)]` gate).
 - `llamastash uat --help` lists:
-  - `--backend {nvidia,amd,apple_metal,vulkan}` (no `metal` alias)
+  - `--host-backend {nvidia,amd,apple_metal,vulkan,cpu_only}` (no `metal` alias)
   - `--mode {warm,cold}` with warm advertised as default
   - `--report-out <PATH>`
 
@@ -131,7 +131,7 @@ etc.).
 
 ```sh
 REPORT=/tmp/uat-report.json
-./target/release/llamastash uat --backend nvidia --report-out "$REPORT"
+./target/release/llamastash uat --host-backend nvidia --report-out "$REPORT"
 echo "exit=$?"
 
 jq '{verdict, failure_summary, host_warnings: .host.warnings, step_count: (.steps | length)}' "$REPORT"
@@ -150,7 +150,7 @@ jq '{verdict, failure_summary, host_warnings: .host.warnings, step_count: (.step
 ### 4a. stdout / TTY separation
 
 ```sh
-./target/release/llamastash uat --backend nvidia --report-out - \
+./target/release/llamastash uat --host-backend nvidia --report-out - \
   > /tmp/uat-stdout.txt 2> /tmp/uat-stderr.txt
 
 jq . /tmp/uat-stdout.txt | head           # pure parseable JSON
@@ -164,9 +164,9 @@ was interleaved and tests had to use a permissive fallback.)
 ### 4b. `--report-out` path validation
 
 ```sh
-./target/release/llamastash uat --backend nvidia --report-out /tmp/ ; echo "dir: $?"
-./target/release/llamastash uat --backend nvidia --report-out ""    ; echo "empty: $?"
-./target/release/llamastash --quiet uat --backend nvidia --report-out -  ; echo "mutex: $?"
+./target/release/llamastash uat --host-backend nvidia --report-out /tmp/ ; echo "dir: $?"
+./target/release/llamastash uat --host-backend nvidia --report-out ""    ; echo "empty: $?"
+./target/release/llamastash --quiet uat --host-backend nvidia --report-out -  ; echo "mutex: $?"
 ```
 
 **Pass:** all three exit non-zero **before the lifecycle starts**, each
@@ -329,7 +329,7 @@ On a real hardware box for the target backend:
 
 ```sh
 cargo build --release --features uat
-./target/release/llamastash uat --backend apple_metal --mode warm \
+./target/release/llamastash uat --host-backend apple_metal --mode warm \
   --report-out /tmp/uat-warm.json
 
 # Unlock warning should NOT be present now that the references are pinned:

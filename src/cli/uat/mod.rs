@@ -20,7 +20,7 @@ use crate::config::Config;
 use isolation::TempdirGuard;
 use lifecycle::{LifecyclePlan, SIGINT_CODE};
 use report::{
-  backend_label, render_tty_summary, FailureClass, FailureSummary, StepName, StepVerdict,
+  render_tty_summary, runtime_backend_label, FailureClass, FailureSummary, StepName, StepVerdict,
   UatReport, Verdict,
 };
 
@@ -38,25 +38,42 @@ pub async fn handle(args: UatArgs, cli: &Cli, _config: &Config) -> CliResult {
   }
   validate_report_out_path(args.report_out.as_deref())?;
 
-  let backend = args.backend;
+  let host_backend = args.host_backend;
+  let runtime_backend = args.runtime_backend;
   let mode = args.mode;
-  let label = format!(
-    "{}-{}",
-    backend_label(backend),
-    match mode {
-      crate::cli::cli_args::UatMode::Warm => "warm",
-      crate::cli::cli_args::UatMode::Cold => "cold",
-    }
-  );
+  let label = match runtime_backend {
+    Some(runtime) => format!(
+      "{}-x-{}-{}",
+      runtime_backend_label(host_backend),
+      runtime_backend_label(runtime),
+      match mode {
+        crate::cli::cli_args::UatMode::Warm => "warm",
+        crate::cli::cli_args::UatMode::Cold => "cold",
+      }
+    ),
+    None => format!(
+      "{}-{}",
+      runtime_backend_label(host_backend),
+      match mode {
+        crate::cli::cli_args::UatMode::Warm => "warm",
+        crate::cli::cli_args::UatMode::Cold => "cold",
+      }
+    ),
+  };
 
   let guard = TempdirGuard::new(&label)
     .map_err(|e| CliExit::new(UNKNOWN, format!("uat: tempdir setup failed: {e}")))?;
-  let plan = LifecyclePlan::from_args(backend, mode)
+  let plan = LifecyclePlan::from_args(host_backend, runtime_backend, mode)
     .map_err(|e| CliExit::new(UNKNOWN, format!("uat: plan setup failed: {e}")))?;
 
   let started_at = rfc3339_now();
   let llamastash_version = env!("CARGO_PKG_VERSION").to_string();
-  let mut report = UatReport::skeleton(backend, started_at, llamastash_version);
+  let mut report = UatReport::skeleton(
+    host_backend,
+    runtime_backend,
+    started_at,
+    llamastash_version,
+  );
 
   // Race the lifecycle against SIGINT so a Ctrl-C produces a partial
   // report instead of silent termination. The lifecycle future is

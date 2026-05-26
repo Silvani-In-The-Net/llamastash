@@ -743,12 +743,20 @@ impl LaunchMode {
 #[cfg(feature = "uat")]
 #[derive(Args, Debug)]
 pub struct UatArgs {
-  /// GPU backend to exercise. Restricted to the canonical `GpuInfo`
+  /// GPU backend the host is expected to probe as. Restricted to the
+  /// canonical `GpuInfo`
   /// discriminant spellings so a backend mismatch in the report's
   /// `backend.expected` vs `backend.detected` block is unambiguous.
   /// `metal` is not an accepted alias — use `apple_metal`.
-  #[arg(long, value_enum, value_name = "BACKEND")]
-  pub backend: UatBackend,
+  #[arg(long = "host-backend", value_enum, value_name = "BACKEND")]
+  pub host_backend: UatBackend,
+  /// Optional runtime backend under test. Use this when the machine
+  /// probes as one backend (for example `amd`) but the selected
+  /// `llama-server` binary intentionally exercises another runtime path
+  /// (for example a Vulkan build). Records extra metadata in the report
+  /// without falsifying the pre-flight hardware probe.
+  #[arg(long = "runtime-backend", value_enum, value_name = "BACKEND")]
+  pub runtime_backend: Option<UatBackend>,
   /// `warm` (default) skips the `llama-server` install path on the
   /// assumption that the binary is already on PATH and the reference
   /// GGUF is in the HF cache. `cold` exercises the full install +
@@ -763,7 +771,7 @@ pub struct UatArgs {
   pub report_out: Option<PathBuf>,
 }
 
-/// GPU backend the UAT exercises. Spellings mirror the `GpuInfo`
+/// GPU backend names used by UAT. Spellings mirror the `GpuInfo`
 /// tagged-union discriminants in `src/gpu/mod.rs` so the report's
 /// `backend.expected` / `backend.detected` comparison is direct.
 #[cfg(feature = "uat")]
@@ -774,6 +782,7 @@ pub enum UatBackend {
   Amd,
   AppleMetal,
   Vulkan,
+  CpuOnly,
 }
 
 /// UAT execution mode. `Warm` (default) is the fast per-backend gate;
@@ -1694,10 +1703,11 @@ mod tests {
   #[cfg(feature = "uat")]
   #[test]
   fn uat_default_parses() {
-    let cli = parse(&["uat", "--backend", "nvidia"]);
+    let cli = parse(&["uat", "--host-backend", "nvidia"]);
     match cli.command {
       Some(Command::Uat(args)) => {
-        assert_eq!(args.backend, UatBackend::Nvidia);
+        assert_eq!(args.host_backend, UatBackend::Nvidia);
+        assert_eq!(args.runtime_backend, None);
         assert_eq!(args.mode, UatMode::Warm);
         assert!(args.report_out.is_none());
       }
@@ -1714,7 +1724,7 @@ mod tests {
     let cli = parse(&[
       "--quiet",
       "uat",
-      "--backend",
+      "--host-backend",
       "nvidia",
       "--mode",
       "cold",
@@ -1724,7 +1734,8 @@ mod tests {
     assert!(cli.quiet);
     match cli.command {
       Some(Command::Uat(args)) => {
-        assert_eq!(args.backend, UatBackend::Nvidia);
+        assert_eq!(args.host_backend, UatBackend::Nvidia);
+        assert_eq!(args.runtime_backend, None);
         assert_eq!(args.mode, UatMode::Cold);
         assert_eq!(args.report_out, Some(PathBuf::from("/tmp/r.json")));
       }
@@ -1740,11 +1751,32 @@ mod tests {
       ("amd", UatBackend::Amd),
       ("apple_metal", UatBackend::AppleMetal),
       ("vulkan", UatBackend::Vulkan),
+      ("cpu_only", UatBackend::CpuOnly),
     ] {
-      match parse(&["uat", "--backend", raw]).command {
-        Some(Command::Uat(args)) => assert_eq!(args.backend, expected),
-        other => panic!("expected Uat for backend={raw}, got {other:?}"),
+      match parse(&["uat", "--host-backend", raw]).command {
+        Some(Command::Uat(args)) => assert_eq!(args.host_backend, expected),
+        other => panic!("expected Uat for host-backend={raw}, got {other:?}"),
       }
+    }
+  }
+
+  #[cfg(feature = "uat")]
+  #[test]
+  fn uat_accepts_runtime_backend_override() {
+    match parse(&[
+      "uat",
+      "--host-backend",
+      "amd",
+      "--runtime-backend",
+      "vulkan",
+    ])
+    .command
+    {
+      Some(Command::Uat(args)) => {
+        assert_eq!(args.host_backend, UatBackend::Amd);
+        assert_eq!(args.runtime_backend, Some(UatBackend::Vulkan));
+      }
+      other => panic!("expected Uat with runtime-backend, got {other:?}"),
     }
   }
 
@@ -1755,10 +1787,10 @@ mod tests {
     // `GpuInfo::AppleMetal` discriminant — refusing it at parse time
     // keeps the report's `backend.expected` vs `backend.detected`
     // comparison unambiguous on Apple Silicon hosts.
-    let result = Cli::try_parse_from(["llamastash", "uat", "--backend", "metal"]);
+    let result = Cli::try_parse_from(["llamastash", "uat", "--host-backend", "metal"]);
     assert!(
       result.is_err(),
-      "`--backend metal` must be refused; use apple_metal"
+      "`--host-backend metal` must be refused; use apple_metal"
     );
   }
 
@@ -1767,7 +1799,7 @@ mod tests {
   fn uat_subcommand_absent_without_feature() {
     // Build invariant from Unit 3: no UAT entry point when the
     // feature is off. clap rejects the subcommand at parse time.
-    let result = Cli::try_parse_from(["llamastash", "uat", "--backend", "nvidia"]);
+    let result = Cli::try_parse_from(["llamastash", "uat", "--host-backend", "nvidia"]);
     assert!(
       result.is_err(),
       "`uat` must not parse without `--features uat`"

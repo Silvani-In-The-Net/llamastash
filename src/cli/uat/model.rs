@@ -2,7 +2,7 @@
 //!
 //! Pinned by HuggingFace commit SHA so the byte-stream the UAT
 //! exercises is reproducible across runs and across the maintainer's
-//! four backends. If the primary fetch fails on a given run, the
+//! maintained UAT lanes. If the primary fetch fails on a given run, the
 //! orchestrator retries with the fallback; both failing trips an
 //! exit-1 with `failure_summary.message` listing both attempts.
 //!

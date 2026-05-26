@@ -2,9 +2,10 @@
 
 This is the maintainer-facing guide for the `llamastash uat` subcommand
 (behind `--features uat`, hidden from `--help` on every release
-binary). It targets four backends — NVIDIA CUDA, AMD ROCm, Apple
-Silicon Metal, Vulkan fallback — and runs a 6-step lifecycle on real
-hardware, emitting a JSON report you attach to the release PR.
+binary). It targets five maintained lanes — NVIDIA CUDA, AMD ROCm, AMD
+host + Vulkan runtime, Apple Silicon Metal, and CPU-only — and runs a
+6-step lifecycle on real hardware, emitting a JSON report you attach to
+the release PR.
 
 The fixture suite (`cargo test --features test-fixtures`) gives the
 fast per-PR signal; UAT is the slower per-release gate that catches
@@ -117,10 +118,17 @@ the locally cached artifact matches the pinned SHA above.
 
 ```sh
 # 5-min budget per backend; assumes llama-server + GGUF pre-staged.
-cargo run --features uat -- uat --backend nvidia      --mode warm --report-out uat-nvidia.json
-cargo run --features uat -- uat --backend amd         --mode warm --report-out uat-amd.json
-cargo run --features uat -- uat --backend apple_metal --mode warm --report-out uat-metal.json
-cargo run --features uat -- uat --backend vulkan      --mode warm --report-out uat-vulkan.json
+cargo run --features uat -- uat --host-backend nvidia      --mode warm --report-out uat-nvidia.json
+cargo run --features uat -- uat --host-backend amd         --mode warm --report-out uat-amd.json
+cargo run --features uat -- uat --host-backend apple_metal --mode warm --report-out uat-metal.json
+cargo run --features uat -- uat --host-backend vulkan      --mode warm --report-out uat-vulkan.json
+cargo run --features uat -- uat --host-backend cpu_only    --mode warm --report-out uat-cpu-only.json
+
+# Runtime override example: AMD host, but intentionally testing a
+# Vulkan-built llama-server binary.
+LLAMASTASH_LLAMA_SERVER=/path/to/llama.cpp/build-vulkan/bin/llama-server \
+  cargo run --features uat -- uat --host-backend amd --runtime-backend vulkan \
+    --mode warm --report-out uat-amd-vulkan.json
 ```
 
 Each command:
@@ -136,25 +144,49 @@ Each command:
   stdout — mutually exclusive with the global `--quiet`).
 - Prints the TTY-pretty summary to stdout unless `--quiet`.
 - Exits 0 on `verdict: "pass"`, 1 otherwise.
+- `--runtime-backend` is metadata about the runtime backend under test;
+  it does **not** relax the `--host-backend` preflight check.
 
 ### Cold mode (≥ 1 backend per minor release)
 
 ```sh
 # 15-min budget; exercises the full brew / GH-Releases install path.
-cargo run --features uat -- uat --backend apple_metal --mode cold --report-out uat-metal-cold.json
+cargo run --features uat -- uat --host-backend apple_metal --mode cold --report-out uat-metal-cold.json
 ```
 
 Cold mode is the only path that catches install-side regressions.
 The plan's degraded-gate policy (origin §Degraded gate policy)
 requires at least one cold-mode run per minor release on any of the
-four backends. Patch releases may rely on the most recent cold run
+five backends. Patch releases may rely on the most recent cold run
 < 30 days old.
+
+### Makefile shortcuts
+
+The repo ships one-command wrappers for the common lanes:
+
+```sh
+make uat-amd
+make uat-vulkan UAT_VULKAN_SERVER=/path/to/build-vulkan/bin/llama-server
+make uat-nvidia
+make uat-apple-metal
+make uat-cpu-only
+```
+
+Optional knobs:
+
+- `UAT_MODE=warm|cold` (default `warm`)
+- `UAT_REPORT_DIR=/tmp/uat-reports` (default `/tmp`)
+- `UAT_EXTRA='--report-out -'` or any extra UAT flags appended verbatim
+
+`uat-vulkan` assumes an AMD host and records `runtime=vulkan`; point it
+at a Vulkan `llama-server` build via `UAT_VULKAN_SERVER=...` or the
+standard `LLAMASTASH_LLAMA_SERVER=...` environment variable.
 
 ### What each step does
 
 | Step | Action | Failure means |
 |---|---|---|
-| `doctor_preflight` | `gpu::probe()` snapshot; assert `--backend` matches the detected discriminant | Wrong driver / runner image; UAT halts immediately so a non-Metal macOS-14 image doesn't masquerade as a green run. |
+| `doctor_preflight` | `gpu::probe()` snapshot; assert `--host-backend` matches the detected discriminant | Wrong driver / runner image; UAT halts immediately so a non-Metal macOS-14 image doesn't masquerade as a green run. |
 | `init` | `llamastash init --recommended --model <repo>:<file> --revision <sha>` with the isolation env vars; runs install too in cold mode. The init smoke probe is detection-only (`llama-server --version`); `start_model` is what brings a real model up. | Install path broke, GGUF fetch failed (HF outage / wrong SHA), recommender mis-selected. Fallback model runs automatically on primary failure; substitution surfaces in `host.warnings`. |
 | `start_model` | `llamastash start <gguf-path> --json` against the GGUF init just downloaded; returns once the supervisor reports `Ready`. | Daemon refused the start (bad path, port-range exhausted), `llama-server` failed to load (OOM at load, missing runtime), or the readiness probe timed out. |
 | `smoke_chat` | Parses `status --json` for the running model + port, then POSTs `/v1/chat/completions` and asserts non-empty content. | Model loaded but failed to respond — GPU OOM mid-decode, slot exhaustion, sampler bug. |

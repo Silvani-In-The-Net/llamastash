@@ -139,3 +139,35 @@ release:
 ## Delete tag — usage: `make delete-tag V=v0.1.0`
 delete-tag:
 	@git tag -d ${V} && git push --delete origin ${V}
+## Maintainer UAT shortcuts. Override:
+##   UAT_MODE=warm|cold
+##   UAT_REPORT_DIR=/tmp/uat-reports
+##   UAT_EXTRA='--some-extra-uat-flag' (appended after the per-target defaults)
+## For the Vulkan lane, set either UAT_VULKAN_SERVER=/path/to/llama-server
+## or the standard LLAMASTASH_LLAMA_SERVER env var.
+uat-amd:
+@mkdir -p "$(UAT_REPORT_DIR)"
+@$(UAT_CMD) --host-backend amd --mode "$(UAT_MODE)" --report-out "$(UAT_REPORT_DIR)/uat-amd-$(UAT_MODE).json" $(UAT_EXTRA)
+
+uat-vulkan:
+@mkdir -p "$(UAT_REPORT_DIR)"
+@if [ -z "$(UAT_VULKAN_SERVER)" ] && [ -z "$$LLAMASTASH_LLAMA_SERVER" ]; then \
+printf '%s\n' "set UAT_VULKAN_SERVER=/path/to/build-vulkan/bin/llama-server or export LLAMASTASH_LLAMA_SERVER"; \
+exit 1; \
+fi
+@LLAMASTASH_LLAMA_SERVER="$${LLAMASTASH_LLAMA_SERVER:-$(UAT_VULKAN_SERVER)}" \
+$(UAT_CMD) --host-backend amd --runtime-backend vulkan --mode "$(UAT_MODE)" \
+--report-out "$(UAT_REPORT_DIR)/uat-vulkan-$(UAT_MODE).json" $(UAT_EXTRA)
+
+uat-nvidia:
+@mkdir -p "$(UAT_REPORT_DIR)"
+@$(UAT_CMD) --host-backend nvidia --mode "$(UAT_MODE)" --report-out "$(UAT_REPORT_DIR)/uat-nvidia-$(UAT_MODE).json" $(UAT_EXTRA)
+
+uat-apple-metal:
+@mkdir -p "$(UAT_REPORT_DIR)"
+@$(UAT_CMD) --host-backend apple_metal --mode "$(UAT_MODE)" --report-out "$(UAT_REPORT_DIR)/uat-apple-metal-$(UAT_MODE).json" $(UAT_EXTRA)
+
+uat-cpu-only:
+@mkdir -p "$(UAT_REPORT_DIR)"
+@$(UAT_CMD) --host-backend cpu_only --mode "$(UAT_MODE)" --report-out "$(UAT_REPORT_DIR)/uat-cpu-only-$(UAT_MODE).json" $(UAT_EXTRA)
+

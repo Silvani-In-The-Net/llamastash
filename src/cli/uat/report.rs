@@ -8,7 +8,7 @@
 //! via `serde_json::to_value`. That preserves the tagged-union shape so
 //! per-backend fields (NVIDIA `devices[]`, Metal `total_memory_bytes`)
 //! survive without a lossy scalar projection. `backend.expected` is the
-//! CLI's `--backend` value passed through as-is — Unit 3's `UatBackend`
+//! CLI's `--host-backend` value passed through as-is — Unit 3's `UatBackend`
 //! value-enum already restricts the spelling set to canonical
 //! discriminants, so no normalization step is needed at the report layer.
 
@@ -85,6 +85,11 @@ pub struct HostBlock {
 #[derive(Debug, Clone, Serialize)]
 pub struct BackendBlock {
   pub expected: ExpectedBackend,
+  /// Optional runtime backend under test (`--runtime-backend`). This records
+  /// which llama.cpp backend the maintainer intentionally selected
+  /// without falsifying the hardware probe stored in `detected`.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub runtime: Option<RuntimeBackend>,
   /// Serialized `GpuInfo` (tagged union, `tag = "backend"`). `Value`
   /// rather than the typed enum so the report module doesn't pull a
   /// dependency on the gpu module's shape into every downstream
@@ -92,18 +97,20 @@ pub struct BackendBlock {
   pub detected: serde_json::Value,
 }
 
-/// Pass-through string for the CLI's `--backend` value. Restricted by
+/// Pass-through string for the CLI's `--host-backend` value. Restricted by
 /// `UatBackend` so the report's expected vs detected comparison is a
 /// direct string compare against the `GpuInfo` discriminant.
 pub type ExpectedBackend = &'static str;
+pub type RuntimeBackend = &'static str;
 
 impl BackendBlock {
   /// Build an empty block from a `UatBackend`. The detected slot is
   /// initialized to `Value::Null` so the pre-flight step can overwrite
   /// it without re-allocating the parent struct.
-  pub fn new(expected: UatBackend) -> Self {
+  pub fn new(expected: UatBackend, runtime: Option<UatBackend>) -> Self {
     Self {
       expected: backend_label(expected),
+      runtime: runtime.map(runtime_backend_label),
       detected: serde_json::Value::Null,
     }
   }
@@ -118,15 +125,29 @@ impl BackendBlock {
 }
 
 /// Map the CLI value-enum to the static string the report carries.
-/// Stays in sync with `GpuInfo::label()` for the four backends the
-/// UAT exercises; `cpu_only` is intentionally absent because the
-/// CLI refuses it (no useful UAT signal on a CPU-only host).
+/// Stays in sync with `GpuInfo::label()` for the host backends the
+/// UAT can preflight against. `vulkan` remains the one exception
+/// because the hardware probe surfaces that lane as `unknown`.
 pub const fn backend_label(b: UatBackend) -> ExpectedBackend {
   match b {
     UatBackend::Nvidia => "nvidia",
     UatBackend::Amd => "amd",
     UatBackend::AppleMetal => "apple_metal",
     UatBackend::Vulkan => "unknown", // GpuInfo::Unknown is the Vulkan-only fallback discriminant
+    UatBackend::CpuOnly => "cpu_only",
+  }
+}
+
+/// Human/runtime label for the backend under test. Unlike
+/// [`backend_label`], this preserves the CLI spelling (`vulkan`) rather
+/// than the `GpuInfo` discriminant spelling (`unknown`).
+pub const fn runtime_backend_label(b: UatBackend) -> RuntimeBackend {
+  match b {
+    UatBackend::Nvidia => "nvidia",
+    UatBackend::Amd => "amd",
+    UatBackend::AppleMetal => "apple_metal",
+    UatBackend::Vulkan => "vulkan",
+    UatBackend::CpuOnly => "cpu_only",
   }
 }
 
@@ -251,7 +272,12 @@ impl UatReport {
   /// `Skipped` + `duration_ms = 0`. Each step's verdict is overwritten
   /// as the lifecycle progresses; a `verdict: fail` short-circuit
   /// leaves the remaining rows in their initial `Skipped` state.
-  pub fn skeleton(expected: UatBackend, started_at: String, llamastash_version: String) -> Self {
+  pub fn skeleton(
+    expected: UatBackend,
+    runtime: Option<UatBackend>,
+    started_at: String,
+    llamastash_version: String,
+  ) -> Self {
     let steps = StepName::ordered()
       .iter()
       .map(|name| StepResult {
@@ -274,7 +300,7 @@ impl UatReport {
         model_used: String::new(),
         warnings: Vec::new(),
       },
-      backend: BackendBlock::new(expected),
+      backend: BackendBlock::new(expected, runtime),
       steps,
       verdict: Verdict::Fail,
       failure_summary: None,
@@ -394,13 +420,18 @@ pub fn render_tty_summary(report: &UatReport) -> String {
   let mut out = String::with_capacity(512);
   let _ = writeln!(
     out,
-    "UAT verdict: {} ({} backend, {:.1}s)",
+    "UAT verdict: {} ({} backend{}, {:.1}s)",
     match report.verdict {
       Verdict::Pass => "pass",
       Verdict::Fail => "fail",
       Verdict::Interrupted => "interrupted",
     },
     report.backend.expected,
+    report
+      .backend
+      .runtime
+      .map(|b| format!(", runtime={b}"))
+      .unwrap_or_default(),
     report.duration_secs
   );
   for step in &report.steps {
@@ -442,6 +473,7 @@ mod tests {
   fn sample_skeleton() -> UatReport {
     UatReport::skeleton(
       UatBackend::Nvidia,
+      None,
       "2026-05-20T09:00:00Z".to_string(),
       "0.2.0-test".to_string(),
     )
@@ -534,7 +566,7 @@ mod tests {
 
   #[test]
   fn backend_block_set_detected_preserves_tagged_union() {
-    let mut bb = BackendBlock::new(UatBackend::AppleMetal);
+    let mut bb = BackendBlock::new(UatBackend::AppleMetal, None);
     bb.set_detected(&GpuInfo::AppleMetal {
       total_memory_bytes: 38_654_705_664,
     });
@@ -547,6 +579,13 @@ mod tests {
   }
 
   #[test]
+  fn backend_block_serializes_runtime_override_when_present() {
+    let bb = BackendBlock::new(UatBackend::Amd, Some(UatBackend::Vulkan));
+    assert_eq!(bb.expected, "amd");
+    assert_eq!(bb.runtime, Some("vulkan"));
+  }
+
+  #[test]
   fn backend_label_round_trip_matches_gpuinfo_label() {
     // Vulkan maps to `unknown` because `GpuInfo::Unknown` is the
     // Vulkan-only fallback discriminant — the lifecycle's pre-flight
@@ -556,6 +595,7 @@ mod tests {
     assert_eq!(backend_label(UatBackend::Amd), "amd");
     assert_eq!(backend_label(UatBackend::AppleMetal), "apple_metal");
     assert_eq!(backend_label(UatBackend::Vulkan), "unknown");
+    assert_eq!(backend_label(UatBackend::CpuOnly), "cpu_only");
   }
 
   #[test]
@@ -606,6 +646,20 @@ mod tests {
         "TTY summary should list step `{label}`: {summary}"
       );
     }
+  }
+
+  #[test]
+  fn tty_summary_mentions_runtime_override() {
+    let mut r = UatReport::skeleton(
+      UatBackend::Amd,
+      Some(UatBackend::Vulkan),
+      "2026-05-20T09:00:00Z".to_string(),
+      "0.2.0-test".to_string(),
+    );
+    r.set_duration(Duration::from_secs_f64(3.5));
+    r.verdict = Verdict::Pass;
+    let summary = render_tty_summary(&r);
+    assert!(summary.contains("runtime=vulkan"), "{summary}");
   }
 
   #[test]

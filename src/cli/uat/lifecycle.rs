@@ -3,7 +3,7 @@
 //! Steps:
 //!
 //! 1. `doctor_preflight` — snapshot the GPU backend via `gpu::probe()`
-//!    and assert it matches the CLI's `--backend`. Fails fast on
+//!    and assert it matches the CLI's `--host-backend`. Fails fast on
 //!    mismatch so a runner-image regression (Metal not exposed, NVIDIA
 //!    driver gone) surfaces before any expensive step.
 //! 2. `init` — spawn `llamastash init --recommended --model <repo>/<file>
@@ -53,7 +53,8 @@ use super::{
 /// the resolved `TempdirGuard`; passed by reference so each step can
 /// read the immutable plan without owning it.
 pub struct LifecyclePlan {
-  pub backend: UatBackend,
+  pub host_backend: UatBackend,
+  pub runtime_backend: Option<UatBackend>,
   pub mode: UatMode,
   /// Absolute path to `llamastash` (this binary) — captured at the
   /// orchestrator entry so each step's `Command::new` is byte-stable.
@@ -64,14 +65,19 @@ pub struct LifecyclePlan {
 }
 
 impl LifecyclePlan {
-  pub fn from_args(backend: UatBackend, mode: UatMode) -> std::io::Result<Self> {
+  pub fn from_args(
+    host_backend: UatBackend,
+    runtime_backend: Option<UatBackend>,
+    mode: UatMode,
+  ) -> std::io::Result<Self> {
     let llamastash_path = std::env::current_exe()?;
     let per_step_timeout = match mode {
       UatMode::Warm => Duration::from_secs(5 * 60),
       UatMode::Cold => Duration::from_secs(15 * 60),
     };
     Ok(Self {
-      backend,
+      host_backend,
+      runtime_backend,
       mode,
       llamastash_path,
       per_step_timeout,
@@ -173,7 +179,7 @@ pub async fn run(plan: &LifecyclePlan, guard: &TempdirGuard, report: &mut UatRep
 /// listening for ctrl_c — `spawn_blocking` keeps SIGINT responsive
 /// during preflight.
 async fn step_doctor_preflight(
-  _plan: &LifecyclePlan,
+  plan: &LifecyclePlan,
   report: &mut UatReport,
 ) -> Result<(), StepError> {
   let started = Instant::now();
@@ -201,6 +207,7 @@ async fn step_doctor_preflight(
     Some(serde_json::json!({
       "expected_backend": expected_label,
       "detected_backend": detected_label,
+      "runtime_backend": plan.runtime_backend.map(crate::cli::uat::report::runtime_backend_label),
       "gpu_device_count": gpu_device_count(&detected),
     })),
   );

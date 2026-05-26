@@ -185,6 +185,29 @@ The four `LLAMASTASH_*_DIR` overrides make it possible to run side-by-side daemo
 
 `llamastash init --recommended --model owner/repo --revision <SHA-or-branch>` threads the `--revision` value into hf-hub's `Repo::with_revision` so the byte-stream resolves at the supplied commit. Empty values are rejected at parse time. Use this when you need a reproducible model download — agents pinning environments should always pass a SHA rather than relying on the repo's default branch.
 
+### Preferring a Vulkan `llama-server` build
+
+LlamaStash does **not** block you from using a Vulkan-built
+`llama-server` on hardware that normally probes as another backend
+(for example an AMD ROCm machine). If `init` already installed a model
+or pulled one into the cache, you can point launches at a Vulkan build
+by overriding the binary path:
+
+```bash
+# One-off run
+LLAMASTASH_LLAMA_SERVER=/path/to/llama.cpp/build-vulkan/bin/llama-server \
+  llamastash start qwen
+
+# Or set it once in config.yaml
+llama_server_path: /path/to/llama.cpp/build-vulkan/bin/llama-server
+```
+
+This changes the **runtime binary**, not the detected host backend. So
+`init`, host metrics, and UAT preflight may still report the machine as
+`amd` / `nvidia` while the actual launched server is the Vulkan build.
+That combination already works as long as the Vulkan binary itself can
+load the model on your system.
+
 ## Top-level flags
 
 These work on every subcommand (clap marks them `global`):

@@ -90,15 +90,15 @@ The UAT has two modes, selected by a `--mode {warm|cold}` flag on the `uat` subc
 - **`--mode warm`** (default for per-release runs): the UAT passes `--skip install` to `init`. Assumes `llama-server` is already on PATH and the reference GGUF is in the HF cache. This is the fast (≤ 5 min) per-backend gate. Does not exercise the install path.
 - **`--mode cold`**: the UAT omits `--skip install`, so `init` runs the full brew / GH-Releases install path. Slower (~10-20 min depending on cache state) and exercised at least once per backend per release cycle, plus implicitly by Tier 3's nightly CI lane. Catches install-path regressions the warm mode skips.
 
-The maintainer's release-PR checklist must include at least one cold run across the four backends per minor release (any backend); patch releases may rely on the most recent cold run if it's < 30 days old. This is the [degraded-gate policy's](#degraded-gate-policy) extension for install-path coverage.
+The maintainer's release-PR checklist must include at least one cold run across the maintained UAT lanes per minor release (any backend); patch releases may rely on the most recent cold run if it's < 30 days old. This is the [degraded-gate policy's](#degraded-gate-policy) extension for install-path coverage.
 
 #### Degraded gate policy
 
-The release gate is one human running UAT on four boxes — a fragile setup. Explicit fallback policy:
+The release gate is one human running UAT across the maintained lanes — a fragile setup. Explicit fallback policy:
 
 - **Max report age per backend:** ≤ 14 days old at release time, *or* the release notes must list that backend as "untested this release" with a link to the most recent passing report.
 - **Box unavailable (hardware fail, OS upgrade, vacation):** ship without that backend's UAT; mark it explicitly in release notes ("This release was not UAT-tested on AMD ROCm. Most recent confirmed-good: vX.Y.Z."). Do not block the release on a single unavailable box.
-- **All four backends unavailable simultaneously:** delay the release or cut a patch-only release explicitly scoped to non-GPU changes.
+- **All maintained backends unavailable simultaneously:** delay the release or cut a patch-only release explicitly scoped to non-GPU changes.
 
 This is honor-system; no workflow enforcement. Acknowledged tradeoff: the gate is voluntary infrastructure and may decay over time. The [Outcome metric](#outcome-metric--when-to-retire-or-reshape) is the trigger that flags decay before it becomes invisible.
 
@@ -121,7 +121,7 @@ JSON shape mirrors the existing `GpuInfo` enum (tagged union) so per-backend fie
     "llama_server_version": "..."
   },
   "backend": {
-    "expected": "apple_metal",            // normalized to the GpuInfo discriminant; the CLI's `--backend metal` resolves to "apple_metal" here
+    "expected": "apple_metal",            // normalized to the GpuInfo discriminant; the CLI's `--host-backend apple_metal` records this verbatim
     "detected": {                         // serialized verbatim from src/gpu/mod.rs::GpuInfo (tag = "backend", rename_all = "snake_case")
       "backend": "nvidia",
       "devices": [
@@ -157,7 +157,7 @@ Existing `cli::exit_codes` constants (72-74 for init, 70 for binary-not-found, e
 
 #### Invocation surface
 
-`llamastash uat ...` as a hidden subcommand gated behind a new `--features uat` Cargo feature. The release binary on crates.io / Homebrew bottle ships without the feature, so `uat` is unreachable from a user install. `cargo run --features uat -- uat --backend nvidia` is the maintainer's invocation.
+`llamastash uat ...` as a hidden subcommand gated behind a new `--features uat` Cargo feature. The release binary on crates.io / Homebrew bottle ships without the feature, so `uat` is unreachable from a user install. `cargo run --features uat -- uat --host-backend nvidia` is the maintainer's invocation.
 
 Why this over `cargo xtask uat`: the repo is currently a single-crate manifest (no `[workspace]` table). Adopting `xtask` would require converting to a workspace just to add one dev command, with no second dev binary on the horizon to amortize the cost. A `--features uat` subcommand achieves the same "not reachable from a release binary" guarantee with `#[cfg(feature = "uat")]` gating around the subcommand handler and its module. Revisit `xtask` if/when a second dev-only command appears.
 
@@ -191,7 +191,7 @@ Assuming the spike passes, job spec:
 - **Trigger:** `schedule:` cron only (no `push:` / `pull_request:` / `workflow_dispatch:` triggers). Scheduled workflows on GitHub always run against the default branch.
 - **Caching:** `actions/cache` for the HF model cache + brew bottles + Cargo target dir.
 - **Setup phases (untimed):** brew install `llama.cpp` happens *before* the UAT command. brew flakes are the #1 macOS CI failure mode and must not be classified as UAT regressions.
-- **UAT invocation:** `cargo run --features uat -- uat --backend metal --mode warm --report-out uat-metal.json`. Warm mode is used because the brew install (step above) pre-stages `llama-server`; the UAT itself shouldn't re-run install on every nightly. Tier 3 implicitly exercises the brew install path via its setup phase, so the cold-mode coverage need is partially met.
+- **UAT invocation:** `cargo run --features uat -- uat --host-backend apple_metal --mode warm --report-out uat-metal.json`. Warm mode is used because the brew install (step above) pre-stages `llama-server`; the UAT itself shouldn't re-run install on every nightly. Tier 3 implicitly exercises the brew install path via its setup phase, so the cold-mode coverage need is partially met.
 - **Pre-flight assertion:** the UAT must assert `backend.detected.backend == "apple_metal"` *before* any other step runs, so a runner-image regression (Metal not available) fails loudly and immediately with a clear message.
 - **Failure routing:** single rolling tracking issue (`#uat-metal-status` or similar). The workflow looks up an open issue with label `uat-metal-status`; if none exists, it creates one. On each failure, append a comment with the failure classification (pre-flight assertion / brew install / model load / smoke chat / other) so interleaved failure modes remain attributable rather than overwriting each other. Close the issue on next success via `gh issue close`. Workflow needs `permissions: issues: write` granted explicitly.
 
@@ -279,7 +279,7 @@ A `/ce:plan` derived from this doc should produce implementation units that cove
 
 - [ ] **Planning prerequisite work:** `LLAMASTASH_STATE_DIR` env var added to `paths::state_dir()`; `--revision <sha>` flag added to `llamastash pull` and threaded through `init`'s pull invocation; release-PR template added with UAT checklist + `uat-caught` label registered. (See [Planning prerequisites](#planning-prerequisites).)
 - [ ] New `--features uat` Cargo feature wiring a hidden `llamastash uat` subcommand. `cfg(feature = "uat")` gates the subcommand variant in `Subcommands`. No `xtask`.
-- [ ] UAT command: cross-platform state-dir/socket isolation (Linux XDG + macOS `LLAMASTASH_STATE_DIR` + `LLAMASTASH_SOCKET`), the 5-step lifecycle, `--mode {warm|cold}` flag (default warm), `--backend <name>` normalization to `GpuInfo` discriminant, structured JSON report (verbatim `GpuInfo` serialization for `backend.detected`), 0/1 exit codes with `failure_summary.exit_code` carrying the failing child's exit status, automatic fallback model on primary fetch failure.
+- [ ] UAT command: cross-platform state-dir/socket isolation (Linux XDG + macOS `LLAMASTASH_STATE_DIR` + `LLAMASTASH_SOCKET`), the 5-step lifecycle, `--mode {warm|cold}` flag (default warm), `--host-backend <name>` normalization to `GpuInfo` discriminant plus optional `--runtime-backend <name>` metadata, structured JSON report (verbatim `GpuInfo` serialization for `backend.detected`), 0/1 exit codes with `failure_summary.exit_code` carrying the failing child's exit status, automatic fallback model on primary fetch failure.
 - [ ] Reference GGUF + fallback model selection in planning, both pinned by HuggingFace commit SHA. License redistribution not required (no mirror).
 - [ ] `docs/testing/hardware-uat.md` — per-backend one-time setup, how to run warm and cold modes, the [Degraded gate policy](#degraded-gate-policy) and cold-mode cadence requirement, how to attach the JSON to a release PR, how to apply the `uat-caught` label.
 - [ ] Falsifying spike before Tier 3 lands — throwaway `.github/workflows/uat-metal-spike.yml` proving Metal is reachable on `macos-14`. Capture result in the PR description; delete the spike workflow in the same PR that lands the real one. No separate spike doc.

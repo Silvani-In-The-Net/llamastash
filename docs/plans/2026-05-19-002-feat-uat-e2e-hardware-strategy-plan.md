@@ -31,7 +31,7 @@ There is also no contract for what a maintainer should verify before tagging a r
 
 - **R1.** Preserve the existing fixture-based per-PR suite unchanged (origin §Goal·1). *No implementation work — preserved by absence of changes to the per-PR test suite. Verified at Unit 7's final cross-cut check.*
 - **R2.** Ship a `llamastash uat` command the maintainer runs on each local backend pre-release, emitting both TTY-pretty stdout output AND a JSON report (origin §Goal·2, §Tier 2).
-- **R3.** Add a nightly macOS build lane via GH Actions `macos-14` — Metal lane deferred. Falsifying spike ([run 26181924383](https://github.com/llamastash/llamastash/actions/runs/26181924383), 2026-05-20) detected `cpu_only` on a headless `macos-14` runner despite `--backend apple_metal`, confirming Metal is not exposed to GH-hosted runners. Tier 3 collapses to `cargo build --release --target aarch64-apple-darwin` — catches install-path and cross-compile regressions without claiming Metal coverage (origin §Goal·3, §Tier 3).
+- **R3.** Add a nightly macOS build lane via GH Actions `macos-14` — Metal lane deferred. Falsifying spike ([run 26181924383](https://github.com/llamastash/llamastash/actions/runs/26181924383), 2026-05-20) detected `cpu_only` on a headless `macos-14` runner despite `--host-backend apple_metal`, confirming Metal is not exposed to GH-hosted runners. Tier 3 collapses to `cargo build --release --target aarch64-apple-darwin` — catches install-path and cross-compile regressions without claiming Metal coverage (origin §Goal·3, §Tier 3).
 - **R4.** UAT does not appear in the default release binary's `--help` — feature-gated behind `--features uat` (origin §Invocation surface).
 - **R5.** UAT uses cross-platform tempdir isolation, including state, runtime socket, cache/logs, and the HuggingFace cache (origin §UAT lifecycle, §Planning prerequisites·1 — scope expanded after plan-review found `cache_dir()` / `log_dir()` / `hf_cache_dir()` bypass `state_dir()`).
 - **R6.** Reference GGUF pinned by HuggingFace commit SHA via a new `init --revision` flag, with one fallback model meeting the same constraint envelope (origin §Reference model contract, §Planning prerequisites·2).
@@ -201,7 +201,7 @@ External research deliberately skipped. The codebase has strong local patterns f
 - Test: inline `#[cfg(test)] mod tests` in `src/cli/cli_args.rs` — parse test gated on `#[cfg(feature = "uat")]`.
 
 **Approach:**
-- `UatArgs` flag surface: `--backend <name>` (clap `ValueEnum`: `nvidia | amd | apple_metal | vulkan` — `metal` is **not** an accepted alias; the canonical `GpuInfo` discriminant is the only spelling), `--mode {warm|cold}` (default `warm`), `--report-out <path>` (`Option<PathBuf>`). Consume the existing global `cli.quiet` flag (`src/cli/cli_args.rs:52`); do **not** declare a UAT-local `--quiet` — clap's debug-assert rejects duplicate long names even on disjoint subcommand scopes (same pattern as `--config-step` documented on `InitArgs::config_choice`).
+- `UatArgs` flag surface: `--host-backend <name>` (clap `ValueEnum`: `nvidia | amd | apple_metal | vulkan | cpu_only` — `metal` is **not** an accepted alias; the canonical `GpuInfo` discriminant is the only spelling), optional `--runtime-backend <name>` for the runtime-under-test label, `--mode {warm|cold}` (default `warm`), `--report-out <path>` (`Option<PathBuf>`). Consume the existing global `cli.quiet` flag (`src/cli/cli_args.rs:52`); do **not** declare a UAT-local `--quiet` — clap's debug-assert rejects duplicate long names even on disjoint subcommand scopes (same pattern as `--config-step` documented on `InitArgs::config_choice`).
 - The subcommand variant uses both `#[cfg(feature = "uat")]` AND `#[command(hide = true)]`.
 
 **Patterns to follow:**
@@ -210,9 +210,9 @@ External research deliberately skipped. The codebase has strong local patterns f
 - `cli_args.rs` value-enum patterns: `ConfigOverride` (`src/cli/cli_args.rs:441-446`, `#[derive(...ValueEnum)] #[clap(rename_all = "lower")]`). **Not** `InstallOverride`, which is a plain enum with a custom `parse_install_override` function.
 
 **Test scenarios:**
-- Parse (`#[cfg(feature = "uat")]`): `llamastash uat --backend nvidia` parses with defaults (`mode == Warm`, `report_out == None`).
+- Parse (`#[cfg(feature = "uat")]`): `llamastash uat --host-backend nvidia` parses with defaults (`mode == Warm`, `report_out == None`).
 - Parse: `llamastash --quiet uat --mode cold --report-out /tmp/r.json` parses; `--quiet` is the global flag.
-- Parse: `--backend metal` rejected at parse time (clap value-enum).
+- Parse: `--host-backend metal` rejected at parse time (clap value-enum).
 - Build invariant: `cargo build` (no features) compiles without including the UAT module.
 
 **Verification:**
@@ -248,7 +248,7 @@ External research deliberately skipped. The codebase has strong local patterns f
 - **Lifecycle:** orchestrator spawns child processes (`init --model <repo>/<file> --revision <sha>`, `start`, smoke-chat via `reqwest`, `stop`, `doctor`) with isolation env vars set via `Command::env()`. Smoke chat hits the OpenAI-compatible endpoint directly.
 - **Report:** both stdout (TTY-pretty) and file output (`--report-out`) are produced by default; `--quiet` (global) suppresses stdout; `--report-out -` redirects JSON to stdout (mutually exclusive with `--quiet`).
 - **`backend.detected`:** serialize an actual `GpuInfo` value verbatim via `serde_json::to_value(&gpu_info)`.
-- **`backend.expected`:** pass through the CLI's `--backend` value as-is (no normalization needed since Unit 3 restricts the CLI to canonical discriminants).
+- **`backend.expected`:** pass through the CLI's `--host-backend` value as-is (no normalization needed since Unit 3 restricts the CLI to canonical discriminants).
 - **Failure short-circuits:** if step N fails, steps N+1..5 marked `skipped`; `verdict: "fail"`; `failure_summary` populated with the failing child's exit code as-is (e.g., `73` if init's download failed).
 - **Reference model selection:** UAT calls `init --model <PRIMARY.repo>/<PRIMARY.filename> --revision <PRIMARY.revision>` to bypass the recommender (the recommender's hardware-based pick may differ from UAT's pinned model). On any init failure during the model-pull phase, retry with `FALLBACK` constants; record `model_used: "<actual-repo>"` and append a `warnings` entry. If both fail, exit 1 with `failure_summary.step == "init"` and `failure_summary.message` listing both attempts.
 - **Cold vs warm mode:** in warm mode, the UAT passes `--skip install` to `init`; in cold mode, the UAT omits `--skip install` so init exercises the full brew/GH-Releases install path.
@@ -382,7 +382,7 @@ Content sections:
 - `gh issue create --title "[outcome-review] UAT pre-release gate: keep, reshape, or retire?" --label outcome-review --body "Due: 2026-11-19. Review criteria per docs/plans/2026-05-19-002-feat-uat-e2e-hardware-strategy-plan.md §Outcome metric: count of release PRs with uat-caught label AND not also fixture-reachable. <50% of release PRs with ≥2 backends checked = compliance has decayed, reshape first. Surface this in normal triage; do not let the date slip silently."` — the date-anchored issue is the calendar mechanism that prevents the 6-month review from being a TODO that never fires.
 
 **Approach (Spike phase, before merging):**
-- `uat-metal-spike.yml`: `runs-on: macos-14`, trigger `workflow_dispatch:` only. Steps: checkout → install Rust → `brew install llama.cpp` → `cargo run --features uat -- uat --backend apple_metal --mode warm --report-out spike.json` → upload `spike.json` artifact.
+- `uat-metal-spike.yml`: `runs-on: macos-14`, trigger `workflow_dispatch:` only. Steps: checkout → install Rust → `brew install llama.cpp` → `cargo run --features uat -- uat --host-backend apple_metal --mode warm --report-out spike.json` → upload `spike.json` artifact.
 - Maintainer triggers via `gh workflow run uat-metal-spike.yml`. Outcome captured verbatim in the PR description.
 - **Spike-pass branch:** keep `uat-metal-nightly.yml` as drafted below; delete `uat-metal-spike.yml` from the PR.
 - **Spike-fail branch (pre-authored fallback so reshape doesn't happen under PR-review pressure):** replace `uat-metal-nightly.yml` with a build-only `macos-build-nightly.yml` that runs `cargo build --release --target aarch64-apple-darwin` nightly and uploads the binary as an artifact. Update R3 in this PR's description from "Add a nightly Metal lane" to "Add a nightly macOS build lane (Metal lane deferred — see spike artifact)". Either way, delete `uat-metal-spike.yml`.
@@ -394,7 +394,7 @@ Content sections:
 - Permissions: `permissions: { contents: read, issues: write }`.
 - Caching: `actions/cache@v4` keyed on a hash of `Cargo.lock` + the reference-model SHA, scoped to `~/.cache/huggingface/hub`, `~/Library/Caches/Homebrew/downloads`, `target/`.
 - Setup steps: checkout → install Rust → restore cache → `brew list llama.cpp >/dev/null 2>&1 || brew install llama.cpp` (the `brew list` short-circuit is what skips reinstall on a warm Cellar; the cache only avoids redownload).
-- UAT invocation: `cargo run --features uat -- uat --backend apple_metal --mode warm --report-out uat-metal.json`. Upload `uat-metal.json` as artifact.
+- UAT invocation: `cargo run --features uat -- uat --host-backend apple_metal --mode warm --report-out uat-metal.json`. Upload `uat-metal.json` as artifact.
 - Failure routing via shell-out (`gh` CLI): look up open issue with `label:uat-metal-status`; if none, `gh issue create --label uat-metal-status --title "UAT Metal nightly status"`. On failure: `gh issue comment <num> --body "Run <url> failed at <step>. Verdict: <classification>. Report: <artifact-url>."`. On success when issue is open: `gh issue close <num> --comment "Restored to green on run <url>."`.
 - Job summary: render the UAT JSON's verdict + failed step into the GH Actions step summary.
 
@@ -416,7 +416,7 @@ Content sections:
 **Verification:**
 - Spike phase: `gh workflow run uat-metal-spike.yml` completes; outcome captured in PR description.
 - Spike-pass: first scheduled nightly run completes within 30 min and posts the UAT report as artifact.
-- Forced-failure test (before merge): on the PR branch, temporarily break the UAT (e.g., set `--backend nvidia` to force a pre-flight mismatch) and run via `workflow_dispatch` to verify the rolling-issue creation + commenting path works end-to-end. Restore before merging.
+- Forced-failure test (before merge): on the PR branch, temporarily break the UAT (e.g., set `--host-backend nvidia` to force a pre-flight mismatch) and run via `workflow_dispatch` to verify the rolling-issue creation + commenting path works end-to-end. Restore before merging.
 - Auto-close test: after the forced failure, run a clean nightly and confirm the issue closes with the recovery comment.
 - Final cross-cut (R1): `cargo test --features test-fixtures` (full suite) passes byte-for-byte with the pre-plan baseline. No new failures introduced anywhere across U1-U7.
 - `grep "R34" TODO.md` returns the struck line, not an active checkbox.

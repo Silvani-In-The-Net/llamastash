@@ -10,7 +10,7 @@
 //!
 //! What we *can* exercise here without network or hardware:
 //!
-//! * Pre-flight backend mismatch (`--backend nvidia` on a non-NVIDIA
+//! * Pre-flight backend mismatch (`--host-backend nvidia` on a non-NVIDIA
 //!   host) — fails the first step, exits 1, populates
 //!   `failure_summary.step = "doctor_preflight"`.
 //! * `--report-out` file emission shape — JSON parses, carries
@@ -55,11 +55,16 @@ fn bin() -> Command {
 }
 
 #[test]
-fn uat_help_lists_the_three_documented_flags() {
+fn uat_help_lists_the_documented_flags() {
   let out = bin().args(["uat", "--help"]).output().expect("run");
   assert!(out.status.success(), "uat --help should exit 0");
   let stdout = String::from_utf8_lossy(&out.stdout);
-  for flag in ["--backend", "--mode", "--report-out"] {
+  for flag in [
+    "--host-backend",
+    "--runtime-backend",
+    "--mode",
+    "--report-out",
+  ] {
     assert!(
       stdout.contains(flag),
       "uat --help should advertise `{flag}`, got: {stdout}"
@@ -68,7 +73,7 @@ fn uat_help_lists_the_three_documented_flags() {
   // The `metal` alias is *not* offered — only canonical discriminants
   // appear in clap's value-list. Catches a future refactor that
   // re-introduces the alias.
-  for canonical in ["nvidia", "amd", "apple_metal", "vulkan"] {
+  for canonical in ["nvidia", "amd", "apple_metal", "vulkan", "cpu_only"] {
     assert!(
       stdout.contains(canonical),
       "uat --help should list backend `{canonical}`"
@@ -86,7 +91,7 @@ fn uat_pre_flight_fails_on_backend_mismatch() {
   let out = bin()
     .args([
       "uat",
-      "--backend",
+      "--host-backend",
       "nvidia",
       "--mode",
       "warm",
@@ -142,7 +147,14 @@ fn uat_report_out_dash_emits_json_to_stdout_under_quiet_is_rejected() {
   // combo at the UAT handle layer. Refused with a clear error
   // before the lifecycle runs.
   let out = bin()
-    .args(["--quiet", "uat", "--backend", "nvidia", "--report-out", "-"])
+    .args([
+      "--quiet",
+      "uat",
+      "--host-backend",
+      "nvidia",
+      "--report-out",
+      "-",
+    ])
     .output()
     .expect("run");
   assert!(
@@ -163,7 +175,7 @@ fn uat_report_out_dash_emits_pure_json_to_stdout() {
   // directly. Pre-flight fails on the backend mismatch but the report
   // is well-formed.
   let out = bin()
-    .args(["uat", "--backend", "nvidia", "--report-out", "-"])
+    .args(["uat", "--host-backend", "nvidia", "--report-out", "-"])
     .output()
     .expect("run");
   assert!(!out.status.success());
@@ -188,7 +200,7 @@ fn uat_report_out_rejects_directory_path() {
   // failure attributes correctly.
   let dir = unique_temp_dir("report-out-dir");
   let out = bin()
-    .args(["uat", "--backend", "nvidia", "--report-out"])
+    .args(["uat", "--host-backend", "nvidia", "--report-out"])
     .arg(&dir)
     .output()
     .expect("run");
