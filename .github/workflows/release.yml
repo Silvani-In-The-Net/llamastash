@@ -195,6 +195,10 @@ jobs:
       version: ${{ needs.prepare-release.outputs.version }}
       is_prerelease: ${{ needs.prepare-release.outputs.is_prerelease }}
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
       - name: create release (idempotent)
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
