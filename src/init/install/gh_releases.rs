@@ -35,12 +35,15 @@ use super::{sha256_file, BinaryInstall, InstallError};
 use crate::init::snapshot::InstallMethod;
 
 /// Endpoint the wizard hits to discover the latest asset list. Pinned
-/// in source so a hostile env can't redirect us off-org.
-const RELEASES_URL: &str = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=1";
+/// in source so a hostile env can't redirect us off-org. `per_page=10`
+/// lets us walk back when the latest release ships an incomplete asset
+/// matrix (observed in `b9352`, which dropped `ubuntu-x64.tar.gz`).
+const RELEASES_URL: &str = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10";
 
-/// API response body's max size cap. The latest-releases-1 JSON
-/// payload is ~30 KB on a typical day; 256 KB is generous headroom.
-const RELEASES_MAX_BYTES: u64 = 256 * 1024;
+/// API response body's max size cap. The 10-release JSON payload is
+/// ~600 KB; 2 MB is generous headroom while still capping a hostile
+/// mirror.
+const RELEASES_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Per-asset body cap (1 GB). Largest GH Releases asset for the
 /// platforms v2 supports is the Vulkan tarball (~30 MB on Linux);
@@ -149,15 +152,11 @@ pub async fn fetch_latest_asset(
     }
     Err(e) => return Err(translate_fetch(e)),
   };
-  let release = releases
-    .into_iter()
-    .next()
-    .ok_or_else(|| InstallError::Fetch("empty releases list".into()))?;
-  let matched = release
-    .assets
-    .into_iter()
-    .find(|a| asset_matches(&a.name, &suffix))
-    .ok_or(InstallError::NoMatchingAsset {
+  if releases.is_empty() {
+    return Err(InstallError::Fetch("empty releases list".into()));
+  }
+  let (tag, matched) =
+    pick_release_with_asset(releases, &suffix).ok_or(InstallError::NoMatchingAsset {
       os: hw.os,
       arch: hw.cpu_arch,
     })?;
@@ -172,11 +171,42 @@ pub async fn fetch_latest_asset(
     .ok_or_else(|| InstallError::Integrity(format!("digest `{digest}` is not sha256:<hex>")))?
     .to_string();
   Ok(AssetPick {
-    tag: release.tag_name,
+    tag,
     asset_name: matched.name,
     url: matched.browser_download_url,
     sha256,
   })
+}
+
+/// Walk the release list from newest to oldest and return the first
+/// `(tag, asset)` where some asset matches `suffix`. Skipping a newer
+/// release covers the upstream-incomplete-release case (e.g. llama.cpp
+/// `b9352` dropped the Linux/Windows asset matrix on publish); a clean
+/// rejection of every surveyed release is left for the caller to map
+/// to `NoMatchingAsset` so the user sees a single canonical error.
+fn pick_release_with_asset(releases: Vec<ReleaseRow>, suffix: &str) -> Option<(String, AssetRow)> {
+  let mut skipped: Vec<String> = Vec::new();
+  for release in releases {
+    let matched = release
+      .assets
+      .iter()
+      .find(|a| asset_matches(&a.name, suffix))
+      .cloned();
+    if let Some(asset) = matched {
+      if !skipped.is_empty() {
+        log::info!(
+          "init server: skipping {} newer llama.cpp release(s) without `{}` asset ({}); using {}",
+          skipped.len(),
+          suffix,
+          skipped.join(", "),
+          release.tag_name,
+        );
+      }
+      return Some((release.tag_name, asset));
+    }
+    skipped.push(release.tag_name);
+  }
+  None
 }
 
 /// Download + verify + safe-extract the picked asset. Returns the
@@ -332,5 +362,77 @@ mod tests {
   fn cpu_only_macos_x86_picks_macos_x64() {
     let s = pick_asset_suffix(&hw(GpuInfo::CpuOnly, OsFamily::MacOs, CpuArch::X86_64)).unwrap();
     assert_eq!(s, "macos-x64.tar.gz");
+  }
+
+  fn asset(name: &str) -> AssetRow {
+    AssetRow {
+      name: name.into(),
+      browser_download_url: format!("https://example.test/{name}"),
+      digest: Some("sha256:0".into()),
+    }
+  }
+
+  fn release(tag: &str, names: &[&str]) -> ReleaseRow {
+    ReleaseRow {
+      tag_name: tag.into(),
+      assets: names.iter().map(|n| asset(n)).collect(),
+    }
+  }
+
+  #[test]
+  fn pick_release_uses_latest_when_match_present() {
+    let releases = vec![
+      release("b9352", &["llama-b9352-bin-ubuntu-x64.tar.gz"]),
+      release("b9351", &["llama-b9351-bin-ubuntu-x64.tar.gz"]),
+    ];
+    let (tag, asset) = pick_release_with_asset(releases, "ubuntu-x64.tar.gz").unwrap();
+    assert_eq!(tag, "b9352");
+    assert_eq!(asset.name, "llama-b9352-bin-ubuntu-x64.tar.gz");
+  }
+
+  #[test]
+  fn pick_release_walks_back_when_latest_missing_target_asset() {
+    // Reproduces the `b9352` regression: the latest release lacks the
+    // Linux CPU asset but `b9351` has it. The picker should fall back.
+    let releases = vec![
+      release(
+        "b9352",
+        &[
+          "llama-b9352-bin-macos-arm64.tar.gz",
+          "llama-b9352-bin-macos-x64.tar.gz",
+          "llama-b9352-bin-ubuntu-arm64.tar.gz",
+        ],
+      ),
+      release(
+        "b9351",
+        &[
+          "llama-b9351-bin-ubuntu-x64.tar.gz",
+          "llama-b9351-bin-ubuntu-vulkan-x64.tar.gz",
+        ],
+      ),
+    ];
+    let (tag, asset) = pick_release_with_asset(releases, "ubuntu-x64.tar.gz").unwrap();
+    assert_eq!(tag, "b9351");
+    assert_eq!(asset.name, "llama-b9351-bin-ubuntu-x64.tar.gz");
+  }
+
+  #[test]
+  fn pick_release_returns_none_when_no_release_has_match() {
+    let releases = vec![
+      release("b9352", &["llama-b9352-bin-macos-arm64.tar.gz"]),
+      release("b9351", &["llama-b9351-bin-macos-arm64.tar.gz"]),
+    ];
+    assert!(pick_release_with_asset(releases, "ubuntu-x64.tar.gz").is_none());
+  }
+
+  #[test]
+  fn pick_release_honors_glob_suffix_during_walk_back() {
+    let releases = vec![
+      release("b9352", &["llama-b9352-bin-macos-arm64.tar.gz"]),
+      release("b9219", &["llama-b9219-bin-ubuntu-rocm-7.2-x64.tar.gz"]),
+    ];
+    let (tag, asset) = pick_release_with_asset(releases, "ubuntu-rocm-*-x64.tar.gz").unwrap();
+    assert_eq!(tag, "b9219");
+    assert_eq!(asset.name, "llama-b9219-bin-ubuntu-rocm-7.2-x64.tar.gz");
   }
 }
