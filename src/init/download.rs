@@ -682,16 +682,36 @@ pub fn synthetic_publisher_fallbacks(source_repo_id: &str) -> Vec<String> {
   ]
 }
 
-/// True for reqwest errors worth retrying: connection failures, request
-/// timeouts, and body-read timeouts. `is_timeout()` only covers the
-/// request-level timeout kind; mid-transfer stalls ("error reading a body
-/// from connection: timed out") arrive as decode errors, so we walk the
-/// source chain to catch them. Auth errors, 404s, and schema mismatches
-/// are not transient.
+/// True for reqwest errors worth retrying:
+///
+/// * Transport failures — connection refused / reset, request timeouts,
+///   and mid-transfer body-read stalls ("error reading a body from
+///   connection: timed out", which surface as decode errors with a
+///   nested timeout source).
+/// * Transient HTTP status codes — 408 Request Timeout, 429 Too Many
+///   Requests, and any 5xx server error (500/502/503/504). hf-hub's
+///   internal retry loop already retries these via `is_transient_status`,
+///   but once it exhausts its budget (5 attempts, ~6s total backoff) the
+///   error reaches us as a `reqwest::Error` with `is_status() == true`
+///   and hf-hub's reqwest classifier explicitly bails out. Our outer
+///   retry adds 5 more attempts with longer backoff (3s → 30s capped),
+///   giving the CDN room to recover from extended outages.
+///
+/// Auth errors (401/403), 404s, and schema mismatches are not transient.
 fn is_transient_reqwest_error(re: &reqwest::Error) -> bool {
   use std::error::Error as StdError;
   if re.is_connect() || re.is_timeout() {
     return true;
+  }
+  if re.is_status() {
+    if let Some(status) = re.status() {
+      if status.is_server_error()
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+      {
+        return true;
+      }
+    }
   }
   // Body-read timeouts and mid-transfer resets surface as decode errors.
   if re.is_decode() {
@@ -944,6 +964,88 @@ mod tests {
     assert_eq!(events[0], ("model.gguf".to_string(), 100));
     assert_eq!(events[1], ("model.gguf".to_string(), 150));
     assert_eq!(events[2], ("model.gguf".to_string(), 175));
+  }
+
+  /// Stand up a one-shot loopback TCP listener that answers the first
+  /// connection with the given HTTP status line and empty body, then
+  /// returns the bound address. Used to produce real `reqwest::Error`
+  /// instances with `is_status() == true` so the transient classifier
+  /// runs on actual library behavior, not a stubbed enum.
+  async fn one_shot_status_server(status_line: &'static str) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+      .await
+      .expect("bind loopback");
+    let addr = listener.local_addr().expect("local_addr");
+    tokio::spawn(async move {
+      use tokio::io::{AsyncReadExt, AsyncWriteExt};
+      let (mut sock, _) = listener.accept().await.expect("accept");
+      let mut buf = [0u8; 1024];
+      let _ = sock.read(&mut buf).await;
+      let response =
+        format!("HTTP/1.1 {status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+      let _ = sock.write_all(response.as_bytes()).await;
+      let _ = sock.shutdown().await;
+    });
+    addr
+  }
+
+  async fn status_error_at(addr: std::net::SocketAddr) -> reqwest::Error {
+    let resp = reqwest::Client::new()
+      .get(format!("http://{addr}/"))
+      .send()
+      .await
+      .expect("response");
+    resp.error_for_status().expect_err("expected status error")
+  }
+
+  #[tokio::test]
+  async fn classifier_treats_504_gateway_timeout_as_transient() {
+    // Real-world regression: a 504 mid-download was not retried because
+    // status errors fell through the classifier. hf-hub exhausts its
+    // own 5-attempt budget before reaching us, so we must retry on the
+    // exhausted-status error or the user sees a 37 GB pull abort at 18%.
+    let addr = one_shot_status_server("504 Gateway Timeout").await;
+    let err = status_error_at(addr).await;
+    assert!(err.is_status(), "expected status error, got {err:?}");
+    assert_eq!(err.status(), Some(reqwest::StatusCode::GATEWAY_TIMEOUT));
+    assert!(is_transient_reqwest_error(&err), "504 must be transient");
+  }
+
+  #[tokio::test]
+  async fn classifier_treats_502_503_500_429_408_as_transient() {
+    for status_line in [
+      "500 Internal Server Error",
+      "502 Bad Gateway",
+      "503 Service Unavailable",
+      "429 Too Many Requests",
+      "408 Request Timeout",
+    ] {
+      let addr = one_shot_status_server(status_line).await;
+      let err = status_error_at(addr).await;
+      assert!(
+        is_transient_reqwest_error(&err),
+        "{status_line} must be transient, classifier returned false"
+      );
+    }
+  }
+
+  #[tokio::test]
+  async fn classifier_treats_404_403_401_as_fatal() {
+    // Hard-stop responses: 404 (wrong repo/file), 403 (gated model),
+    // 401 (bad token). Retrying these is just noise.
+    for status_line in [
+      "404 Not Found",
+      "403 Forbidden",
+      "401 Unauthorized",
+      "400 Bad Request",
+    ] {
+      let addr = one_shot_status_server(status_line).await;
+      let err = status_error_at(addr).await;
+      assert!(
+        !is_transient_reqwest_error(&err),
+        "{status_line} must be fatal, classifier returned true"
+      );
+    }
   }
 
   #[test]
