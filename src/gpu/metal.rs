@@ -49,7 +49,10 @@ pub(crate) fn parse(stdout: &str) -> Option<u64> {
       .get("spdisplays_mtlgpufamilysupport")
       .and_then(Value::as_str)
       .unwrap_or("");
-    if !family.starts_with("Apple") {
+    // macOS <26: "Apple9", "Apple8", etc.
+    // macOS 26+: "spdisplays_metal4", "spdisplays_metal3", etc.
+    let is_apple_silicon = family.starts_with("Apple") || family.contains("metal");
+    if !is_apple_silicon {
       continue;
     }
     // The JSON reports memory as a string like "16 GB" — convert
@@ -129,6 +132,21 @@ mod tests {
     assert!(parse_memory_string("garbage").is_none());
     assert_eq!(parse_memory_string("8 GB"), Some(8u64 * 1024 * 1024 * 1024));
     assert_eq!(parse_memory_string("8192 MB"), Some(8192u64 * 1024 * 1024));
+  }
+
+  #[test]
+  fn parses_macos_26_spdisplays_metal_family() {
+    let stdout = r#"{
+      "SPDisplaysDataType": [
+        {
+          "_name": "kHW_AppleM1Item",
+          "spdisplays_mtlgpufamilysupport": "spdisplays_metal4",
+          "sppci_model": "Apple M1"
+        }
+      ]
+    }"#;
+    // No VRAM field → falls back to system_total_memory(); just assert Some.
+    assert!(parse(stdout).is_some());
   }
 
   #[test]
