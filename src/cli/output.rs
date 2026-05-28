@@ -490,6 +490,11 @@ mod tests {
       weights_bytes: Some(4_200_000_000),
       display_label: None,
       parse_error: None,
+      split_siblings: Vec::new(),
+      has_chat_template: false,
+      has_reasoning_hint: false,
+      tokenizer_kind: None,
+      total_parameters: None,
     }
   }
 

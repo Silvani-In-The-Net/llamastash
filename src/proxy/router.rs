@@ -550,6 +550,18 @@ fn catalog_row_for_resolver(m: &DiscoveredModel) -> CatalogRow {
     .as_ref()
     .and_then(|md| md.parameter_label.clone());
   let weights_bytes = m.metadata.as_ref().and_then(|md| md.weights_bytes);
+  let has_chat_template = m
+    .metadata
+    .as_ref()
+    .map(|md| md.chat_template.is_some())
+    .unwrap_or(false);
+  let has_reasoning_hint = m
+    .metadata
+    .as_ref()
+    .map(|md| md.reasoning_hint)
+    .unwrap_or(false);
+  let tokenizer_kind = m.metadata.as_ref().and_then(|md| md.tokenizer_kind.clone());
+  let total_parameters = m.metadata.as_ref().and_then(|md| md.total_parameters);
   CatalogRow {
     path,
     model_id: None,
@@ -563,6 +575,15 @@ fn catalog_row_for_resolver(m: &DiscoveredModel) -> CatalogRow {
     weights_bytes,
     display_label: m.display_label.clone(),
     parse_error: m.parse_error.clone(),
+    split_siblings: m
+      .split_siblings
+      .iter()
+      .map(|p| p.to_string_lossy().into_owned())
+      .collect(),
+    has_chat_template,
+    has_reasoning_hint,
+    tokenizer_kind,
+    total_parameters,
   }
 }
 

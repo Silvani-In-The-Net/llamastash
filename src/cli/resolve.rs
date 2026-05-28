@@ -45,6 +45,23 @@ pub struct CatalogRow {
   /// scanning by eye.
   pub display_label: Option<String>,
   pub parse_error: Option<String>,
+  /// Sibling shard paths for split GGUFs. Empty for single-file
+  /// models. `path` is always shard 1; this carries shards 2..N so
+  /// callers (`show`, future size aggregators) can compute the
+  /// on-disk total without re-scanning the parent dir.
+  pub split_siblings: Vec<String>,
+  /// `true` when the GGUF header carried a `tokenizer.chat_template`
+  /// string. Surfacing the boolean (not the full template) keeps the
+  /// `list_models` wire shape lean; the template body is large.
+  pub has_chat_template: bool,
+  /// `true` when the GGUF carried a reasoning hint. Mirrors the
+  /// `metadata.has_reasoning_hint` field on `list_models`.
+  pub has_reasoning_hint: bool,
+  /// `tokenizer.ggml.model` from the GGUF header (`"llama"`, `"qwen2"`).
+  pub tokenizer_kind: Option<String>,
+  /// `general.parameter_count` — the raw count behind
+  /// `parameter_label` (`"7B"` is derived from `7e9`).
+  pub total_parameters: Option<u64>,
 }
 
 impl CatalogRow {
@@ -161,6 +178,31 @@ fn parse_catalog_row(row: Value) -> CatalogRow {
       .and_then(Value::as_str)
       .map(str::to_string),
     parse_error,
+    split_siblings: row
+      .get("split_siblings")
+      .and_then(Value::as_array)
+      .map(|arr| {
+        arr
+          .iter()
+          .filter_map(|v| v.as_str().map(str::to_string))
+          .collect()
+      })
+      .unwrap_or_default(),
+    has_chat_template: metadata
+      .and_then(|m| m.get("has_chat_template"))
+      .and_then(Value::as_bool)
+      .unwrap_or(false),
+    has_reasoning_hint: metadata
+      .and_then(|m| m.get("has_reasoning_hint"))
+      .and_then(Value::as_bool)
+      .unwrap_or(false),
+    tokenizer_kind: metadata
+      .and_then(|m| m.get("tokenizer_kind"))
+      .and_then(Value::as_str)
+      .map(str::to_string),
+    total_parameters: metadata
+      .and_then(|m| m.get("total_parameters"))
+      .and_then(Value::as_u64),
   }
 }
 
@@ -502,6 +544,11 @@ mod tests {
       weights_bytes: Some(4_200_000_000),
       display_label: None,
       parse_error: None,
+      split_siblings: Vec::new(),
+      has_chat_template: false,
+      has_reasoning_hint: false,
+      tokenizer_kind: None,
+      total_parameters: None,
     }
   }
 

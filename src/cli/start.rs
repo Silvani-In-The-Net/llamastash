@@ -165,6 +165,11 @@ fn direct_catalog_row(path: PathBuf, mode: CliLaunchMode) -> CatalogRow {
     weights_bytes: None,
     display_label: None,
     parse_error: None,
+    split_siblings: Vec::new(),
+    has_chat_template: false,
+    has_reasoning_hint: false,
+    tokenizer_kind: None,
+    total_parameters: None,
   }
 }
 
@@ -366,6 +371,11 @@ mod tests {
       weights_bytes: Some(4_200_000_000),
       display_label: None,
       parse_error: None,
+      split_siblings: Vec::new(),
+      has_chat_template: false,
+      has_reasoning_hint: false,
+      tokenizer_kind: None,
+      total_parameters: None,
     }
   }
 
@@ -504,6 +514,11 @@ mod tests {
       weights_bytes: Some(123),
       display_label: Some("known-model".into()),
       parse_error: None,
+      split_siblings: Vec::new(),
+      has_chat_template: false,
+      has_reasoning_hint: false,
+      tokenizer_kind: None,
+      total_parameters: None,
     };
     let args = StartArgs {
       model: path.display().to_string(),

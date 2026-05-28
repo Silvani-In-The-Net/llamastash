@@ -22,6 +22,7 @@ pub mod output;
 pub mod presets;
 pub mod pull;
 pub mod resolve;
+pub mod show;
 pub mod start;
 pub mod status;
 pub mod stop;
@@ -68,6 +69,7 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
     Some(Command::Presets(args)) => presets::handle(args, &cli, resolved_config).await,
     Some(Command::Favorites(args)) => favorites::handle(args, &cli, resolved_config).await,
     Some(Command::LastParams(args)) => last_params::handle(args, &cli, resolved_config).await,
+    Some(Command::Show(args)) => show::handle(args, &cli, resolved_config).await,
     Some(Command::Pull(args)) => pull::handle(args, &cli, resolved_config).await,
     Some(Command::Init(args)) => init::handle(args, &cli, resolved_config).await,
     Some(Command::Recommend(args)) => {

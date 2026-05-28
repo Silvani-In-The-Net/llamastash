@@ -152,6 +152,14 @@ pub enum Command {
   /// IPC so agents can answer "how did I launch this model last
   /// time" without going through the TUI.
   LastParams(LastParamsArgs),
+  /// Show everything LlamaStash knows about a single model: full
+  /// path, on-disk size (summed across shards for split GGUFs),
+  /// parsed GGUF metadata, the yaml + built-in `arch_defaults` that
+  /// would feed a launch, and the last `start_model` params for this
+  /// file. Reuses the catalog/resolver flow that powers `/v1/models`,
+  /// `/api/show`, and `start`, so a name that works on one surface
+  /// works here.
+  Show(ShowArgs),
   /// Maintainer-only hardware UAT lifecycle. Hidden from --help on
   /// every release binary; reachable only when the crate is built
   /// with `--features uat`.
@@ -295,6 +303,19 @@ pub struct LastParamsArgs {
   /// recorded last-params rows are returned.
   pub target: Option<String>,
   /// Emit JSON instead of the human-readable table.
+  #[arg(long)]
+  pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ShowArgs {
+  /// Model reference: substring of name, absolute path, or canonical
+  /// model id. Same matcher `start` and `/v1/...` use, so any name
+  /// that works on one surface works here.
+  pub model: String,
+  /// Emit the composite envelope as JSON instead of the human block.
+  /// Stable agent contract: every key is always present even when
+  /// `null` so callers can pin field paths.
   #[arg(long)]
   pub json: bool,
 }
