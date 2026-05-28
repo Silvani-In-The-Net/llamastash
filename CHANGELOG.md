@@ -38,6 +38,18 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Fixed
 
+- `llamastash show --json` now emits a `{"error": {"code", "message"}}`
+  envelope on every failure path (model not found / ambiguous / IPC
+  failure / daemon-spawn failure) instead of human prose. Exit code
+  is preserved. Restores the "every CLI command supports `--json`"
+  contract.
+- The SIZE column in `llamastash list` and the TUI Models pane now
+  computes the on-disk total via `discovery::shard_sizes` directly
+  from each row's path + sibling list, instead of trusting the
+  daemon's cached `weights_bytes`. Self-correcting across binary
+  upgrades — a daemon whose catalog was populated before the
+  split-shard aggregation fix no longer shows ~half the real size in
+  `list` and the TUI.
 - Split-GGUF entries now report the **summed** on-disk size across
   every shard instead of just shard 1. Visible as a correct SIZE in
   `llamastash list`, `show`, and the recommender's VRAM-fit

@@ -23,6 +23,50 @@ use crate::discovery::shard_sizes::{self, ShardSize};
 use crate::launch::defaults_table;
 
 pub async fn handle(args: ShowArgs, cli: &Cli, config: &Config) -> CliResult {
+  // Every CLI command must support `--json`. Errors flow through the
+  // same machinery: when `--json` is set, a CliExit lands on stdout
+  // as `{"error": {"code": …, "message": …}}` instead of stderr
+  // prose so agents can parse failure shapes without scraping. The
+  // exit code is preserved either way.
+  match build_view(&args, cli, config).await {
+    Ok(view) => {
+      if args.json {
+        println!("{}", pretty_json(&view.envelope));
+      } else {
+        print!(
+          "{}",
+          render_human(&view.row, &view.shards, view.total_bytes, &view.envelope)
+        );
+      }
+      Ok(())
+    }
+    Err(exit) => {
+      if args.json {
+        let body = json!({
+          "error": {
+            "code": exit.code,
+            "message": exit.message.as_deref().unwrap_or(""),
+          },
+        });
+        println!("{}", pretty_json(&body));
+        // Drop the message so `report` doesn't double-print it to
+        // stderr — the JSON body on stdout is the canonical surface.
+        Err(crate::cli::exit_codes::CliExit::code_only(exit.code))
+      } else {
+        Err(exit)
+      }
+    }
+  }
+}
+
+struct ShowView {
+  row: CatalogRow,
+  shards: Vec<ShardSize>,
+  total_bytes: u64,
+  envelope: Value,
+}
+
+async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowView, CliExit> {
   let mut client = connect_or_spawn(cli, config).await?;
   let catalog = fetch_catalog(&mut client).await?;
   let row = resolve_model(&catalog, &args.model)?;
@@ -126,12 +170,12 @@ pub async fn handle(args: ShowArgs, cli: &Cli, config: &Config) -> CliResult {
     "last_params": last_params,
   });
 
-  if args.json {
-    println!("{}", pretty_json(&envelope));
-  } else {
-    print!("{}", render_human(&row, &shards, total_bytes, &envelope));
-  }
-  Ok(())
+  Ok(ShowView {
+    row,
+    shards,
+    total_bytes,
+    envelope,
+  })
 }
 
 /// Per-shard `(path, bytes)` breakdown for the resolved row. Always

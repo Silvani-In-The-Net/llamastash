@@ -352,7 +352,7 @@ fn model_row(
   port: Option<u16>,
   launch_id: Option<String>,
 ) -> ListRow {
-  let (arch, quant, native_ctx, mode_hint, weights_bytes) = match &m.metadata {
+  let (arch, quant, native_ctx, mode_hint, cached_weights_bytes) = match &m.metadata {
     Some(md) => (
       md.arch.clone().unwrap_or_default(),
       md.quant.label().to_string(),
@@ -362,6 +362,12 @@ fn model_row(
     ),
     None => (String::new(), String::new(), None, "unknown".into(), None),
   };
+  // Same shard-aware on-disk total the CLI's `list` and `show`
+  // surface use. Reading from disk every refresh keeps the value
+  // accurate even when the daemon's cached `weights_bytes` predates
+  // a binary upgrade that fixed the split-shard aggregation; falls
+  // back to the cached value when the path no longer exists.
+  let weights_bytes = on_disk_total_or_cached(m, cached_weights_bytes);
   ListRow::Model {
     path: m.path.clone(),
     name: display_name(m),
@@ -374,6 +380,20 @@ fn model_row(
     state,
     port,
     launch_id,
+  }
+}
+
+/// SIZE source for the Models pane. Tries the shared shard-sizes
+/// util first (sums shard 1 + every sibling on disk); falls back to
+/// the catalog's cached `weights_bytes` when neither file is
+/// reachable from this process (a row that existed at scan time but
+/// has since been deleted or unmounted).
+fn on_disk_total_or_cached(m: &DiscoveredModel, cached: Option<u64>) -> Option<u64> {
+  let total = crate::discovery::shard_sizes::on_disk_total(&m.path, &m.split_siblings);
+  if total > 0 {
+    Some(total)
+  } else {
+    cached
   }
 }
 

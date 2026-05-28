@@ -48,10 +48,12 @@ pub fn list_human(rows: &[CatalogRow]) -> String {
         .native_ctx
         .map(|n| n.to_string())
         .unwrap_or_else(|| "?".to_string());
-      let size = r
-        .weights_bytes
-        .map(crate::tui::fmt::format_bytes)
-        .unwrap_or_else(|| "?".to_string());
+      // Compute the on-disk total via the shared shard-sizes util so
+      // a row's SIZE always reflects shard 1 + every sibling shard,
+      // independent of when the daemon last scanned (its cached
+      // `weights_bytes` may predate a binary upgrade that fixed the
+      // split-shard aggregation). One `stat` per row is cheap.
+      let size = display_size(r);
       vec![r.name(), arch.to_string(), quant.to_string(), ctx, size]
     })
     .collect();
@@ -61,6 +63,25 @@ pub fn list_human(rows: &[CatalogRow]) -> String {
     out.push('\n');
   }
   out
+}
+
+/// SIZE column for one row. Tries the shared shard-sizes util first
+/// (sums shard 1 + every sibling on disk); falls back to the wire
+/// shape's `weights_bytes` when neither path exists yet (a row that
+/// surfaced from the catalog but was deleted between scan and
+/// render), and finally to `?` when even that is absent.
+pub(crate) fn display_size(row: &CatalogRow) -> String {
+  use std::path::PathBuf;
+  let primary = PathBuf::from(&row.path);
+  let siblings: Vec<PathBuf> = row.split_siblings.iter().map(PathBuf::from).collect();
+  let total = crate::discovery::shard_sizes::on_disk_total(&primary, &siblings);
+  if total > 0 {
+    return crate::tui::fmt::format_bytes(total);
+  }
+  row
+    .weights_bytes
+    .map(crate::tui::fmt::format_bytes)
+    .unwrap_or_else(|| "?".to_string())
 }
 
 /// JSON projection of `list_models` rows. Stable shape — agents pin
@@ -1089,6 +1110,50 @@ mod tests {
     assert!(
       s.contains("port_in_use"),
       "expected port_in_use label: {s:?}"
+    );
+  }
+
+  #[test]
+  fn display_size_sums_every_shard_on_disk_independent_of_cached_weights() {
+    // Regression: `list_human` used to read `weights_bytes` straight
+    // from the wire, which on a daemon whose catalog predated the
+    // split-shard aggregation fix showed only shard 1's bytes.
+    // `display_size` must now stat every shard so the SIZE column
+    // is self-correcting independent of the daemon's cached value.
+    let dir = tempfile::tempdir().unwrap();
+    let primary = dir.path().join("m-00001-of-00002.gguf");
+    std::fs::write(&primary, vec![0u8; 1024 * 1024]).unwrap(); // 1 MiB
+    let sib = dir.path().join("m-00002-of-00002.gguf");
+    std::fs::write(&sib, vec![0u8; 2 * 1024 * 1024]).unwrap(); // 2 MiB
+    let row = CatalogRow {
+      path: primary.display().to_string(),
+      // Pretend the daemon cached a way-too-low value (the bug we
+      // are working around).
+      weights_bytes: Some(1024 * 1024),
+      split_siblings: vec![sib.display().to_string()],
+      ..row("split", "qwen3", "Q5_K", 32768)
+    };
+    let rendered = display_size(&row);
+    // 1 MiB + 2 MiB = 3 MiB across both shards. format_bytes renders
+    // megabytes without a trailing iB suffix, so just check the
+    // leading magnitude + M unit.
+    assert!(
+      rendered.starts_with('3') && rendered.contains('M'),
+      "expected ~3 MiB total across shards, got: {rendered}"
+    );
+  }
+
+  #[test]
+  fn display_size_falls_back_to_cached_weights_when_files_missing() {
+    let row = CatalogRow {
+      path: "/does/not/exist.gguf".into(),
+      weights_bytes: Some(42 * 1024 * 1024),
+      ..row("ghost", "llama", "Q4_K", 8192)
+    };
+    let rendered = display_size(&row);
+    assert!(
+      rendered.starts_with("42") && rendered.contains('M'),
+      "expected fallback to cached 42 MiB, got: {rendered}"
     );
   }
 
