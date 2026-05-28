@@ -106,7 +106,7 @@ Two release tracks:
 
 - [x] Wrong size on multipart gguf.
 - [ ] Model fails to launch: /home/deepu/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3-Next-80B-A3B-Instruct-GGUF/snapshots/c07b9268d97d8ba09d0529980627f3bd70f5f90a/Qwen_Qwen3-Next-80B-A3B-Instruct-Q5_K_M/Qwen_Qwen3-Next-80B-A3B-Instruct-Q5_K_M-00001-of-00002.gguf
-- [ ] Running `make snapshot` gives different results than CI, especially source and scores
+- [x] Running `make snapshot` gives different results than CI, especially source and scores
 - [x] `show` command shows model info. gguf parses values, full path, size, etc, arch defauklts, last run vals, and any other useful stuff
 - [x] Why does macos show unified memory for GPU in Host panel
 - [ ] **Need brainstorm/plan**: Idle-TTL eviction for the proxy's auto-started supervisors. Both Ollama (5 min, refcount-gated) and LM Studio (60 min, request-resets) evict idle models so a long-running daemon doesn't pin memory forever. llamastash today keeps models resident until explicit `stop_model`; first-request memory growth is the visible gap. Comparison + rationale in [`docs/architecture.md §Proxy comparison`](docs/architecture.md#proxy-comparison--ollama-lm-studio-llamastash); origin: R34 (the broader HTTP/MCP slice of R34 stays at R2).

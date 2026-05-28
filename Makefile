@@ -76,12 +76,17 @@ build: snapshot
 
 ## Regenerate data/benchmark-snapshot.json from live HF Hub + benchmark
 ## adapters. Honours HF_TOKEN to clear the 429 floor on whichllm's
-## HuggingFace calls. The script enforces the partial-source-failure
-## policy: any source missing -> non-zero exit, snapshot unchanged.
+## HuggingFace calls — without it, local runs commonly diverge from
+## the CI-published snapshot in the `source` and `score` fields. The
+## script enforces the partial-source-failure policy: any source
+## missing -> non-zero exit, snapshot unchanged.
 snapshot: .venv/bin/python
 	@if [ "$(SKIP_SNAPSHOT)" = "1" ]; then \
 		echo "snapshot: skipped (SKIP_SNAPSHOT=1)"; \
 	else \
+		if [ -z "$$HF_TOKEN" ]; then \
+			echo "snapshot: HF_TOKEN unset — local output will likely differ from CI; set HF_TOKEN to a read-only token to match." >&2; \
+		fi; \
 		.venv/bin/python scripts/regenerate-benchmark-snapshot.py; \
 	fi
 

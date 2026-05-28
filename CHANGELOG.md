@@ -43,6 +43,13 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Infrastructure
 
+- `make snapshot` (and `regenerate-benchmark-snapshot.py`) now warn
+  when `HF_TOKEN` is unset and record a `regen_environment` manifest
+  (`python_version`, `whichllm_version`, `hf_token_present`, `ci`) in
+  the snapshot envelope. The most common cause of "my local
+  benchmark-snapshot.json differs from CI" is the anonymous-tier HF
+  rate limit hit when `HF_TOKEN` is missing; the warning + manifest
+  surface that cause at a glance.
 - Benchmark snapshot releases (`snapshot-latest` + per-day audit tags)
   publish with `--prerelease`, so they collapse into the older-releases
   list on the Releases page instead of headlining alongside product

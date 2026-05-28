@@ -111,6 +111,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    _warn_if_likely_to_diverge_from_ci()
     sources = collect_sources()
     failed = [s for s in sources if not s.ok]
     if failed:
@@ -136,6 +137,38 @@ def main() -> int:
         return 0
 
     return run_corpus_gate()
+
+
+def _warn_if_likely_to_diverge_from_ci() -> None:
+    """Surface the most common reasons a local `make snapshot` run
+    produces different ``source`` / ``score`` fields than the CI-
+    published ``snapshot-latest`` asset.
+
+    The regen pulls live data from HuggingFace + a basket of
+    benchmark feeds; both move daily, so the bundled file in the repo
+    is a frozen snapshot from whichever CI run last published. The
+    big controllable knob is ``HF_TOKEN``: CI sets it from a
+    repository secret so whichllm's HF queries don't trip the
+    anonymous-tier rate limit (~5-7 queries per regen). Without it,
+    whichllm may degrade gracefully — fewer rows surface, or the same
+    row picks up a different score source on the next ranker pass —
+    and that's exactly the divergence the snapshot-vs-CI complaint
+    pattern matches.
+
+    Print to stderr only; never gate the run. Users who want byte-
+    stable regens can set HF_TOKEN locally too. CI hides the warning
+    naturally because HF_TOKEN is always set there.
+    """
+    if os.environ.get("HF_TOKEN"):
+        return
+    print(
+        "[WARN] HF_TOKEN not set — whichllm's HuggingFace queries will run\n"
+        "       on the anonymous rate-limit tier. This is the most common\n"
+        "       reason a local `make snapshot` produces different `source`\n"
+        "       and `score` fields than the CI-published `snapshot-latest`\n"
+        "       asset. Set HF_TOKEN to a read-only token to match CI.",
+        file=sys.stderr,
+    )
 
 
 def collect_sources() -> List[SourceResult]:
@@ -227,8 +260,33 @@ def build_snapshot(sources: List[SourceResult]) -> Dict[str, Any]:
         "remote_url": bundled_remote_url,
         "recommender_weights": bundled_recommender_weights,
         "models": models,
+        "regen_environment": _regen_environment(),
     }
     return candidate
+
+
+def _regen_environment() -> Dict[str, Any]:
+    """Reproducibility manifest. Captured in the snapshot envelope so a
+    `diff` between a local regen and the CI-published asset surfaces
+    the most common explanations (whichllm version drift, missing
+    HF_TOKEN, Python version skew) without having to instrument the
+    user's machine. Forward-compatible: the Rust loader ignores
+    unknown top-level keys, so adding the manifest doesn't bump
+    `schema_version`."""
+    try:
+        from importlib.metadata import version as _pkg_version
+        whichllm_version = _pkg_version("whichllm")
+    except Exception:  # noqa: BLE001 — best-effort manifest
+        whichllm_version = None
+    return {
+        "python_version": (
+            f"{sys.version_info.major}.{sys.version_info.minor}"
+            f".{sys.version_info.micro}"
+        ),
+        "whichllm_version": whichllm_version,
+        "hf_token_present": bool(os.environ.get("HF_TOKEN")),
+        "ci": bool(os.environ.get("CI")),
+    }
 
 
 def _extract_catalog_rows(sources: List[SourceResult]) -> List[Dict[str, Any]]:

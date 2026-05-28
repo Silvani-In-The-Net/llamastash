@@ -78,7 +78,10 @@ python3 scripts/regenerate-benchmark-snapshot.py --dry-run --skip-corpus-gate
 
 Without `HF_TOKEN`, whichllm may hit anonymous-tier HF rate limits on
 the 5-7 query pattern. The CI workflow sets `HF_TOKEN` from the
-repository secret (Unit 7 of plan 2026-05-20-001).
+repository secret (Unit 7 of plan 2026-05-20-001). The regen script
+prints a `[WARN]` line and the snapshot envelope's `regen_environment`
+manifest records `hf_token_present: false` so a local-vs-CI diff
+makes the cause obvious.
 
 `scripts/benchmark_sources/hf_discovery_test.py` exercises the
 projection / selection logic with stubbed candidates so changes to the
