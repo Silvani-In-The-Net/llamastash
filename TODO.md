@@ -105,13 +105,14 @@ Two release tracks:
 ## R2 (v0.0.2 roadmap)
 
 - [x] Wrong size on multipart gguf.
-- [ ] Model fails to launch: /home/deepu/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3-Next-80B-A3B-Instruct-GGUF/snapshots/c07b9268d97d8ba09d0529980627f3bd70f5f90a/Qwen_Qwen3-Next-80B-A3B-Instruct-Q5_K_M/Qwen_Qwen3-Next-80B-A3B-Instruct-Q5_K_M-00001-of-00002.gguf
 - [x] Running `make snapshot` gives different results than CI, especially source and scores
-- [x] `show` command shows model info. gguf parses values, full path, size, etc, arch defauklts, last run vals, and any other useful stuff
+- [x] `show` command shows model info. gguf parsed values, full path, size, etc, arch defauklts, last run vals, and any other useful stuff
 - [x] Why does macos show unified memory for GPU in Host panel
 - [ ] **Need brainstorm/plan**: Idle-TTL eviction for the proxy's auto-started supervisors. Both Ollama (5 min, refcount-gated) and LM Studio (60 min, request-resets) evict idle models so a long-running daemon doesn't pin memory forever. llamastash today keeps models resident until explicit `stop_model`; first-request memory growth is the visible gap. Comparison + rationale in [`docs/architecture.md §Proxy comparison`](docs/architecture.md#proxy-comparison--ollama-lm-studio-llamastash); origin: R34 (the broader HTTP/MCP slice of R34 stays at R2).
-- [ ] Offer to update OpenCode and other supported tools during `init`
+- [ ] Offer to update OpenCode and other supported tools (lets see what popular tools we can support) during `init`
 - [ ] **Need brainstorm/plan**: Plan to prevent llama.cpp version drift/incompatibility issues. Should we bundle/fix version.
+- [ ] `start/stop` command with no param should offer a clicklack picker
+- [ ] `list` command should show status/port of running models
 - [ ] AUR package
 - [ ] **Need brainstorm/plan**: Windows support including scoop.
 - [ ] Publish to clawhub/Hermes/etc
@@ -169,6 +170,9 @@ Two release tracks:
 - [ ] Ollama-compat digest should switch from path-derived `blake3:` to cached header BLAKE3 when the catalog exposes it. See [`src/proxy/ollama_compat.rs`](src/proxy/ollama_compat.rs).
 - [ ] Proxy idle-TTL eviction is still deferred for `/api/ps` expiry reporting. See [`src/proxy/ollama_compat.rs`](src/proxy/ollama_compat.rs).
 - [ ] Per-model VRAM attribution for Ollama-compat `/api/ps` still emits `0`. See [`src/proxy/ollama_compat.rs`](src/proxy/ollama_compat.rs).
+- [ ] **Investigated 2026-05-28 — needs upstream follow-up**: Qwen3-Next-80B-A3B-Instruct-Q5_K_M never reaches `/health` 200 on Strix Halo (AMD Radeon 8060S, HIP/ROCm, 62 GiB unified VRAM). Path: `~/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3-Next-80B-A3B-Instruct-GGUF/snapshots/c07b9268d97d8ba09d0529980627f3bd70f5f90a/Qwen_Qwen3-Next-80B-A3B-Instruct-Q5_K_M/Qwen_Qwen3-Next-80B-A3B-Instruct-Q5_K_M-00001-of-00002.gguf`.
+  - **Proximate cause (FIXED in 2827dee + follow-ups)**: the 120 s `health probe timeout` was killing llama-server while it was still loading. `ProbeOptions::scale_for_model(weights_bytes)` now scales the per-launch budget by model size (30 MiB/s assumed rate, capped at +2 h); the 53 GiB Qwen3-Next case gets ~32 min instead of 120 s. CLI `status` now surfaces the daemon's `state_cause` payload as a `<launch_id> cause: <msg>` line + `state_cause` JSON field so the next reproducer doesn't need a log scrape.
+  - **Underlying cause (NOT a llamastash bug)**: even with the wider budget the child never flips to ready. Five rounds (120 s / 6.5 min / 11 min / 20 min / 32 min budgets) all hit the same `health probe timeout (last status 503)` end state. `read_bytes` and dedicated VRAM allocation both **freeze** after ~1 min — 52 GiB resident in page cache, only ~2.5 GiB dedicated VRAM with `n_gpu_layers=99` — while the child sits in `State: R` with the CPU pegged for 30+ min. Lowering `ctx` from 64 K to 16 K did not help. Smells like llama.cpp's `qwen3next` fitter spinning on HIP/ROCm Strix Halo. Reproduce upstream with `--verbose` and `--fit off`; file at ggml-org/llama.cpp if confirmed. Tracked: llama.cpp build `9282 (4f0e43da6)`. Won't unblock by chasing within llamastash.
 
 ### Good to have
 
