@@ -11,16 +11,7 @@ use llamastash::discovery::ModelSource;
 use llamastash::gguf::test_fixtures::build_minimal_gguf;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
-  let nanos = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .expect("clock")
-    .as_nanos();
-  let dir = std::env::temp_dir().join(format!(
-    "llamastash-disc-{label}-{}-{nanos}",
-    std::process::id()
-  ));
-  fs::create_dir_all(&dir).expect("temp dir");
-  dir
+  llamastash::test_support::unique_temp_dir("ls-ds", label)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

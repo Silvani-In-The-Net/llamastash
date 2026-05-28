@@ -181,7 +181,10 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
     // vendor tool each tick instead of running the full
     // nvidia→amd→metal→vulkan chain every second. Hotplug / late
     // driver loads are caught by `FULL_REPROBE_TICKS` below.
-    let mut info = probe_gpu_full().await;
+    let mut info = tokio::select! {
+      _ = shutdown.wait_until_triggered() => return,
+      result = probe_gpu_full() => result,
+    };
     let mut ticks_since_full_reprobe: u32 = 0;
     loop {
       tokio::select! {
@@ -632,11 +635,11 @@ mod tests {
   async fn spawn_updates_snapshot_after_first_tick() {
     let token = ShutdownToken::new();
     let handles = spawn(token.clone(), Duration::from_millis(50));
-    // First tick lands after `interval`; the GPU probe step shells
-    // out and may share the blocking pool with other parallel tests,
-    // so allow generous headroom for the snapshot to land.
-    for _ in 0..40 {
-      tokio::time::sleep(Duration::from_millis(25)).await;
+    // First tick lands after the initial GPU probe + `interval`. On
+    // macOS the probe shells out to system_profiler which can take
+    // 1-3s; allow 5s total headroom for CI and loaded machines.
+    for _ in 0..100 {
+      tokio::time::sleep(Duration::from_millis(50)).await;
       let read = handles.snapshot.read().await.clone();
       if read.ram_total_bytes > 0 && read.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
       {
@@ -645,7 +648,7 @@ mod tests {
       }
     }
     panic!(
-      "host-metrics sampler did not produce a snapshot within 1s; \
+      "host-metrics sampler did not produce a snapshot within 5s; \
        snapshot: {:?}",
       handles.snapshot.read().await
     );

@@ -21,6 +21,9 @@ pub mod init;
 pub mod ipc;
 pub mod launch;
 pub mod proxy;
+#[cfg(any(test, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub mod test_support;
 pub mod theme;
 pub mod tui;
 pub mod util;

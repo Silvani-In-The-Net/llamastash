@@ -48,16 +48,7 @@ use tokio::time::{sleep, timeout};
 // --- shared helpers ------------------------------------------------------
 
 fn unique_temp_dir(label: &str) -> PathBuf {
-  let suffix = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .expect("clock")
-    .as_nanos();
-  let dir = std::env::temp_dir().join(format!(
-    "llamastash-proxymodels-{label}-{}-{suffix}",
-    std::process::id()
-  ));
-  std::fs::create_dir_all(&dir).expect("temp dir creation");
-  dir
+  llamastash::test_support::unique_temp_dir("ls-pm", label)
 }
 
 fn pick_free_port() -> u16 {

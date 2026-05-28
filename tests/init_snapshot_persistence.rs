@@ -3,21 +3,12 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use llamastash::init::snapshot::{self, InitSnapshot, InstallMethod, LoadError, ManagedKey};
 
 fn temp_state_dir(label: &str) -> PathBuf {
-  let nanos = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .expect("clock")
-    .as_nanos();
-  let p = std::env::temp_dir().join(format!(
-    "llamastash-init-snapshot-it-{label}-{}-{nanos}",
-    std::process::id()
-  ));
-  fs::create_dir_all(&p).expect("temp");
-  p
+  llamastash::test_support::unique_temp_dir("ls-is", label)
 }
 
 #[test]

@@ -9,7 +9,7 @@
 #![cfg(feature = "test-fixtures")]
 
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use llamastash::config::loader::PortRange;
 use llamastash::daemon::probe::{poll_until_ready, ProbeOptions, ProbeOutcome};
@@ -39,16 +39,7 @@ fn fake_binary() -> PathBuf {
 }
 
 fn unique_temp(label: &str) -> PathBuf {
-  let nanos = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .expect("clock")
-    .as_nanos();
-  let p = std::env::temp_dir().join(format!(
-    "llamastash-rp-{label}-{}-{nanos}",
-    std::process::id()
-  ));
-  std::fs::create_dir_all(&p).expect("temp");
-  p
+  llamastash::test_support::unique_temp_dir("ls-rp", label)
 }
 
 async fn wait_for_socket(path: &std::path::Path) {

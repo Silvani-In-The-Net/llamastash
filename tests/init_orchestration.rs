@@ -48,14 +48,7 @@ fn parse_init(argv: &[&str]) -> (Cli, llamastash::cli::cli_args::InitArgs) {
 /// `XDG_STATE_HOME`, `XDG_DATA_HOME`, and `HOME` so the wizard's
 /// state-store and config writes land somewhere safe to delete.
 fn isolated_xdg(label: &str) -> std::path::PathBuf {
-  let nanos = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .unwrap()
-    .as_nanos();
-  let root = std::env::temp_dir().join(format!(
-    "llamastash-init-orch-{label}-{}-{nanos}",
-    std::process::id()
-  ));
+  let root = llamastash::test_support::unique_temp_dir("ls-io", label);
   std::fs::create_dir_all(root.join("config")).unwrap();
   std::fs::create_dir_all(root.join("state")).unwrap();
   std::fs::create_dir_all(root.join("data")).unwrap();

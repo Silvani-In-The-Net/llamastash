@@ -24,16 +24,7 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 
 fn unique_temp_dir(label: &str) -> PathBuf {
-  let suffix = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .expect("clock")
-    .as_nanos();
-  let dir = std::env::temp_dir().join(format!(
-    "llamastash-proxy-{label}-{}-{suffix}",
-    std::process::id()
-  ));
-  std::fs::create_dir_all(&dir).expect("temp dir creation");
-  dir
+  llamastash::test_support::unique_temp_dir("ls-px", label)
 }
 
 /// Pick a free loopback port by binding-and-dropping. There's still

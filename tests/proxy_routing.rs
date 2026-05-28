@@ -21,7 +21,7 @@ use std::{
   net::SocketAddr,
   path::{Path, PathBuf},
   sync::Arc,
-  time::{Duration, SystemTime, UNIX_EPOCH},
+  time::Duration,
 };
 
 use llamastash::daemon::probe::ProbeOptions;
@@ -44,16 +44,7 @@ use tokio::time::sleep;
 // --- helpers -------------------------------------------------------------
 
 fn unique_temp(label: &str) -> PathBuf {
-  let nanos = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .expect("clock")
-    .as_nanos();
-  let p = std::env::temp_dir().join(format!(
-    "llamastash-proxyroute-{label}-{}-{nanos}",
-    std::process::id()
-  ));
-  std::fs::create_dir_all(&p).expect("temp");
-  p
+  llamastash::test_support::unique_temp_dir("ls-pr", label)
 }
 
 fn allocate_port() -> u16 {

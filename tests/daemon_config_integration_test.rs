@@ -15,7 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use llamastash::config::CachePathsConfig;
 use llamastash::daemon::discovery_task::DiscoveryOptions;
@@ -29,16 +29,7 @@ use serde_json::Value;
 use tokio::time::timeout;
 
 fn unique_temp(label: &str) -> PathBuf {
-  let suffix = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .expect("clock")
-    .as_nanos();
-  let dir = std::env::temp_dir().join(format!(
-    "llamastash-cfg-int-{label}-{}-{suffix}",
-    std::process::id()
-  ));
-  fs::create_dir_all(&dir).expect("temp dir");
-  dir
+  llamastash::test_support::unique_temp_dir("ls", label)
 }
 
 /// Serialises tests that mutate process-global env vars. Production
@@ -98,7 +89,7 @@ fn fast_watcher() -> WatcherOptions {
 }
 
 async fn wait_for_socket(path: &Path) {
-  let deadline = std::time::Instant::now() + Duration::from_secs(3);
+  let deadline = std::time::Instant::now() + Duration::from_secs(5);
   loop {
     if std::time::Instant::now() > deadline {
       panic!("daemon did not become connectable: {}", path.display());

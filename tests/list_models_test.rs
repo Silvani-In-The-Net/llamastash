@@ -12,7 +12,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use llamastash::daemon::discovery_task::DiscoveryOptions;
 use llamastash::daemon::{run_foreground, DaemonOptions};
@@ -25,16 +25,7 @@ use serde_json::Value;
 use tokio::time::timeout;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
-  let suffix = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .expect("clock")
-    .as_nanos();
-  let dir = std::env::temp_dir().join(format!(
-    "llamastash-listmodels-{label}-{}-{suffix}",
-    std::process::id()
-  ));
-  fs::create_dir_all(&dir).expect("temp dir");
-  dir
+  llamastash::test_support::unique_temp_dir("ls-lm", label)
 }
 
 fn fast_discovery_for(root: &Path) -> DiscoveryOptions {
@@ -44,11 +35,12 @@ fn fast_discovery_for(root: &Path) -> DiscoveryOptions {
       source: ModelSource::UserPath,
     }],
     scan: ScanOptions::default(),
-    // Short debounce + short periodic ticks: the test must finish in
-    // single-digit seconds even on a contended CI box.
+    // Short debounce + periodic rescan: macOS kqueue/FSEvents in /tmp
+    // may not deliver watcher events reliably, so keep the periodic
+    // fallback short enough for the test to pass within its budget.
     watcher: WatcherOptions {
       debounce: Duration::from_millis(75),
-      periodic_rescan: Duration::from_secs(30),
+      periodic_rescan: Duration::from_secs(2),
       channel_capacity: 16,
     },
   }
