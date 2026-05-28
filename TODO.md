@@ -104,18 +104,28 @@ Two release tracks:
 
 ## R2 (v0.0.2 roadmap)
 
+- [ ] llama.cpp version drift — surveyed empirically (2026-05-28). The official llama-server breaking-change tracker ([ggml-org/llama.cpp#9291](https://github.com/ggml-org/llama.cpp/issues/9291)) lists ~30 entries since Sept 2024 (~2/month). Categorised against llamastash's actual exposure surface:
+  - **Additive changes (~60%)** — new fields/endpoints/options. Byte-pass forwards them transparently. No action.
+  - **/v1/* schema tweaks (~15%)** — OpenAI-compat tightening. No endpoint has been *removed*. Body is forwarded verbatim; client owns parsing. No action.
+  - **/slots / /props / /metrics schema (~15%)** — llamastash doesn't inspect these. No action.
+  - **Removed CLI flags (~5%)** — e.g. `--draft*` → `--spec-draft-n-max`, `penalize_nl` removed. Manifest as `unknown flag` launch failure with a clear error message. Loud failure, not silent.
+  - **Silent default flips (~5%)** — the real risk class. Context shift went off-by-default in mid-2025 ([#15416](https://github.com/ggml-org/llama.cpp/pull/15416)); Jinja went on-by-default in late 2025 ([#17524](https://github.com/ggml-org/llama.cpp/pull/17524)). These change inference behaviour without llamastash noticing.
+  - **`llama-cli` → `llama-completion` move ([discussion #17618](https://github.com/ggml-org/llama.cpp/discussions/17618))** — does not affect llamastash; we spawn llama-server, not llama-cli.
+  - **Decision: do nothing structural in v0.x.** No bundling, no version pin, no probe. The cost of being wrong is small (loud launch errors point straight at the broken flag) and the cost of bundling early is large (cross-arch GPU build matrix + forced release per upstream cut). llama.cpp explicitly has no semver guarantee, so any version pin would be churn.
+  - **Tiny follow-up to land**: in `llamastash doctor`, run `llama-server --version` once and print it. If older than a hardcoded "minimum tested" tag we bump per llamastash release, print one warning line. ~30 min of work; lets issue triage grep for outliers. Revisit the bigger question only when (a) a user reports a silent-default-flip behaviour bug, or (b) upstream ships a stable-API guarantee.
+- [ ] Offer to update OpenCode and other supported tools (lets see what popular tools we can support) during `init`. Init should provide a multiselect of tools to choose (skip if none choosen) and then update the config for those tools to point to the proxy.
+- [ ] AUR package
+- [ ] **Need brainstorm/plan**: Windows support including scoop.
+- [ ] Publish to clawhub/Hermes/etc
+- [ ] Investigate the NVIDIA +12-16% defaults-mode gap. It's now disclaimed in two places (blog-benchmarks.md NVIDIA Suite B + linux-nvidia-final.md top-of-file). If you want to upgrade the framing from "open question" to "explained finding" before Wednesday's benchmark blog publishes, the investigation is: on the NVIDIA box, run LlamaStash's spawn against raw llama-server with both invocations logged at maximum verbosity, then diff the effective argv (including what each side resolves n_gpu_layers to in defaults mode). 30-60 min of bench work. Not blocking — the open-question framing is honest and ship-ready as-is.
+- [x] `start/stop` command with no param should offer a clicklack picker. All available models for start and non idle models for stop
+- [x] `list` command should show status/port of running models with glyph if its easy to add
+- [x] `status` command, remove path from normal output but keep in json. Show models name.
 - [x] Wrong size on multipart gguf.
 - [x] Running `make snapshot` gives different results than CI, especially source and scores
 - [x] `show` command shows model info. gguf parsed values, full path, size, etc, arch defauklts, last run vals, and any other useful stuff
 - [x] Why does macos show unified memory for GPU in Host panel
 - [x] Idle-TTL eviction for the proxy's auto-started supervisors — landed in `37d389a`. `proxy.idle_ttl_secs` (default 1800 = 30 min, `0` disables) drives a sweeper task that stops Ready auto-start supervisors after the configured idle window. Refcount-gated via an atomic on `ManagedModel` (decremented when the streamed response body drops) so long generations can't be SIGTERM'd mid-stream. Manual launches (`LaunchOrigin::Manual` from TUI/CLI `start`) are exempt, mirroring LM Studio's rule. MRU seeded on auto-start success so a freshly-loaded supervisor has a starting deadline. Unit + integration tests under `proxy::eviction`. Update [`docs/architecture.md §Proxy comparison`](docs/architecture.md#proxy-comparison--ollama-lm-studio-llamastash) to remove the "Not in v1" row.
-- [ ] Offer to update OpenCode and other supported tools (lets see what popular tools we can support) during `init`.  Init should provide a multiselect of tools to choose (skip if none choosen) and then update the config for those tools to point to the proxy.
-- [ ] **Need brainstorm/plan**: Plan to prevent llama.cpp version drift/incompatibility issues. Should we bundle/fix version.
-- [ ] `start/stop` command with no param should offer a clicklack picker
-- [ ] `list` command should show status/port of running models
-- [ ] AUR package
-- [ ] **Need brainstorm/plan**: Windows support including scoop.
-- [ ] Publish to clawhub/Hermes/etc
 - [x] flag to disable proxy fallback (or flip to off by default?)
 - [x] Add ability to skip downloading models during init
 - [x] The Model drill in page inside HF pull (the last page) doesnt scroll.
