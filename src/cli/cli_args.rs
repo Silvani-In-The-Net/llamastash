@@ -245,8 +245,12 @@ pub struct ListArgs {
 
 #[derive(Args, Debug)]
 pub struct StartArgs {
-  /// Model reference: name substring, absolute path, or canonical model id.
-  pub model: String,
+  /// Model reference: name substring, absolute path, or canonical
+  /// model id. Optional: when omitted on an interactive TTY (and
+  /// `--json` is not set), `start` opens a cliclack picker over the
+  /// catalog. Non-interactive callers (CI / piped / `--json`) must
+  /// pass an explicit reference.
+  pub model: Option<String>,
   /// Saved preset to load before applying overrides.
   #[arg(long, value_name = "NAME")]
   pub preset: Option<String>,
@@ -277,8 +281,10 @@ pub struct StartArgs {
 
 #[derive(Args, Debug)]
 pub struct StopArgs {
-  /// Model id or port to stop. Required unless `--all` is set.
-  #[arg(required_unless_present = "all")]
+  /// Launch id (`L3`), port, or `ext-<pid>` to stop. Optional: when
+  /// omitted (and `--all` is not set) on an interactive TTY, `stop`
+  /// opens a cliclack picker over running supervisors. Non-interactive
+  /// callers must pass an explicit target or `--all`.
   pub target: Option<String>,
   /// Stop every model owned by this daemon.
   #[arg(long, conflicts_with = "target")]
@@ -1399,7 +1405,7 @@ mod tests {
     ]);
     match cli.command {
       Some(Command::Start(args)) => {
-        assert_eq!(args.model, "qwen-coder");
+        assert_eq!(args.model.as_deref(), Some("qwen-coder"));
         assert_eq!(args.preset.as_deref(), Some("coding"));
         assert_eq!(args.ctx, Some(32768));
         assert_eq!(args.port, Some(41150));
@@ -1421,20 +1427,17 @@ mod tests {
   }
 
   #[test]
-  fn stop_requires_target_or_all() {
-    // `llamastash stop` with neither a positional target nor --all must error
-    // at parse time. Without the ArgGroup, clap would accept this silently
-    // and the handler would have no idea what to stop.
-    let no_args = Cli::try_parse_from(["llamastash", "stop"]);
-    assert!(no_args.is_err(), "stop without target or --all must error");
+  fn stop_no_args_opens_picker_at_runtime() {
+    // After the picker landed, `llamastash stop` is allowed at the
+    // parse layer — the handler opens a cliclack picker over running
+    // launches when both `<target>` and `--all` are absent. The
+    // picker itself refuses non-TTY / `--json` contexts so a piped
+    // caller still gets an actionable error, but that's runtime
+    // policy, not a clap constraint.
+    assert!(Cli::try_parse_from(["llamastash", "stop"]).is_ok());
+    assert!(Cli::try_parse_from(["llamastash", "stop", "--yes"]).is_ok());
 
-    let just_yes = Cli::try_parse_from(["llamastash", "stop", "--yes"]);
-    assert!(
-      just_yes.is_err(),
-      "stop --yes without target or --all must error"
-    );
-
-    // Either of the valid forms succeeds.
+    // The explicit forms still parse cleanly.
     assert!(Cli::try_parse_from(["llamastash", "stop", "42"]).is_ok());
     assert!(Cli::try_parse_from(["llamastash", "stop", "--all"]).is_ok());
   }

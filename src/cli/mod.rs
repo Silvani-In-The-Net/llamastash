@@ -19,6 +19,7 @@ pub mod last_params;
 pub mod list;
 pub mod logs;
 pub mod output;
+pub(crate) mod picker;
 pub mod presets;
 pub mod pull;
 pub mod resolve;

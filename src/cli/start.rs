@@ -30,7 +30,11 @@ use crate::ipc::Client;
 pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   let mut client = connect_or_spawn(cli, config).await?;
   let rows = fetch_catalog(&mut client).await?;
-  let row = select_start_row(&rows, &args)?;
+  let row = if args.model.is_some() {
+    select_start_row(&rows, &args)?
+  } else {
+    crate::cli::picker::pick_catalog_row(&rows, args.json).await?
+  };
 
   // Mode: explicit override > catalog hint (unless `unknown`).
   let mode = resolve_mode(&row, args.mode)?;
@@ -89,14 +93,18 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
 }
 
 fn select_start_row(rows: &[CatalogRow], args: &StartArgs) -> Result<CatalogRow, CliExit> {
-  match resolve_model_with_candidates(rows, &args.model) {
+  let model = args
+    .model
+    .as_deref()
+    .expect("select_start_row is only entered when args.model is Some");
+  match resolve_model_with_candidates(rows, model) {
     Ok(row) => Ok(row),
     Err(ResolveError::Empty) => Err(CliExit::new(
       MODEL_NOT_FOUND,
       "empty model reference; supply a name substring, absolute path, or short id",
     )),
     Err(ResolveError::None) => {
-      if let Some(path) = direct_path_candidate(args)? {
+      if let Some(path) = direct_path_candidate(model, args)? {
         return Ok(direct_catalog_row(
           path,
           args
@@ -106,7 +114,7 @@ fn select_start_row(rows: &[CatalogRow], args: &StartArgs) -> Result<CatalogRow,
       }
       Err(CliExit::new(
         MODEL_NOT_FOUND,
-        format!("no model matches `{}` ({} known)", args.model, rows.len()),
+        format!("no model matches `{model}` ({} known)", rows.len()),
       ))
     }
     Err(ResolveError::Many(candidates)) => {
@@ -114,8 +122,7 @@ fn select_start_row(rows: &[CatalogRow], args: &StartArgs) -> Result<CatalogRow,
       Err(CliExit::new(
         MODEL_NOT_FOUND,
         format!(
-          "`{}` matches {} models: {}\nrefine the reference (full path or unique substring) and retry",
-          args.model,
+          "`{model}` matches {} models: {}\nrefine the reference (full path or unique substring) and retry",
           candidates.len(),
           names.join(", ")
         ),
@@ -124,8 +131,8 @@ fn select_start_row(rows: &[CatalogRow], args: &StartArgs) -> Result<CatalogRow,
   }
 }
 
-fn direct_path_candidate(args: &StartArgs) -> Result<Option<PathBuf>, CliExit> {
-  let path = PathBuf::from(&args.model);
+fn direct_path_candidate(model: &str, args: &StartArgs) -> Result<Option<PathBuf>, CliExit> {
+  let path = PathBuf::from(model);
   if !path.is_absolute() {
     return Ok(None);
   }
@@ -434,8 +441,9 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.gguf");
     std::fs::write(&path, b"gguf").unwrap();
+    let model = path.display().to_string();
     let args = StartArgs {
-      model: path.display().to_string(),
+      model: Some(model.clone()),
       preset: None,
       ctx: None,
       port: None,
@@ -444,7 +452,7 @@ mod tests {
       extra: vec![],
       json: false,
     };
-    let err = direct_path_candidate(&args).unwrap_err();
+    let err = direct_path_candidate(&model, &args).unwrap_err();
     assert_eq!(err.code, USAGE);
     assert!(err.to_string().contains("pass --mode"));
   }
@@ -454,8 +462,9 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.gguf");
     std::fs::write(&path, b"gguf").unwrap();
+    let model = path.display().to_string();
     let args = StartArgs {
-      model: path.display().to_string(),
+      model: Some(model.clone()),
       preset: None,
       ctx: None,
       port: None,
@@ -464,7 +473,7 @@ mod tests {
       extra: vec![],
       json: false,
     };
-    let resolved = direct_path_candidate(&args).unwrap();
+    let resolved = direct_path_candidate(&model, &args).unwrap();
     assert_eq!(resolved, Some(path));
   }
 
@@ -482,7 +491,7 @@ mod tests {
     let path = dir.path().join("m.gguf");
     std::fs::write(&path, b"gguf").unwrap();
     let args = StartArgs {
-      model: path.display().to_string(),
+      model: Some(path.display().to_string()),
       preset: None,
       ctx: None,
       port: None,
@@ -521,7 +530,7 @@ mod tests {
       total_parameters: None,
     };
     let args = StartArgs {
-      model: path.display().to_string(),
+      model: Some(path.display().to_string()),
       preset: None,
       ctx: None,
       port: None,

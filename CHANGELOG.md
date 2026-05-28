@@ -6,6 +6,12 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Added
 
+- **Interactive picker for `start` / `stop`.** `llamastash start` with
+  no positional argument opens a cliclack picker over the catalog;
+  `llamastash stop` with no argument opens a picker over running
+  launches. Both pickers refuse non-TTY or `--json` contexts and tell
+  the caller to pass an explicit argument, so CI and pipes still get
+  an actionable error instead of a hung prompt.
 - **`list` shows live STATUS for each model.** Catalog rows now carry
   a `STATUS` column showing `<glyph> <state> :<port>` for any model
   with a running supervisor (e.g. `● ready :41100`). The glyph is the

@@ -19,11 +19,18 @@ use crate::cli::resolve::{fetch_status, resolve_running, ExternalRow, RunningRow
 use crate::config::Config;
 
 pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
-  if !args.all && args.target.is_none() {
-    return Err(CliExit::new(USAGE, "stop requires <target> or --all"));
-  }
   let mut client = connect_or_spawn(cli, config).await?;
   let grace = args.grace_secs;
+  // No-arg dispatch: when neither `--all` nor `<target>` is supplied,
+  // fall through to the cliclack picker over running launches. The
+  // picker refuses non-TTY / `--json` contexts so a piped caller gets
+  // an actionable error instead of a hung prompt.
+  let mut args = args;
+  if !args.all && args.target.is_none() {
+    let snap = fetch_status(&mut client).await?;
+    let picked = crate::cli::picker::pick_running_target(&snap.models, args.json).await?;
+    args.target = Some(picked);
+  }
 
   if args.all {
     let snap = fetch_status(&mut client).await?;

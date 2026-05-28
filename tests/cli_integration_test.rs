@@ -322,7 +322,7 @@ async fn agent_script_round_trip_list_start_status_logs_stop() {
     Some(&h.socket),
     &h.model_dir,
     Command::Start(StartArgs {
-      model: "m.gguf".into(),
+      model: Some("m.gguf".into()),
       preset: None,
       ctx: None,
       port: None,
@@ -420,7 +420,7 @@ async fn list_filter_and_unknown_ref_exit_codes() {
     Some(&h.socket),
     &h.model_dir,
     Command::Start(StartArgs {
-      model: "phi".into(),
+      model: Some("phi".into()),
       preset: None,
       ctx: None,
       port: None,
@@ -702,7 +702,7 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
     Some(&h.socket),
     &h.model_dir,
     Command::Start(StartArgs {
-      model: "m.gguf".into(),
+      model: Some("m.gguf".into()),
       preset: Some("coding".into()),
       ctx: None,
       port: None,
@@ -751,7 +751,7 @@ async fn start_ctx_above_native_succeeds_and_duplicate_launch_uses_new_port() {
     Some(&h.socket),
     &h.model_dir,
     Command::Start(StartArgs {
-      model: "m.gguf".into(),
+      model: Some("m.gguf".into()),
       preset: None,
       ctx: Some(131_072),
       port: None,
@@ -775,7 +775,7 @@ async fn start_ctx_above_native_succeeds_and_duplicate_launch_uses_new_port() {
     Some(&h.socket),
     &h.model_dir,
     Command::Start(StartArgs {
-      model: "m.gguf".into(),
+      model: Some("m.gguf".into()),
       preset: None,
       ctx: None,
       port: None,
@@ -820,7 +820,7 @@ async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
     Some(&h.socket),
     &h.model_dir,
     Command::Start(StartArgs {
-      model: "m.gguf".into(),
+      model: Some("m.gguf".into()),
       preset: None,
       ctx: None,
       port: None,
