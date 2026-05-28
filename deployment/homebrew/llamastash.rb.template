@@ -1,9 +1,5 @@
-# typed: false
 # frozen_string_literal: true
 
-# Documentation: https://docs.brew.sh/Formula-Cookbook
-#                https://rubydoc.brew.sh/Formula
-#
 # Generated from deployment/homebrew/llamastash.rb.template by
 # deployment/homebrew/packager.py during .github/workflows/release.yml.
 # Do not edit Formula/llamastash.rb in the tap repo by hand — it is
@@ -13,6 +9,11 @@ class Llamastash < Formula
   homepage "https://github.com/llamastash/llamastash"
   version "$version"
   license "MIT"
+
+  head do
+    url "https://github.com/llamastash/llamastash.git", branch: "main"
+    depends_on "rust" => :build
+  end
 
   on_macos do
     on_arm do
@@ -34,11 +35,6 @@ class Llamastash < Formula
       url "https://github.com/llamastash/llamastash/releases/download/v#{version}/llamastash-#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "$sha_x86_64_linux"
     end
-  end
-
-  head do
-    url "https://github.com/llamastash/llamastash.git", branch: "main"
-    depends_on "rust" => :build
   end
 
   def install

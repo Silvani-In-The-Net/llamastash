@@ -672,15 +672,19 @@ jobs:
             echo "::error::CRATES_IO_TOKEN secret is unset"
             exit 1
           fi
+          # Write the stderr sidecar OUTSIDE the checkout — cargo publish's
+          # dirty-tree check would otherwise reject the run with
+          # "1 files in the working directory contain changes ... publish.err".
+          err_log="${RUNNER_TEMP:-/tmp}/cargo-publish.err"
           for attempt in 1 2 3; do
-            if cargo publish --locked 2> publish.err; then
+            if cargo publish --locked 2> "$err_log"; then
               echo "cargo publish succeeded on attempt ${attempt}"
               exit 0
             fi
-            cat publish.err >&2
+            cat "$err_log" >&2
             # Treat "already uploaded" / "already exists" as success — happens
             # on a re-run after a workflow-level retry.
-            if grep -qiE 'already uploaded|already exists' publish.err; then
+            if grep -qiE 'already uploaded|already exists' "$err_log"; then
               echo "crates.io reports this version is already published; treating as success"
               exit 0
             fi
