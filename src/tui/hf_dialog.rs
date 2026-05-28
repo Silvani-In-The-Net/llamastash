@@ -933,7 +933,15 @@ fn render_picker_body(
           palette.warning_style(),
         )));
       }
-      for (idx, row) in state.picker_rows.iter().enumerate() {
+      // Header lines pinned above (repo + legend + optional
+      // warning) are already in `lines`; everything below is the
+      // scrollable row list. Skip the leading rows so the selection
+      // sits inside the area's visible row band. Same
+      // scroll-window math the search stage uses.
+      let header_height = lines.len();
+      let visible_rows = (area.height as usize).saturating_sub(header_height);
+      let offset = scroll_offset_for(state.picker_idx, state.picker_rows.len(), visible_rows);
+      for (idx, row) in state.picker_rows.iter().enumerate().skip(offset) {
         let selected = idx == state.picker_idx;
         let prefix = if selected { "▌ " } else { "  " };
         let mut style = palette.text_style();
