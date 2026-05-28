@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "suite": "proxy",
+  "host": {
+    "host_id": "deepu-xps",
+    "os": "Linux 6.6.141-1-MANJARO",
+    "cpu": "11th Gen Intel(R) Core(TM) i9-11900H @ 2.50GHz",
+    "cpu_threads": 16,
+    "ram_gb": 62.53,
+    "gpu_backend": "cuda",
+    "gpu_name": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
+    "gpu_vram_gb": 4.0
+  },
+  "provenance": {
+    "llamastash_version": "llamastash 0.0.1",
+    "llama_server_version": null,
+    "llama_cpp_commit": null,
+    "ollama_version": "Warning: could not connect to a running Ollama instance",
+    "ollama_llama_cpp_commit": null,
+    "lmstudio_version": "\u001b[38;5;166m   __   __  ___  ______          ___        _______   ____\u001b[0m",
+    "python_version": "3.14.5"
+  },
+  "started_at_utc": "2026-05-28T05:36:21.875640+00:00",
+  "finished_at_utc": "2026-05-28T05:36:42.184263+00:00",
+  "git_sha": "9806df2033dce7f002515cc1dcc84b1024e6dff9",
+  "knobs": {
+    "ctx": 4096,
+    "n_gpu_layers": 99
+  },
+  "workload": "chat_turn",
+  "measured_reps_per_phase": 5,
+  "phase_order": "alternate",
+  "model_path": "/home/deepu/.cache/huggingface/hub/models--MaziyarPanahi--gemma-3-4b-it-GGUF/snapshots/55ebd63de390fd82075d7ec5d1cf20486292d150/gemma-3-4b-it.Q3_K_M.gguf",
+  "phases": {
+    "direct": {
+      "label": "direct",
+      "base_url": "http://127.0.0.1:18000",
+      "model_name": "default",
+      "ttft_ms_mean": 111.04106360000969,
+      "ttft_ms_stddev_pct": 0.5747950514449133,
+      "decode_tps_mean": 42.402064963811036,
+      "decode_tps_stddev_pct": 0.5080481727580183,
+      "reps": [
+        {
+          "rep_index": 0,
+          "is_warmup": true,
+          "ttft_ms": 160.8457479999288,
+          "decode_tps": 42.712751101655705,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1588.9907029999222
+        },
+        {
+          "rep_index": 1,
+          "is_warmup": false,
+          "ttft_ms": 111.02707999998529,
+          "decode_tps": 42.69191328497602,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1539.8691090000511
+        },
+        {
+          "rep_index": 2,
+          "is_warmup": false,
+          "ttft_ms": 110.36654500003351,
+          "decode_tps": 42.508863596321724,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1545.3613869999572
+        },
+        {
+          "rep_index": 3,
+          "is_warmup": false,
+          "ttft_ms": 111.24326900005599,
+          "decode_tps": 42.40442402047109,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1549.772417999975
+        },
+        {
+          "rep_index": 4,
+          "is_warmup": false,
+          "ttft_ms": 111.99667099992894,
+          "decode_tps": 42.275368795278645,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1554.9172589999216
+        },
+        {
+          "rep_index": 5,
+          "is_warmup": false,
+          "ttft_ms": 110.57175300004474,
+          "decode_tps": 42.129755122007694,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1558.4795280000208
+        }
+      ]
+    },
+    "proxy": {
+      "label": "proxy",
+      "base_url": "http://127.0.0.1:11435",
+      "model_name": "/home/deepu/.cache/huggingface/hub/models--MaziyarPanahi--gemma-3-4b-it-GGUF/snapshots/55ebd63de390fd82075d7ec5d1cf20486292d150/gemma-3-4b-it.Q3_K_M.gguf",
+      "ttft_ms_mean": 111.61487540002781,
+      "ttft_ms_stddev_pct": 1.035660484506089,
+      "decode_tps_mean": 42.317598206913736,
+      "decode_tps_stddev_pct": 0.5140277665561133,
+      "reps": [
+        {
+          "rep_index": 0,
+          "is_warmup": true,
+          "ttft_ms": 117.67703400005303,
+          "decode_tps": 42.67204535533294,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1547.1843259999787
+        },
+        {
+          "rep_index": 1,
+          "is_warmup": false,
+          "ttft_ms": 110.18985999999131,
+          "decode_tps": 42.58007179709488,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1542.7849079999305
+        },
+        {
+          "rep_index": 2,
+          "is_warmup": false,
+          "ttft_ms": 111.20669100000669,
+          "decode_tps": 42.48967664024893,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1546.8495300000313
+        },
+        {
+          "rep_index": 3,
+          "is_warmup": false,
+          "ttft_ms": 111.11316800008808,
+          "decode_tps": 42.30867984456636,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1552.897696000059
+        },
+        {
+          "rep_index": 4,
+          "is_warmup": false,
+          "ttft_ms": 113.07387900001231,
+          "decode_tps": 42.11192987971033,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1561.5945280000005
+        },
+        {
+          "rep_index": 5,
+          "is_warmup": false,
+          "ttft_ms": 112.49077900004067,
+          "decode_tps": 42.097632872948175,
+          "prompt_tokens": 41,
+          "decode_tokens": 62,
+          "e2e_latency_ms": 1561.5033679999897
+        }
+      ]
+    }
+  },
+  "deltas": {
+    "ttft_ms_delta": 0.5738118000181203,
+    "decode_tps_delta_pct": 0.19920434764059114
+  },
+  "tier": "ok",
+  "thresholds": {
+    "advisory_ttft_ms": 10.0,
+    "advisory_decode_pct": 2.0,
+    "catastrophic_ttft_ms": 25.0,
+    "catastrophic_decode_pct": 5.0
+  }
+}

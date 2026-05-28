@@ -139,8 +139,10 @@ def _proxy_model_ref(proxy_url: str, gguf_path: Path) -> str:
     return stem
   # Ambiguous or unmatched -- send the absolute path. The proxy
   # resolver accepts a unique-substring reference and a full path is
-  # by definition unique on a given host.
-  return str(gguf_path.resolve())
+  # by definition unique on a given host. Use .absolute() not .resolve()
+  # so HF-cache symlinks aren't followed to blob paths the proxy
+  # doesn't recognise.
+  return str(gguf_path.absolute())
 
 
 def _git_sha() -> Optional[str]:

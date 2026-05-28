@@ -67,6 +67,12 @@ class LlamaStashDriver(Driver):
     # Normalized-mode knobs that the CLI exposes as first-class
     # flags go before the model; raw llama-server flags go after `--`.
     argv: list[str] = [str(bin_path), "start"]
+    # Forward LLAMASTASH_LLAMA_SERVER as an explicit per-call flag so
+    # the daemon honours the bench's choice even when it started with
+    # a different binary cached.
+    llama_server_override = os.environ.get("LLAMASTASH_LLAMA_SERVER")
+    if llama_server_override:
+      argv += ["--llama-server", llama_server_override]
     raw_after_dashdash: list[str] = []
     if mode == Mode.NORMALIZED and knobs is not None:
       self._append_knobs(argv, raw_after_dashdash, knobs)
