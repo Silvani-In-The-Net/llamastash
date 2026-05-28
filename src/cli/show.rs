@@ -9,6 +9,8 @@
 
 use serde_json::{json, Value};
 
+use std::path::{Path, PathBuf};
+
 use crate::cli::cli_args::{Cli, ShowArgs};
 use crate::cli::client::connect_or_spawn;
 use crate::cli::colors;
@@ -17,6 +19,7 @@ use crate::cli::output::pretty_json;
 use crate::cli::resolve::{fetch_catalog, resolve_model, CatalogRow};
 use crate::config::Config;
 use crate::daemon::host_metrics::GpuFlavor;
+use crate::discovery::shard_sizes::{self, ShardSize};
 use crate::launch::defaults_table;
 
 pub async fn handle(args: ShowArgs, cli: &Cli, config: &Config) -> CliResult {
@@ -73,7 +76,22 @@ pub async fn handle(args: ShowArgs, cli: &Cli, config: &Config) -> CliResult {
     .and_then(|a| config.arch_defaults.get(a))
     .cloned();
 
-  let bytes = on_disk_total(&row);
+  let shards = shard_breakdown(&row);
+  let total_bytes: u64 = shards
+    .iter()
+    .map(|s| s.bytes)
+    .fold(0u64, u64::saturating_add);
+  let shards_json: Vec<Value> = shards
+    .iter()
+    .enumerate()
+    .map(|(idx, s)| {
+      json!({
+        "index": idx + 1,
+        "path": s.path,
+        "bytes": s.bytes,
+      })
+    })
+    .collect();
 
   let envelope = json!({
     "name": row.name(),
@@ -96,9 +114,9 @@ pub async fn handle(args: ShowArgs, cli: &Cli, config: &Config) -> CliResult {
     },
     "size": {
       "weights_bytes": row.weights_bytes,
-      "shard_count": 1 + row.split_siblings.len(),
-      "on_disk_total_bytes": bytes,
-      "split_siblings": row.split_siblings,
+      "shard_count": shards.len(),
+      "on_disk_total_bytes": total_bytes,
+      "shards": shards_json,
     },
     "arch_defaults": {
       "gpu_backend": format!("{backend:?}"),
@@ -111,25 +129,23 @@ pub async fn handle(args: ShowArgs, cli: &Cli, config: &Config) -> CliResult {
   if args.json {
     println!("{}", pretty_json(&envelope));
   } else {
-    print!("{}", render_human(&row, &envelope));
+    print!("{}", render_human(&row, &shards, total_bytes, &envelope));
   }
   Ok(())
 }
 
-/// Sum `path` + every sibling's on-disk size. `0` for any missing
-/// path so a broken sibling shows up in the envelope (`shard_count`)
-/// but doesn't error out the whole `show`.
-fn on_disk_total(row: &CatalogRow) -> u64 {
-  let primary = std::fs::metadata(&row.path).map(|m| m.len()).unwrap_or(0);
-  let siblings: u64 = row
-    .split_siblings
-    .iter()
-    .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
-    .sum();
-  primary.saturating_add(siblings)
+/// Per-shard `(path, bytes)` breakdown for the resolved row. Always
+/// includes shard 1 (the catalog row's `path`); for split entries
+/// extends with each sibling. Delegates to the shared
+/// `discovery::shard_sizes` util so the byte counts here match the
+/// values the scanner folded into `metadata.weights_bytes`.
+fn shard_breakdown(row: &CatalogRow) -> Vec<ShardSize> {
+  let primary = PathBuf::from(&row.path);
+  let siblings: Vec<PathBuf> = row.split_siblings.iter().map(PathBuf::from).collect();
+  shard_sizes::per_shard(&primary, &siblings)
 }
 
-fn render_human(row: &CatalogRow, env: &Value) -> String {
+fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &Value) -> String {
   use std::fmt::Write;
   let mut out = String::new();
   let kv = |buf: &mut String, key: &str, val: &str| {
@@ -137,7 +153,13 @@ fn render_human(row: &CatalogRow, env: &Value) -> String {
   };
 
   let _ = writeln!(out, "{}", bold(&row.name()));
-  kv(&mut out, "path", &row.path);
+  // `path` covers single-file models; multi-shard sets get a full
+  // per-shard listing under the `size` section below, so emit the
+  // parent dir instead — shard 1's path on its own would only
+  // partially describe the model on disk.
+  if shards.len() == 1 {
+    kv(&mut out, "path", &row.path);
+  }
   kv(&mut out, "parent", &row.parent);
   kv(&mut out, "source", &row.source);
   if let Some(id) = &row.model_id {
@@ -187,24 +209,21 @@ fn render_human(row: &CatalogRow, env: &Value) -> String {
     if row.has_reasoning_hint { "yes" } else { "no" },
   );
 
-  let shard_count = 1 + row.split_siblings.len();
-  let on_disk = env
-    .get("size")
-    .and_then(|s| s.get("on_disk_total_bytes"))
-    .and_then(Value::as_u64)
-    .unwrap_or(0);
   let _ = writeln!(out, "\n{}", bold("size"));
-  if let Some(wb) = row.weights_bytes {
-    kv(&mut out, "weights_bytes", &format_bytes(wb));
-  } else {
-    kv(&mut out, "weights_bytes", "—");
-  }
-  kv(&mut out, "shard_count", &shard_count.to_string());
-  kv(&mut out, "on_disk_total", &format_bytes(on_disk));
-  if !row.split_siblings.is_empty() {
-    for (i, p) in row.split_siblings.iter().enumerate() {
-      kv(&mut out, &format!("shard {}", i + 2), p);
-    }
+  kv(&mut out, "shard_count", &shards.len().to_string());
+  kv(&mut out, "on_disk_total", &format_bytes(total_bytes));
+  // Per-shard breakdown so a multi-shard model shows every file
+  // and its individual size, not just shard 1. Single-file models
+  // collapse to one row, keeping the human output tight.
+  for (idx, shard) in shards.iter().enumerate() {
+    let label = format!("shard {}", idx + 1);
+    let size = if shard.bytes == 0 {
+      colors::warning("missing")
+    } else {
+      format_bytes(shard.bytes)
+    };
+    let path = render_shard_path(&shard.path);
+    kv(&mut out, &label, &format!("{size}  {path}"));
   }
 
   let backend = env
@@ -271,6 +290,16 @@ fn bold(s: &str) -> String {
   console::style(s).bold().to_string()
 }
 
+/// Friendly per-shard path: keep just the file basename — the row
+/// header already showed the parent dir, so repeating the full path
+/// per shard would wrap the line and bury the size column.
+fn render_shard_path(path: &Path) -> String {
+  path
+    .file_name()
+    .map(|s| s.to_string_lossy().into_owned())
+    .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
 fn format_bytes(n: u64) -> String {
   const KIB: f64 = 1024.0;
   const MIB: f64 = KIB * 1024.0;
@@ -315,22 +344,27 @@ mod tests {
   }
 
   #[test]
-  fn on_disk_total_includes_every_shard_when_files_exist() {
+  fn shard_breakdown_lists_every_shard_with_its_individual_size() {
     let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().join("m.gguf");
-    std::fs::write(&p, b"1234567890").unwrap();
-    let s2 = dir.path().join("m.gguf-2");
-    std::fs::write(&s2, b"abcdef").unwrap();
+    let p = dir.path().join("m-00001-of-00002.gguf");
+    std::fs::write(&p, b"1234567890").unwrap(); // 10 bytes
+    let s2 = dir.path().join("m-00002-of-00002.gguf");
+    std::fs::write(&s2, b"abcdef").unwrap(); // 6 bytes
     let row = CatalogRow {
       path: p.display().to_string(),
       split_siblings: vec![s2.display().to_string()],
       ..fake_row("/m/x.gguf")
     };
-    assert_eq!(on_disk_total(&row), 10 + 6);
+    let shards = shard_breakdown(&row);
+    assert_eq!(shards.len(), 2);
+    assert_eq!(shards[0].path, p);
+    assert_eq!(shards[0].bytes, 10);
+    assert_eq!(shards[1].path, s2);
+    assert_eq!(shards[1].bytes, 6);
   }
 
   #[test]
-  fn on_disk_total_skips_missing_siblings_without_panicking() {
+  fn shard_breakdown_surfaces_missing_siblings_as_zero_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("present.gguf");
     std::fs::write(&p, b"0123").unwrap();
@@ -339,7 +373,67 @@ mod tests {
       split_siblings: vec!["/does/not/exist.gguf-2".into()],
       ..fake_row("/m/x.gguf")
     };
-    assert_eq!(on_disk_total(&row), 4);
+    let shards = shard_breakdown(&row);
+    assert_eq!(shards.len(), 2);
+    assert_eq!(shards[0].bytes, 4);
+    assert_eq!(shards[1].bytes, 0, "missing sibling renders as 0 not panic");
+  }
+
+  #[test]
+  fn render_human_lists_every_shard_for_multipart() {
+    // Regression: previous render only emitted shard 1's path under
+    // the row header; siblings appeared as bare paths without sizes.
+    // The size section must now show one row per shard with its
+    // individual byte count.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("m-00001-of-00002.gguf");
+    std::fs::write(&p, vec![0u8; 1024 * 1024]).unwrap(); // 1 MiB
+    let s2 = dir.path().join("m-00002-of-00002.gguf");
+    std::fs::write(&s2, vec![0u8; 2 * 1024 * 1024]).unwrap(); // 2 MiB
+    let row = CatalogRow {
+      path: p.display().to_string(),
+      split_siblings: vec![s2.display().to_string()],
+      ..fake_row("/m/x.gguf")
+    };
+    let shards = shard_breakdown(&row);
+    let envelope = json!({
+      "size": { "on_disk_total_bytes": 3 * 1024 * 1024 },
+      "arch_defaults": { "gpu_backend": "CpuOnly", "yaml": null, "builtin": {} },
+      "last_params": null,
+    });
+    let rendered =
+      console::strip_ansi_codes(&render_human(&row, &shards, 3 * 1024 * 1024, &envelope))
+        .into_owned();
+    assert!(
+      rendered.contains("shard 1"),
+      "shard 1 row missing:\n{rendered}"
+    );
+    assert!(
+      rendered.contains("shard 2"),
+      "shard 2 row missing:\n{rendered}"
+    );
+    assert!(
+      rendered.contains("1.0 MiB"),
+      "shard 1 size missing:\n{rendered}"
+    );
+    assert!(
+      rendered.contains("2.0 MiB"),
+      "shard 2 size missing:\n{rendered}"
+    );
+    assert!(
+      rendered.contains("m-00001-of-00002.gguf"),
+      "shard 1 basename missing:\n{rendered}"
+    );
+    assert!(
+      rendered.contains("m-00002-of-00002.gguf"),
+      "shard 2 basename missing:\n{rendered}"
+    );
+    // Single `path` line should NOT appear in the row header for
+    // multipart entries — the per-shard rows cover the same ground.
+    assert!(
+      !rendered.contains(&format!("path  {}", p.display())),
+      "multipart should not duplicate shard 1 path under the header:\n{rendered}"
+    );
   }
 
   #[test]

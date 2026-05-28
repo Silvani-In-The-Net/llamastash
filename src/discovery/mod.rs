@@ -17,6 +17,7 @@ pub mod lm_studio;
 pub mod metadata_cache;
 pub mod ollama;
 pub mod scanner;
+pub mod shard_sizes;
 pub mod split_gguf;
 pub mod watcher;
 

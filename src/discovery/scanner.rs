@@ -339,25 +339,14 @@ async fn apply_split_total_weights(
   };
   let primary = path.to_path_buf();
   let sibling_paths: Vec<PathBuf> = siblings.to_vec();
-  let total = tokio::task::spawn_blocking(move || sum_on_disk_bytes(&primary, &sibling_paths))
-    .await
-    .unwrap_or(0);
+  let total = tokio::task::spawn_blocking(move || {
+    crate::discovery::shard_sizes::on_disk_total(&primary, &sibling_paths)
+  })
+  .await
+  .unwrap_or(0);
   if total > 0 {
     meta.weights_bytes = Some(total);
   }
-}
-
-/// Sum `primary` + every sibling's on-disk size. `0` for any missing
-/// path so a temporarily-unavailable sibling shrinks the total
-/// rather than panicking discovery. Pushed onto the blocking pool by
-/// the caller — multi-shard sets stat N files synchronously.
-fn sum_on_disk_bytes(primary: &Path, siblings: &[PathBuf]) -> u64 {
-  let primary_bytes = std::fs::metadata(primary).map(|m| m.len()).unwrap_or(0);
-  let sibling_bytes: u64 = siblings
-    .iter()
-    .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
-    .sum();
-  primary_bytes.saturating_add(sibling_bytes)
 }
 
 #[cfg(test)]

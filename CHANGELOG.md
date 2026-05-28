@@ -7,12 +7,18 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 ### Added
 
 - `llamastash show <model>` subcommand projects everything LlamaStash
-  knows about a single model in one block: full path, source, parsed
-  GGUF metadata, on-disk size summed across split shards, the yaml +
-  built-in `arch_defaults` that would feed a launch, and the last
-  `start_model` params recorded for the file. Reuses the same matcher
-  `start` and `/v1/...` use, so a reference that works on one surface
-  works here. `--json` emits the stable composite envelope.
+  knows about a single model in one block: parsed GGUF metadata, a
+  per-shard listing with each shard's path + individual size for
+  split GGUFs, the yaml + built-in `arch_defaults` that would feed a
+  launch, and the last `start_model` params recorded for the file.
+  Reuses the same matcher `start` and `/v1/...` use, so a reference
+  that works on one surface works here. `--json` emits the stable
+  composite envelope (`size.shards: [...]` for the per-shard
+  breakdown).
+- Per-shard on-disk-size computation moved into a shared
+  `discovery::shard_sizes` util — scanner, `show`, and any future
+  consumer go through the same `on_disk_total` / `per_shard` helpers
+  so the byte counts agree across surfaces.
 - `?` help overlay now has a `Legend` section explaining the `RAM*`
   glyph (unified-memory pool shared with VRAM).
 - `daemon start --no-proxy-fallback` flag (and matching
