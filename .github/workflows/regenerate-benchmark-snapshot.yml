@@ -111,13 +111,24 @@ jobs:
           set -euxo pipefail
           DATE_TAG="snapshot-$(date -u +%F)"
           # Rolling tag for the URL stability the bundled snapshot's
-          # REMOTE_URL relies on.
+          # REMOTE_URL relies on. Marked as a pre-release so the
+          # Releases page keeps the latest product tag (vX.Y.Z) as
+          # "Latest" and the snapshot tags collapse into the older-
+          # releases list instead of headlining alongside them.
           gh release upload snapshot-latest data/benchmark-snapshot.json --clobber || \
             gh release create snapshot-latest data/benchmark-snapshot.json \
+              --prerelease \
               --title "Benchmark snapshot (rolling)" \
               --notes "Daily auto-published artefact. See \`docs/spikes/2026-05-19-llama-cpp-releases-asset-contract.md\` for the contract."
-          # Per-day audit tag for forensic history.
+          # Re-assert the pre-release flag on every run — `gh release
+          # upload` does not touch release flags, so an existing
+          # snapshot-latest created before this change would otherwise
+          # stay flagged as a regular release.
+          gh release edit snapshot-latest --prerelease || true
+          # Per-day audit tag for forensic history. Pre-release for
+          # the same Releases-page reason as snapshot-latest.
           gh release create "$DATE_TAG" data/benchmark-snapshot.json \
+            --prerelease \
             --title "Benchmark snapshot $DATE_TAG" \
             --notes "Daily snapshot archived for audit history." \
             --target "$GITHUB_SHA" || true
