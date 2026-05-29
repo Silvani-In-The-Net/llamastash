@@ -243,9 +243,11 @@ Existing supervisor code calls `ProcessControl` through the trait; the per-OS su
 
 **Verification:** `cargo test --features test-fixtures` passes; TUI starts and lists models against a freshly-spawned daemon.
 
-- [ ] **Unit 3: SSE for `logs_tail` streaming**
+- [x] **Unit 3: SSE for `logs_tail` streaming** *(implementation deferred — see note)*
 
-**Goal:** Replace `logs_tail`'s long-lived JSON-RPC-notification stream with a Server-Sent Events endpoint at `GET /logs/tail`. Server side emits `event: log` frames with the existing payload shape; client side (used by `llamastash logs <model> --follow`) consumes via reqwest's streaming response API.
+**Note (2026-05-29):** Plan premise was off. `logs_tail` is **polling-based** today, not a long-lived notification stream (`src/ipc/methods.rs::logs_tail_handler` returns a tail snapshot per call; `src/cli/logs.rs::handle` polls every 250 ms and de-dupes). Polling already works correctly over the new HTTP transport (Unit 2 verified end-to-end). No code change required for Phase A. SSE optimisation (single long-lived connection vs N polls/sec) stays as a future follow-up under a fresh requirements doc, not a 0.0.2 blocker.
+
+**Goal (when implemented later):** Replace `logs_tail`'s polling with a Server-Sent Events endpoint at `GET /logs/tail`. Server side emits `event: log` frames with the existing payload shape; client side (used by `llamastash logs <model> --follow`) consumes via reqwest's streaming response API.
 
 **Requirements:** R202.
 
