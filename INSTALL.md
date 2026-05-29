@@ -31,7 +31,21 @@ brew install llamastash/llamastash/llamastash
 
 The brew tap is the recommended path on Apple Silicon — it installs a code-signed bottle and `brew upgrade` keeps you current. On Linux, Homebrew works but the install-script path is the lighter-weight default.
 
-### Option 3 — Cargo (any platform with Rust toolchain)
+### Option 3 — Arch Linux (AUR)
+
+Three variants — pick one:
+
+```bash
+yay -S llamastash       # source build from the tagged GitHub release
+yay -S llamastash-bin   # prebuilt x86_64 / aarch64 tarball from the GH Release
+yay -S llamastash-git   # main-branch checkout, rebuilds on every -Syu
+```
+
+All three install the same binary at `/usr/bin/llamastash` and conflict with each other so only one can be installed at a time. `llamastash-bin` is the fastest install — no Rust toolchain pulled in. `llamastash` builds from source with `--locked` for reproducibility. `llamastash-git` tracks `main` for early adopters; `pkgver` is derived from `git describe`.
+
+Works with any AUR helper (`yay`, `paru`, `aurutils`, …) or a manual `makepkg -si`.
+
+### Option 4 — Cargo (any platform with Rust toolchain)
 
 ```bash
 cargo install llamastash
@@ -39,7 +53,7 @@ cargo install llamastash
 
 Builds from the published crate. Requires Rust 1.95+ (newer is fine). The `--locked` flag pins to the `Cargo.lock` shipped with the release for reproducibility.
 
-### Option 4 — Build from source
+### Option 5 — Build from source
 
 ```bash
 git clone https://github.com/llamastash/llamastash
@@ -49,7 +63,7 @@ cargo install --path . --locked
 
 Useful for trying unreleased changes or hacking on the codebase.
 
-### Option 5 — Manual download from GitHub Releases
+### Option 6 — Manual download from GitHub Releases
 
 If you'd rather inspect the tarball first, grab the matching asset from <https://github.com/llamastash/llamastash/releases/latest>, verify its SHA-256 against the `*.sha256` sidecar file, extract, and move `llamastash` somewhere on your `PATH`.
 
@@ -66,6 +80,8 @@ xattr -d com.apple.quarantine ./llamastash
 ```
 
 **Linux.** All paths work. GPU detection covers NVIDIA (NVML), AMD (rocm-smi), and Vulkan. `init` will install the right `llama-server` variant for whichever it finds.
+
+**Arch Linux.** Prefer the AUR (`yay -S llamastash` / `llamastash-bin` / `llamastash-git`) so updates ride pacman. The install-script path also works if you'd rather not pull in an AUR helper.
 
 **Windows.** Not supported in the first release. Tracked in [the roadmap](README.md#roadmap).
 
@@ -197,6 +213,7 @@ Remove the binary, then optionally remove user data.
 
 - **Install script:** `rm "$(command -v llamastash)"` (the script reports the install dir on success).
 - **Homebrew:** `brew uninstall llamastash`
+- **AUR:** `yay -R llamastash` (or `llamastash-bin` / `llamastash-git`, whichever you have installed)
 - **Cargo:** `cargo uninstall llamastash`
 
 ### Remove user data (optional)

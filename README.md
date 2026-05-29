@@ -38,6 +38,9 @@ curl -fsSL https://llamastash.dev/install.sh | sh
 # Homebrew (macOS + Linuxbrew)
 brew install llamastash/llamastash/llamastash
 
+# Arch Linux (AUR — pick one)
+yay -S llamastash       # source build
+
 # From crates.io (any platform with a Rust toolchain)
 cargo install llamastash
 ```

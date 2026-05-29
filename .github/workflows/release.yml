@@ -31,16 +31,29 @@ name: release
 #   8. publish-cargo        — `cargo publish` with retries on transient
 #                             crates.io failures, idempotent against re-runs.
 #                             Skipped on pre-release tags.
+#   9. publish-aur-source   — renders deployment/aur/llamastash/PKGBUILD.template
+#                             via deployment/aur/packager.py, generates .SRCINFO
+#                             inside an archlinux:base-devel docker container,
+#                             then clones ssh://aur@aur.archlinux.org/llamastash.git
+#                             via AUR_SSH_KEY and force-pushes. Skipped on
+#                             pre-release tags (AUR pkgver disallows `-`).
+#  10. publish-aur-bin      — same shape; reuses the per-target sha-* artifacts
+#                             produced by `build` for x86_64/aarch64 -linux-gnu
+#                             prebuilt tarballs.
+#  11. publish-aur-git      — refreshes deployment/aur/llamastash-git/PKGBUILD on
+#                             the AUR side. Static file (no template); the job
+#                             is a no-op when the file is unchanged since the
+#                             last AUR commit.
 #
 # Pre-release tags (vX.Y.Z-suffix) still exercise prepare-release +
 # release-gate + create-release + build + publish-shasums so dry runs catch
 # test/UAT regressions across the full non-Windows matrix, but never write to
-# the tap, site, or crates.io. The downstream cleanup needed after an rc1 dry
-# run is therefore just `git push --delete origin <tag>` plus `gh release
+# the tap, site, crates.io, or AUR. The downstream cleanup needed after an rc1
+# dry run is therefore just `git push --delete origin <tag>` plus `gh release
 # delete`.
 #
-# Steps 6-8 run in parallel; all gate on publish-shasums. cargo publish is
-# parallel with tap/site by intent (per the kdash pattern); failure modes
+# Steps 6-11 run in parallel; all gate on publish-shasums. cargo publish is
+# parallel with tap/site/AUR by intent (per the kdash pattern); failure modes
 # are catalogued in docs/plans/2026-05-19-003-feat-0.2.0-release-setup-plan.md
 # §Risks & Dependencies.
 
@@ -692,4 +705,299 @@ jobs:
             sleep $((attempt * 15))
           done
           echo "::error::cargo publish failed 3 times; investigate crates.io status"
+          exit 1
+
+  publish-aur-source:
+    name: publish AUR (source)
+    needs: [create-release, publish-shasums]
+    runs-on: ubuntu-latest
+    # AUR pkgver disallows `-`; prerelease tags would render an invalid PKGBUILD.
+    # The packager.py VERSION_RE rejects them too, but skipping here keeps the
+    # rc1 dry-run from spuriously failing on an unrelated guard.
+    if: needs.create-release.outputs.is_prerelease == 'false'
+    env:
+      RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+      RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+
+      - name: compute source-tarball SHA-256
+        id: shasum
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub's auto-generated source tarball isn't in our sha-* artifacts
+          # (those cover the prebuilt binary tarballs). Stream + hash inline.
+          sha=$(curl -fsSL "https://github.com/llamastash/llamastash/archive/refs/tags/${TAG}.tar.gz" | sha256sum | awk '{print $1}')
+          if ! printf '%s' "$sha" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::source tarball sha-256 did not match expected shape: $sha"
+            exit 1
+          fi
+          printf 'sha=%s\n' "$sha" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: packager_test.py (template/argv regressions catch before render)
+        run: python3 deployment/aur/packager_test.py
+
+      - name: render PKGBUILD
+        env:
+          SHA_SOURCE: ${{ steps.shasum.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          python3 deployment/aur/packager.py llamastash \
+            "$RELEASE_VERSION" \
+            deployment/aur/llamastash/PKGBUILD.template \
+            stage/PKGBUILD \
+            "$SHA_SOURCE"
+
+      - name: generate .SRCINFO + namcap (in archlinux container)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # makepkg refuses to run as root; the entrypoint provisions a build
+          # user and chowns the bind-mount so namcap/makepkg can write .SRCINFO.
+          # namcap surfaces stylistic warnings; treat as advisory (|| true).
+          docker run --rm -v "$PWD/stage:/w" -w /w archlinux:base-devel bash -c '
+            set -euo pipefail
+            pacman -Sy --noconfirm --needed --quiet namcap >/dev/null
+            useradd -m b
+            chown -R b /w
+            su -c "cd /w && makepkg --printsrcinfo > .SRCINFO && namcap PKGBUILD || true" b
+          '
+
+      - name: install AUR SSH key + known_hosts
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "::error::AUR_SSH_KEY secret is unset; cannot push to AUR"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" >~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Future hardening: pin the AUR host-key fingerprint here. The Arch
+          # wiki publishes current fingerprints under "AUR submission guidelines".
+          ssh-keyscan -t ed25519,rsa,ecdsa aur.archlinux.org >~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: clone + push aur-llamastash (retry on non-fast-forward)
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global user.email "release-bot@users.noreply.github.com"
+          git config --global user.name  "llamastash-release-bot"
+          git clone ssh://aur@aur.archlinux.org/llamastash.git aur-pkg
+          cp stage/PKGBUILD stage/.SRCINFO aur-pkg/
+          cd aur-pkg
+          git add PKGBUILD .SRCINFO
+          if git diff-index --quiet HEAD; then
+            echo "aur-llamastash already up to date for ${RELEASE_TAG}; nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(pkg): bump llamastash to ${RELEASE_TAG}"
+          for attempt in 1 2 3; do
+            if git push origin master; then
+              exit 0
+            fi
+            echo "push attempt ${attempt} failed; pulling --rebase and retrying"
+            git pull --rebase origin master
+            sleep $((attempt * 5))
+          done
+          echo "::error::AUR push (llamastash) failed after 3 attempts; inspect manually"
+          exit 1
+
+  publish-aur-bin:
+    name: publish AUR (bin)
+    needs: [create-release, publish-shasums]
+    runs-on: ubuntu-latest
+    if: needs.create-release.outputs.is_prerelease == 'false'
+    env:
+      RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+      RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sha-*
+          merge-multiple: true
+          path: sha-stash
+
+      - name: extract per-target sha256s
+        id: shas
+        shell: bash
+        run: |
+          set -euo pipefail
+          extract() {
+            local triple="$1"
+            local f="sha-stash/llamastash-${RELEASE_VERSION}-${triple}.tar.gz.sha256"
+            if [ ! -f "$f" ]; then
+              echo "::error::missing sha256 sidecar for ${triple}: $f" >&2
+              exit 1
+            fi
+            awk '{print $1; exit}' "$f"
+          }
+          {
+            echo "sha_x86_64_linux_gnu=$(extract x86_64-unknown-linux-gnu)"
+            echo "sha_aarch64_linux_gnu=$(extract aarch64-unknown-linux-gnu)"
+          } >>"$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: render PKGBUILD
+        env:
+          SHA_X86_64: ${{ steps.shas.outputs.sha_x86_64_linux_gnu }}
+          SHA_AARCH64: ${{ steps.shas.outputs.sha_aarch64_linux_gnu }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          python3 deployment/aur/packager.py llamastash-bin \
+            "$RELEASE_VERSION" \
+            deployment/aur/llamastash-bin/PKGBUILD.template \
+            stage/PKGBUILD \
+            "$SHA_X86_64" \
+            "$SHA_AARCH64"
+
+      - name: generate .SRCINFO + namcap (in archlinux container)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/stage:/w" -w /w archlinux:base-devel bash -c '
+            set -euo pipefail
+            pacman -Sy --noconfirm --needed --quiet namcap >/dev/null
+            useradd -m b
+            chown -R b /w
+            su -c "cd /w && makepkg --printsrcinfo > .SRCINFO && namcap PKGBUILD || true" b
+          '
+
+      - name: install AUR SSH key + known_hosts
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "::error::AUR_SSH_KEY secret is unset; cannot push to AUR"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" >~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519,rsa,ecdsa aur.archlinux.org >~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: clone + push aur-llamastash-bin (retry on non-fast-forward)
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global user.email "release-bot@users.noreply.github.com"
+          git config --global user.name  "llamastash-release-bot"
+          git clone ssh://aur@aur.archlinux.org/llamastash-bin.git aur-pkg
+          cp stage/PKGBUILD stage/.SRCINFO aur-pkg/
+          cd aur-pkg
+          git add PKGBUILD .SRCINFO
+          if git diff-index --quiet HEAD; then
+            echo "aur-llamastash-bin already up to date for ${RELEASE_TAG}; nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(pkg): bump llamastash-bin to ${RELEASE_TAG}"
+          for attempt in 1 2 3; do
+            if git push origin master; then
+              exit 0
+            fi
+            echo "push attempt ${attempt} failed; pulling --rebase and retrying"
+            git pull --rebase origin master
+            sleep $((attempt * 5))
+          done
+          echo "::error::AUR push (llamastash-bin) failed after 3 attempts; inspect manually"
+          exit 1
+
+  publish-aur-git:
+    name: publish AUR (git)
+    needs: [create-release, publish-shasums]
+    runs-on: ubuntu-latest
+    if: needs.create-release.outputs.is_prerelease == 'false'
+    env:
+      RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+
+      - name: stage PKGBUILD + generate .SRCINFO (in archlinux container)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          cp deployment/aur/llamastash-git/PKGBUILD stage/PKGBUILD
+          docker run --rm -v "$PWD/stage:/w" -w /w archlinux:base-devel bash -c '
+            set -euo pipefail
+            pacman -Sy --noconfirm --needed --quiet namcap >/dev/null
+            useradd -m b
+            chown -R b /w
+            su -c "cd /w && makepkg --printsrcinfo > .SRCINFO && namcap PKGBUILD || true" b
+          '
+
+      - name: install AUR SSH key + known_hosts
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "::error::AUR_SSH_KEY secret is unset; cannot push to AUR"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" >~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519,rsa,ecdsa aur.archlinux.org >~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: clone + push aur-llamastash-git (no-op if unchanged)
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global user.email "release-bot@users.noreply.github.com"
+          git config --global user.name  "llamastash-release-bot"
+          git clone ssh://aur@aur.archlinux.org/llamastash-git.git aur-pkg
+          cp stage/PKGBUILD stage/.SRCINFO aur-pkg/
+          cd aur-pkg
+          git add PKGBUILD .SRCINFO
+          if git diff-index --quiet HEAD; then
+            echo "aur-llamastash-git already up to date; nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(pkg): refresh llamastash-git PKGBUILD"
+          for attempt in 1 2 3; do
+            if git push origin master; then
+              exit 0
+            fi
+            echo "push attempt ${attempt} failed; pulling --rebase and retrying"
+            git pull --rebase origin master
+            sleep $((attempt * 5))
+          done
+          echo "::error::AUR push (llamastash-git) failed after 3 attempts; inspect manually"
           exit 1
