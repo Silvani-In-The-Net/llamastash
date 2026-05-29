@@ -6,6 +6,8 @@
 //! socket to become connectable before returning. The child is the daemon;
 //! no in-runtime `fork()` is involved, which keeps the tokio runtime safe.
 
+pub mod auth;
+pub mod control_plane;
 pub mod discovery_task;
 pub mod host_metrics;
 pub mod lockfile;
@@ -15,6 +17,7 @@ pub mod ports;
 pub mod probe;
 pub mod registry;
 pub mod resources;
+pub mod runtime_file;
 pub mod server;
 pub mod shutdown;
 pub mod state_store;
@@ -23,16 +26,20 @@ pub mod supervisor;
 use std::{
   fs,
   path::{Path, PathBuf},
-  time::Duration,
+  sync::Arc,
+  time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Context, Result};
 use tokio::net::UnixListener;
 
 use self::{
+  auth::IpcToken,
+  control_plane::BindResult,
   discovery_task::DiscoveryOptions,
   lockfile::{acquire, AcquireOutcome},
   registry::SupervisorRegistry,
+  runtime_file::RuntimeInfo,
   shutdown::{install_signal_handlers, ShutdownToken},
   state_store::{load as load_state, RunningSnapshot},
 };
@@ -94,6 +101,15 @@ pub struct DaemonOptions {
   /// unprivileged port and is best-effort (bind failure is
   /// non-fatal).
   pub proxy: ProxyConfig,
+  /// Control-plane HTTP listener port. Phase A of the Windows+HTTP-IPC
+  /// plan: the bearer-token-authed JSON-RPC server binds here. `0`
+  /// means "let the kernel pick" (used by tests for collision
+  /// isolation); production wiring uses
+  /// [`control_plane::DEFAULT_CONTROL_PORT`] with a small scan window
+  /// for fallback. The bound address + bearer token are written to
+  /// `runtime.json` at startup so attaching CLI / TUI clients can
+  /// discover them.
+  pub control_plane_port: u16,
 }
 
 impl DaemonOptions {
@@ -119,6 +135,10 @@ impl DaemonOptions {
       // from the test's standpoint. Tests that *do* want the proxy
       // off can flip `enabled` after construction.
       proxy: ProxyConfig::default(),
+      // Port `0` makes every test pick an ephemeral free slot — no
+      // cross-test contention on the 11436 default the production
+      // CLI uses via `from_defaults`.
+      control_plane_port: 0,
     }
   }
 
@@ -145,6 +165,7 @@ impl DaemonOptions {
       arch_defaults: std::collections::BTreeMap::new(),
       propagated_cli_args: Vec::new(),
       proxy: ProxyConfig::default(),
+      control_plane_port: control_plane::DEFAULT_CONTROL_PORT,
     })
   }
 }
@@ -371,6 +392,65 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     }
   }
 
+  // 8c. Control-plane HTTP listener (Phase A of the Windows+HTTP-IPC plan).
+  // Binds a separate loopback TCP port from the proxy and the Unix
+  // socket. Auth is bearer-token; the token + URL are written to
+  // `runtime.json` under `state_dir` so attaching CLI / TUI clients
+  // can pick them up. Runs *alongside* the Unix-socket listener
+  // during Phase A — Unit 4 (deletion) lands after the client and
+  // SSE units validate the HTTP path end-to-end on Linux/macOS.
+  let control_token = Arc::new(IpcToken::generate());
+  let control_addr = control_plane::loopback_addr(opts.control_plane_port);
+  match control_plane::bind(control_addr).await {
+    BindResult::Bound {
+      listener: control_listener,
+      addr: control_bound,
+    } => {
+      let ipc_url = format!("http://{control_bound}");
+      log::info!("control plane listening on {ipc_url}");
+      let info = RuntimeInfo {
+        schema_version: 1,
+        ipc_url,
+        ipc_token: control_token.as_str().to_owned(),
+        started_at_unix: SystemTime::now()
+          .duration_since(UNIX_EPOCH)
+          .map(|d| d.as_secs())
+          .unwrap_or_default(),
+        daemon_pid: std::process::id() as i32,
+      };
+      if let Err(e) = runtime_file::save(&opts.state_dir, &info) {
+        log::warn!("control plane: could not persist runtime.json: {e}");
+      }
+      let control_token_for_serve = Arc::clone(&control_token);
+      let control_ctx = ctx.clone();
+      let control_token_signal = token.clone();
+      supervisor::spawn_supervised("control_plane_listener", async move {
+        if let Err(e) = control_plane::serve(
+          control_listener,
+          control_token_for_serve,
+          control_ctx,
+          control_token_signal,
+        )
+        .await
+        {
+          log::warn!("control plane listener task ended with error: {e}");
+        }
+      });
+    }
+    BindResult::AllPortsInUse { last_addr } => {
+      log::warn!(
+        "control plane: ports {}..={} all in use; daemon continues without the HTTP control plane (Unix socket still serves)",
+        opts.control_plane_port,
+        last_addr.port()
+      );
+    }
+    BindResult::Failed { addr, error } => {
+      log::warn!(
+        "control plane: failed to bind {addr}: {error}; daemon continues without the HTTP control plane (Unix socket still serves)"
+      );
+    }
+  }
+
   // Hold a second handle to the dispatcher context so the
   // post-serve cleanup step (below) can reach the supervisor
   // registry after `serve` consumes its copy. `MethodContext` is
@@ -393,8 +473,13 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   }
 
   // 10. Cleanup. Lockfile cleans itself in Drop; the socket file is
-  // removed here. We let the listener drop naturally.
+  // removed here. We let the listener drop naturally. `runtime.json`
+  // is also best-effort removed so a fresh daemon never reads a
+  // stale URL/token pair (the lockfile is the authoritative liveness
+  // check, but stale runtime.json would just cost the next client an
+  // extra retry).
   let _ = fs::remove_file(&opts.socket_path);
+  runtime_file::remove(&opts.state_dir);
   drop(lockfile);
 
   result.map(|()| StartOutcome::RanToCompletion)

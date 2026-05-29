@@ -1409,6 +1409,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "arboard",
+ "base64",
  "blake3",
  "cargo-husky",
  "clap",
@@ -1427,6 +1428,7 @@ dependencies = [
  "libc",
  "log",
  "notify-debouncer-mini",
+ "rand",
  "ratatui",
  "regex",
  "reqwest",

@@ -68,6 +68,12 @@ anyhow = "1.0"
 arboard = { version = "3", default-features = false, features = [
   "wayland-data-control",
 ] }
+# Bearer-token control-plane auth (Unit 1 of Windows+HTTP-IPC plan).
+# `base64::engine::general_purpose::URL_SAFE_NO_PAD` is the wire
+# format for the token bytes; the dep is already in tree transitively
+# via reqwest/hyper-util — declared explicitly so the daemon's auth
+# module owns its surface.
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 blake3 = { version = "1", default-features = false, features = ["std"] }
 # v2 benchmark snapshot's `min_version` field gates rollback-DoS attacks
 # (see Unit 1 spike). Minimal feature set keeps semver compact.
@@ -89,6 +95,14 @@ ignore = "0.4"
 libc = "0.2"
 log = "0.4"
 notify-debouncer-mini = { version = "0.7", default-features = false }
+# OS-randomness source for the per-daemon bearer token. Already in
+# tree transitively via hf-hub; pulled to top-level so the auth
+# module owns its dep. We only use `rand::rngs::OsRng` + `fill_bytes`
+# — no PRNG state, no thread-local RNG.
+rand = { version = "0.9", default-features = false, features = [
+  "std",
+  "os_rng",
+] }
 ratatui = { version = "0.30", default-features = false, features = [
   "crossterm",
 ] }
