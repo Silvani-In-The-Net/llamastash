@@ -18,6 +18,26 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Added
 
+- **`init` integrations: alt-path detection + comment-tolerant
+  reader.** Patchers now check existing-file variants before
+  creating a parallel canonical file — `opencode.jsonc` (with `//`
+  / `/* */` comments **and trailing commas**) gets patched in
+  place rather than spawning a sibling `opencode.json`, and
+  `config.yml` / `.aider.conf.yaml` are detected likewise. JSON
+  reads run through string-safe comment + trailing-comma strippers
+  so VSCode-style JSONC and Zed's JSON5-shaped `settings.json`
+  parse cleanly. Writes always emit strict JSON; comments in the
+  source file are not preserved.
+- **`init` summary surfaces what each integration touched.** The
+  outro now lists each patched tool's display name and target path,
+  and shows the `source ~/.config/llamastash/env.sh` one-liner when
+  the shell-env writer ran.
+- **`init` model id is the GGUF stem, not the first downloaded
+  file.** Previous behaviour grabbed `m.files.first()` and got
+  `.gitattributes` when HF dropped that into the snapshot dir; the
+  resolver now filters for `.gguf` and strips the
+  `-NNNNN-of-NNNNN` multi-shard suffix so the id matches the
+  catalog row.
 - **`init` patches AI dev tool configs.** A new integrations step
   presents a cliclack multiselect over five supported tools —
   **OpenCode** (`~/.config/opencode/opencode.json`), **Aider**

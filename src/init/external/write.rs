@@ -41,17 +41,16 @@ pub fn read_current(
   };
   match format {
     Format::Json => {
-      // Strip `//` and `/* */` comments before strict-JSON parse so a
-      // `.jsonc` file (OpenCode) or a `.json` that the user has
-      // annotated VSCode-style (Zed's `settings.json` is JSON5-shape)
-      // parses cleanly. The stripper is string-safe — comment
-      // markers inside JSON string literals are left alone.
+      // Strip `//` / `/* */` comments AND trailing commas before
+      // strict-JSON parse so a `.jsonc` file (OpenCode) or a `.json`
+      // the user has annotated VSCode-style (Zed's `settings.json` is
+      // JSON5-shape) parses cleanly. Both passes are string-safe —
+      // comment markers and commas inside JSON string literals are
+      // left alone.
       //
-      // Note: writes ALWAYS emit strict JSON. Comments in the source
-      // file are not preserved across a merge — the wizard's
-      // outro-line warns when an alt-path (e.g. `.jsonc`) was the
-      // resolved write target.
-      let cleaned = strip_json_comments(&raw);
+      // Writes ALWAYS emit strict JSON; comments in the source file
+      // are not preserved across a merge.
+      let cleaned = strip_trailing_commas(&strip_json_comments(&raw));
       serde_json::from_str(&cleaned).map_err(|e| PatchError::Parse {
         tool_id,
         path: path.to_path_buf(),
@@ -168,10 +167,8 @@ fn file_label(path: &Path) -> String {
 /// pass for both `.jsonc` files (OpenCode) and `.json` files the
 /// user has edited VSCode-style (Zed's settings.json).
 ///
-/// Trailing commas — also valid in JSONC — are NOT stripped here;
-/// the strict-JSON parse will reject them and surface as a
-/// `PatchError::Parse` with an actionable message. Common-case
-/// JSONC tool configs don't use trailing commas.
+/// Trailing-comma stripping lives in [`strip_trailing_commas`] —
+/// always paired with this pass on JSON reads.
 fn strip_json_comments(input: &str) -> String {
   let mut out = String::with_capacity(input.len());
   let mut chars = input.chars().peekable();
@@ -223,6 +220,81 @@ fn strip_json_comments(input: &str) -> String {
       continue;
     }
     out.push(c);
+  }
+  out
+}
+
+/// Strip JSONC-style trailing commas: a `,` that's followed (after
+/// optional whitespace) by `}` or `]` is silently dropped. String-
+/// safe — commas inside JSON string literals are left alone.
+/// Idempotent on strict JSON (no trailing commas to strip).
+///
+/// Runs *after* [`strip_json_comments`] so a comment between the
+/// comma and the closing brace doesn't hide the trailing comma:
+///
+/// ```text
+///   "foo": 1,  // trailing comma + comment
+///   }
+/// ```
+fn strip_trailing_commas(input: &str) -> String {
+  let mut out = String::with_capacity(input.len());
+  let mut in_string = false;
+  let mut escape = false;
+  // Pending: a comma we haven't decided about yet. Holds the comma
+  // plus any whitespace seen since — flushed verbatim if we hit
+  // non-whitespace non-closer; if we hit `}` or `]`, drop the comma
+  // and keep just the whitespace.
+  let mut pending: Option<String> = None;
+  for c in input.chars() {
+    if in_string {
+      // Strings can't span a pending state, but defensively flush
+      // before pushing the string content.
+      if let Some(p) = pending.take() {
+        out.push_str(&p);
+      }
+      out.push(c);
+      if escape {
+        escape = false;
+      } else if c == '\\' {
+        escape = true;
+      } else if c == '"' {
+        in_string = false;
+      }
+      continue;
+    }
+    if let Some(ref mut p) = pending {
+      if c.is_whitespace() {
+        p.push(c);
+        continue;
+      }
+      if c == '}' || c == ']' {
+        // Trailing comma confirmed — drop it; keep the whitespace
+        // (preserves line numbers in any downstream parse error).
+        let ws: String = p.chars().skip(1).collect();
+        out.push_str(&ws);
+        out.push(c);
+        pending = None;
+        continue;
+      }
+      // Comma turned out to be legitimate — flush as-is.
+      let p_take = std::mem::take(p);
+      pending = None;
+      out.push_str(&p_take);
+      // Fall through to process `c` normally.
+    }
+    if c == '"' {
+      in_string = true;
+      out.push(c);
+      continue;
+    }
+    if c == ',' {
+      pending = Some(",".to_string());
+      continue;
+    }
+    out.push(c);
+  }
+  if let Some(p) = pending {
+    out.push_str(&p);
   }
   out
 }
@@ -361,6 +433,51 @@ mod tests {
   fn strip_json_comments_is_idempotent_on_clean_json() {
     let src = r#"{"a":1,"b":"foo","c":[1,2,3]}"#;
     assert_eq!(strip_json_comments(src), src);
+  }
+
+  #[test]
+  fn strip_trailing_commas_handles_object_and_array() {
+    let src = r#"{"a":1,"b":[1,2,3,],"c":{"x":1,},}"#;
+    let cleaned = strip_trailing_commas(src);
+    let v: Value = serde_json::from_str(&cleaned).expect("parses after strip");
+    assert_eq!(v["a"], 1);
+    assert_eq!(v["b"], serde_json::json!([1, 2, 3]));
+    assert_eq!(v["c"]["x"], 1);
+  }
+
+  #[test]
+  fn strip_trailing_commas_preserves_commas_in_strings() {
+    let src = r#"{"x":"a,b,","y":1,}"#;
+    let cleaned = strip_trailing_commas(src);
+    let v: Value = serde_json::from_str(&cleaned).unwrap();
+    assert_eq!(v["x"], "a,b,");
+    assert_eq!(v["y"], 1);
+  }
+
+  #[test]
+  fn strip_trailing_commas_idempotent_on_clean_json() {
+    let src = r#"{"a":1,"b":2}"#;
+    assert_eq!(strip_trailing_commas(src), src);
+  }
+
+  #[test]
+  fn jsonc_with_comments_and_trailing_commas_round_trips() {
+    // The exact failure mode the user hit: parser said
+    // "trailing comma at line 10 column 7".
+    let src = r#"{
+  "theme": "opencode",
+  "model": "anthropic/claude",
+  // multi-line provider block
+  "provider": {
+    "anthropic": {
+      "name": "Anthropic",
+    },
+  },
+}"#;
+    let cleaned = strip_trailing_commas(&strip_json_comments(src));
+    let v: Value = serde_json::from_str(&cleaned).expect("parses after both passes");
+    assert_eq!(v["theme"], "opencode");
+    assert_eq!(v["provider"]["anthropic"]["name"], "Anthropic");
   }
 
   #[test]

@@ -136,26 +136,26 @@ mod tests {
   #[test]
   fn existing_jsonc_is_patched_in_place_not_parallel_json() {
     // Repro the user's report: ~/.config/opencode/opencode.jsonc
-    // exists, default_path would point at .json; we should patch the
-    // .jsonc and never create the .json sibling. We use override_path
-    // to bypass home_dir, so this exercises the *picker* logic via a
-    // direct-path resolution — the moral equivalent is the same
-    // alt_paths check in resolve_path() (lib-level tested separately).
+    // exists with `//` / `/* */` comments AND trailing commas (very
+    // common in JSONC). We should patch the .jsonc and never create
+    // the .json sibling. The user's prior real-world failure mode
+    // was "trailing comma at line 10 column 7"; this covers it.
     let dir = crate::util::test_temp::unique_temp_dir("opencode-jsonc");
     let jsonc = dir.join("opencode.jsonc");
     std::fs::write(
       &jsonc,
-      "{\n  // user's settings\n  \"theme\": \"opencode\",\n  /* default model */\n  \"model\": \"anthropic/claude\"\n}\n",
+      "{\n  // user's settings\n  \"theme\": \"opencode\",\n  /* default model */\n  \"model\": \"anthropic/claude\",\n  \"provider\": {\n    \"anthropic\": {\n      \"name\": \"Anthropic\",\n    },\n  },\n}\n",
     )
     .unwrap();
     let out = apply(&OpenCode, &ctx(), Some(jsonc.clone())).expect("apply");
     assert_eq!(out.path, jsonc);
     let body: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&jsonc).unwrap())
       .expect("output is strict JSON");
-    // User's keys preserved across the comment-stripped read +
-    // strict-JSON write round trip.
+    // User's keys preserved across the comment-stripped, trailing-
+    // comma-stripped read + strict-JSON write round trip.
     assert_eq!(body["theme"], "opencode");
     assert_eq!(body["model"], "anthropic/claude");
+    assert_eq!(body["provider"]["anthropic"]["name"], "Anthropic");
     // Our provider landed.
     assert_eq!(
       body["provider"]["llamastash"]["options"]["baseURL"],
