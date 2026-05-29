@@ -56,8 +56,9 @@ pub const DEFAULT_PORT_SCAN_MAX_OFFSET: u16 = 5;
 const MAX_RPC_BODY_BYTES: usize = 256 * 1024;
 
 /// Maximum time to wait for in-flight connections after shutdown is
-/// triggered before dropping them. Mirrors
-/// [`crate::daemon::server::DRAIN_TIMEOUT`].
+/// triggered before dropping them. The proxy listener uses the same
+/// budget (see [`crate::proxy::server::DRAIN_TIMEOUT`]) so the two
+/// listeners surrender within one window.
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Outcome of [`bind_with_scan`].

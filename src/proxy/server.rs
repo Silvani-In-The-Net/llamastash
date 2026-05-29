@@ -17,12 +17,12 @@
 
 //! TCP accept loop + per-connection hyper service.
 //!
-//! Mirrors the shape of [`crate::daemon::server::serve`]: a
+//! Mirrors the shape of [`crate::daemon::control_plane::serve`]: a
 //! `tokio::select!` between `listener.accept()` and the daemon's
 //! [`ShutdownToken`], with a bounded drain phase on shutdown.
-//! Unlike the IPC server we don't peercred — loopback TCP doesn't
-//! carry credentials, and the plan's scope is "loopback only;
-//! same-host attacker is the threat model the OS handles."
+//! Unlike the IPC control plane we don't bearer-authenticate —
+//! per the plan's scope ("loopback only; OpenAI-compat shape"), the
+//! proxy is reachable by every same-host process by design.
 
 use std::{
   net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -42,9 +42,9 @@ use crate::daemon::shutdown::ShutdownToken;
 
 /// Maximum time to wait for in-flight connections after shutdown is
 /// triggered before dropping them. Mirrors
-/// [`crate::daemon::server::DRAIN_TIMEOUT`] so the two listeners
-/// drain on the same budget — useful when both are stopped by one
-/// SIGINT.
+/// [`crate::daemon::control_plane::DRAIN_TIMEOUT`] so the two
+/// listeners drain on the same budget — useful when both are stopped
+/// by one SIGINT.
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Externally visible proxy listener state. Unit 5 wires this into

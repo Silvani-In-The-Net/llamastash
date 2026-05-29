@@ -38,7 +38,7 @@ pub fn row_path(v: &Value) -> Option<&str> {
 /// row's path: a TUI-shared glyph (`● ready`, `◐ loading`, …) followed
 /// by `:<port>`. The column is empty for rows with no supervisor so
 /// the catalog stays uncluttered. `running` is the index produced by
-/// [`resolve::running_index`] — pass an empty map to opt out.
+/// [`crate::cli::resolve::running_index`] — pass an empty map to opt out.
 ///
 /// Footer line `(N models)` is appended on TTY only — the piped form
 /// stays byte-stable for `awk -F\t` / `column -t` pipelines.

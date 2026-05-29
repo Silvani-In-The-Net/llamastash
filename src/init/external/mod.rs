@@ -78,7 +78,7 @@ pub trait ToolPatcher: Send + Sync {
   /// the caller surfaces that as [`PatchError::NoHome`].
   fn default_path(&self) -> Option<PathBuf>;
   /// Additional paths to check for an *existing* config before
-  /// falling back to [`default_path`]. Returned in priority order:
+  /// falling back to [`Self::default_path`]. Returned in priority order:
   /// the first path that actually exists wins. Default impl is
   /// empty — tools that accept multiple filename variants (OpenCode's
   /// `.jsonc` / `.json`, Continue's `.yaml` / `.yml`) override this
@@ -90,7 +90,7 @@ pub trait ToolPatcher: Send + Sync {
   fn format(&self) -> Format;
   /// Build the additions blob to merge into the existing file. For
   /// [`Format::Raw`] patchers this is ignored (the patcher
-  /// overrides [`raw_body`] instead).
+  /// overrides [`Self::raw_body`] instead).
   fn build_additions(&self, ctx: &PatchContext) -> serde_json::Value;
   /// Override the default object-recursive merge. Default impl is
   /// `merge::merge(current, build_additions(ctx))` (objects recurse,
