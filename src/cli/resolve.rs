@@ -410,10 +410,10 @@ pub struct DaemonHealth {
   /// Path to the `llama-server` binary the daemon resolved at start.
   /// `None` when the daemon doesn't expose it or hasn't resolved one.
   pub server_path: Option<String>,
-  /// Unix-domain socket the daemon bound on startup. `None` when
-  /// talking to an older daemon that pre-dates the field. Surfaced
-  /// so `status --json` mirrors the IPC wire shape.
-  pub socket_path: Option<String>,
+  /// HTTP control-plane URL the daemon bound on startup
+  /// (e.g. `http://127.0.0.1:48134`). `None` when talking to a
+  /// pre-Phase-A daemon that doesn't surface the field.
+  pub ipc_url: Option<String>,
 }
 
 fn parse_daemon_health(v: &Value) -> Option<DaemonHealth> {
@@ -433,8 +433,8 @@ fn parse_daemon_health(v: &Value) -> Option<DaemonHealth> {
       .get("server_path")
       .and_then(Value::as_str)
       .map(str::to_string),
-    socket_path: obj
-      .get("socket_path")
+    ipc_url: obj
+      .get("ipc_url")
       .and_then(Value::as_str)
       .map(str::to_string),
   })

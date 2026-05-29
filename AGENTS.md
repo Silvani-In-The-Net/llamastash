@@ -116,6 +116,29 @@ Look at the `Makefile` for more commands, including `make uat-*` for the manual 
 
 Two-space indentation is enforced by `rustfmt.toml`. Clippy denies `shadow_unrelated` crate-wide; rename rather than reuse `let` bindings inside the same scope.
 
+## End-to-end CLI validation (required for user-visible changes)
+
+A passing `cargo test` is necessary but **not sufficient**. After any change to a CLI subcommand, IPC response shape, daemon lifecycle, TUI panel, or anything else a user would notice, **actually run the CLI** against a real daemon and verify the behavior with your own eyes. Test suites can pass while the binary is broken — stale daemons, missed env vars, deferred restarts, schema drift between client and server all hide behind green CI.
+
+Minimum E2E loop after any user-facing change:
+
+```bash
+cargo build --bin llamastash
+# If a daemon is already running from an older binary, kill it first —
+# the running process is using a deleted binary and won't pick up your
+# changes until restarted:
+target/debug/llamastash daemon stop                     # or: --force when stale
+target/debug/llamastash daemon start                    # backgrounds + writes runtime.json
+target/debug/llamastash daemon status --json | jq .     # shape sanity-check
+target/debug/llamastash list                            # the change you just made
+target/debug/llamastash status --json | jq .daemon      # confirm new IPC fields
+target/debug/llamastash                                 # TUI: pan through every visible panel
+```
+
+For TUI changes specifically, **launch the TUI and look at the panel you touched** — golden snapshots catch byte-exact regressions but not "the field is empty in real life because the running daemon doesn't surface it yet." A fresh daemon restart is part of the validation.
+
+When E2E surfaces a regression the test suite missed (stale daemon, missing IPC field, wrong port, etc.), add a regression test before fixing — that's the gap the suite needs covered.
+
 ## Running the daemon locally
 
 ```bash

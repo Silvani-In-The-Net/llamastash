@@ -509,7 +509,7 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       "active_connections": d.active_connections,
       "build": d.build,
       "server_path": d.server_path,
-      "socket_path": d.socket_path,
+      "ipc_url": d.ipc_url,
     })
   });
   let mut body = serde_json::json!({
@@ -792,7 +792,7 @@ mod tests {
         active_connections: 3,
         build: None,
         server_path: None,
-        socket_path: None,
+        ipc_url: None,
       }),
       proxy: Value::Null,
     };
@@ -817,7 +817,7 @@ mod tests {
         active_connections: 3,
         build: None,
         server_path: None,
-        socket_path: None,
+        ipc_url: None,
       }),
       proxy: Value::Null,
     };
@@ -887,7 +887,7 @@ mod tests {
         active_connections: 1,
         build: Some("0.1.0".into()),
         server_path: Some("/usr/bin/llama-server".into()),
-        socket_path: Some("/run/user/1000/llamastash/daemon.sock".into()),
+        ipc_url: Some("http://127.0.0.1:48134".into()),
       }),
       proxy: Value::Null,
     };
@@ -1123,7 +1123,7 @@ mod tests {
         active_connections: 0,
         build: None,
         server_path: None,
-        socket_path: None,
+        ipc_url: None,
       }),
       proxy: proxy_value("disabled", None, None),
     };
@@ -1149,7 +1149,7 @@ mod tests {
         active_connections: 0,
         build: None,
         server_path: None,
-        socket_path: None,
+        ipc_url: None,
       }),
       proxy: proxy_value("listening", Some("127.0.0.1:11434"), None),
     };
@@ -1175,7 +1175,7 @@ mod tests {
         active_connections: 0,
         build: None,
         server_path: None,
-        socket_path: None,
+        ipc_url: None,
       }),
       proxy: proxy_value("port_in_use", Some("127.0.0.1:11434"), None),
     };
@@ -1301,7 +1301,7 @@ mod tests {
         active_connections: 0,
         build: None,
         server_path: None,
-        socket_path: None,
+        ipc_url: None,
       }),
       proxy: proxy_value("unbound", Some("127.0.0.1:80"), Some("permission denied")),
     };
