@@ -131,8 +131,9 @@ impl DaemonOptions {
       // off can flip `enabled` after construction.
       proxy: ProxyConfig::default(),
       // Port `0` makes every test pick an ephemeral free slot — no
-      // cross-test contention on the 11436 default the production
-      // CLI uses via `from_defaults`.
+      // cross-test contention on the
+      // [`control_plane::DEFAULT_CONTROL_PORT`] the production CLI
+      // uses via `from_defaults`.
       control_plane_port: 0,
     }
   }

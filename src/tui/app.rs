@@ -108,7 +108,7 @@ pub struct DaemonInfo {
   pub build: Option<String>,
   pub server_path: Option<String>,
   /// HTTP control-plane URL the daemon bound on (e.g.
-  /// `http://127.0.0.1:11436`). Rendered in the Daemon info panel
+  /// `http://127.0.0.1:48134`). Rendered in the Daemon info panel
   /// alongside pid + uptime so an operator can see at a glance where
   /// the IPC channel is. `None` when the daemon hasn't surfaced the
   /// field (pre-Phase-A binaries don't).

@@ -38,10 +38,14 @@ use crate::ipc::protocol::{
   ErrorCode, ErrorObject, Request as RpcRequest, Response as RpcResponse,
 };
 
-/// Default control-plane port. `11434` and `11435` are taken by the
-/// OpenAI-compat proxy listener (and Ollama, in compat mode);
-/// `11436` is the first adjacent free slot.
-pub const DEFAULT_CONTROL_PORT: u16 = 11436;
+/// Default control-plane port. Sits in the high-4xxxx range —
+/// above IANA's well-known + registered band (1–49151) but below the
+/// ephemeral range (49152+ on Linux), so it doesn't collide with
+/// dynamic allocations or any common service. We deliberately stay
+/// out of the `11434`–`11440` proxy family so a proxy scan never
+/// walks over the daemon's listener. Clients never have to memorise
+/// this port — they read the URL from `runtime.json`.
+pub const DEFAULT_CONTROL_PORT: u16 = 48134;
 
 /// How many ports above [`DEFAULT_CONTROL_PORT`] the listener will
 /// probe for a free slot before giving up. Matches the proxy

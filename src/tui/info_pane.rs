@@ -75,7 +75,7 @@ fn proxy_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
 }
 
 fn daemon_row<'a>(app: &'a App, _budget: usize, palette: &'a Palette) -> Line<'a> {
-  // Layout: `port 11436  pid 1234  up 3h12m`. The panel title is
+  // Layout: `port 48134  pid 1234  up 3h12m`. The panel title is
   // already "Daemon", so a leading `daemon  ` label would just
   // repeat it. The full control-plane URL is loopback-only and the
   // host half is always `127.0.0.1`, so we surface the port (the
@@ -670,14 +670,14 @@ mod tests {
     let mut app = App::new(AppOptions::default());
     app.daemon_info = DaemonInfo {
       pid: Some(4242),
-      ipc_url: Some("http://127.0.0.1:11436".into()),
+      ipc_url: Some("http://127.0.0.1:48134".into()),
       ..Default::default()
     };
     let rows = render_lines(&app);
     let daemon_row = rows.iter().find(|r| r.contains("port ")).unwrap();
     assert!(
-      daemon_row.contains("port 11436"),
-      "expected `port 11436` chunk, got: {daemon_row:?}"
+      daemon_row.contains("port 48134"),
+      "expected `port 48134` chunk, got: {daemon_row:?}"
     );
     assert!(
       !daemon_row.contains("127.0.0.1"),
@@ -713,8 +713,8 @@ mod tests {
 
   #[test]
   fn parse_port_from_url_handles_well_formed_urls() {
-    assert_eq!(parse_port_from_url("http://127.0.0.1:11436"), Some(11436));
-    assert_eq!(parse_port_from_url("http://127.0.0.1:11436/"), Some(11436));
+    assert_eq!(parse_port_from_url("http://127.0.0.1:48134"), Some(48134));
+    assert_eq!(parse_port_from_url("http://127.0.0.1:48134/"), Some(48134));
     assert_eq!(parse_port_from_url("http://localhost:8080/rpc"), Some(8080));
   }
 

@@ -251,8 +251,8 @@ mod tests {
 
   #[test]
   fn with_url_and_token_strips_trailing_slash() {
-    let c = Client::with_url_and_token("http://127.0.0.1:11436/", "token").expect("build");
-    assert_eq!(c.ipc_url(), "http://127.0.0.1:11436");
+    let c = Client::with_url_and_token("http://127.0.0.1:48134/", "token").expect("build");
+    assert_eq!(c.ipc_url(), "http://127.0.0.1:48134");
   }
 
   #[test]
@@ -260,7 +260,7 @@ mod tests {
     // Newlines in a header value cannot be encoded — this guards
     // against an accidentally-pasted token that includes a CR/LF
     // injecting extra headers.
-    let err = Client::with_url_and_token("http://127.0.0.1:11436", "bad\nvalue").unwrap_err();
+    let err = Client::with_url_and_token("http://127.0.0.1:48134", "bad\nvalue").unwrap_err();
     assert!(matches!(err, ClientError::Connect(_)));
   }
 
@@ -275,7 +275,7 @@ mod tests {
     use std::sync::OnceLock;
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-    std::env::set_var(ENV_IPC_URL, "http://127.0.0.1:11436");
+    std::env::set_var(ENV_IPC_URL, "http://127.0.0.1:48134");
     std::env::remove_var(ENV_IPC_TOKEN);
     let err = resolve_attach(std::path::Path::new("/no/such/dir")).unwrap_err();
     std::env::remove_var(ENV_IPC_URL);

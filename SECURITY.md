@@ -22,7 +22,9 @@ loopback TCP listeners on `127.0.0.1`, both protected by file-system
 permissions on the daemon's state directory:
 
 - **Control plane** (JSON-RPC for the CLI / TUI): bound on
-  `127.0.0.1:11436` (random fallback within `41100..=41300`). Every
+  `127.0.0.1:48134` (with a small port-scan window if the slot is
+  taken; deliberately above IANA's registered range and outside the
+  `1143x` proxy family). Every
   request except `GET /health` carries a `Bearer` token validated in
   constant time. The token is 32 bytes of OS randomness, generated
   fresh on each daemon start, and written to

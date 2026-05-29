@@ -102,7 +102,7 @@ pub struct MethodContext {
   /// false` the cell holds the disabled proxy status variant.
   pub proxy_status: Option<crate::proxy::StatusCell>,
   /// HTTP control-plane URL the daemon bound, e.g.
-  /// `http://127.0.0.1:11436`. Surfaced under `status.daemon.ipc_url`
+  /// `http://127.0.0.1:48134`. Surfaced under `status.daemon.ipc_url`
   /// so the TUI / CLI can render where IPC is listening (helpful when
   /// debugging port-collision scans). `None` in catalog-only tests
   /// that don't bring up the control plane.

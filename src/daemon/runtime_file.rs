@@ -29,7 +29,7 @@ pub struct RuntimeInfo {
   #[serde(default = "current_schema_version")]
   pub schema_version: u32,
   /// Full URL the daemon's control plane bound on, e.g.
-  /// `"http://127.0.0.1:11436"`. Clients POST to `{ipc_url}/rpc`.
+  /// `"http://127.0.0.1:48134"`. Clients POST to `{ipc_url}/rpc`.
   pub ipc_url: String,
   /// Per-daemon bearer token (base64url, no padding). Sent in
   /// `Authorization: Bearer <token>` on every request except
@@ -138,7 +138,7 @@ mod tests {
   fn sample() -> RuntimeInfo {
     RuntimeInfo {
       schema_version: RUNTIME_SCHEMA_VERSION,
-      ipc_url: "http://127.0.0.1:11436".into(),
+      ipc_url: "http://127.0.0.1:48134".into(),
       ipc_token: "abc123_token".into(),
       started_at_unix: 1_748_534_400,
       daemon_pid: 12345,

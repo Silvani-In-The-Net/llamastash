@@ -23,7 +23,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 fn opts_for(temp: &Path) -> DaemonOptions {
   // `rooted_at` sets control_plane_port = 0 so the kernel picks an
   // ephemeral port — every test can run in parallel without
-  // colliding on 11436.
+  // colliding on 48134.
   DaemonOptions::rooted_at(temp.to_path_buf())
 }
 

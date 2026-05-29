@@ -66,7 +66,7 @@ fn seeded_dashboard_app() -> App {
     uptime_seconds: Some(3 * 3600 + 12 * 60 + 45),
     build: Some("0.1.0".into()),
     server_path: Some("/usr/local/bin/llama-server".into()),
-    ipc_url: Some("http://127.0.0.1:11436".into()),
+    ipc_url: Some("http://127.0.0.1:48134".into()),
     proxy: None,
   };
   app.host_metrics = HostMetricsSnapshot {

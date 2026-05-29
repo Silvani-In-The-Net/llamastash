@@ -173,7 +173,7 @@ The "nav focuses" alias means `List` + `RightPane`; "input focuses" means `ChatI
 | `LLAMASTASH_CACHE_DIR` | Override the directory `paths::cache_dir()` resolves to; `log_dir()` inherits as `<dir>/logs`. Empty value = unset |
 | `LLAMASTASH_LLAMA_SERVER` | Path to `llama-server` |
 | `LLAMASTASH_NO_SCAN` | Skip filesystem scanning |
-| `LLAMASTASH_IPC_URL` | Point a CLI/TUI at a non-default daemon control plane (verbatim URL, e.g. `http://127.0.0.1:11436`). Must be set together with `LLAMASTASH_IPC_TOKEN`; partial overrides are rejected. Bypasses `runtime.json` lookup entirely. |
+| `LLAMASTASH_IPC_URL` | Point a CLI/TUI at a non-default daemon control plane (verbatim URL, e.g. `http://127.0.0.1:48134`). Must be set together with `LLAMASTASH_IPC_TOKEN`; partial overrides are rejected. Bypasses `runtime.json` lookup entirely. |
 | `LLAMASTASH_IPC_TOKEN` | Bearer token for the control-plane URL. See `LLAMASTASH_IPC_URL`. |
 | `LLAMASTASH_OFFLINE` | Refuse any outbound network from `init` / `pull` / `doctor` (equivalent to `--offline` on those subcommands) |
 | `HF_HOME` | Honored by `init::download::hf_cache_dir()` per HuggingFace convention; controls where pulled GGUFs land |
