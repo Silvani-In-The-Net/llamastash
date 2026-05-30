@@ -108,7 +108,7 @@ Two release tracks:
 - [ ] Publish to Clawhub/Hermes/etc
 - [ ] Publish to https://www.skills.sh/
 - [ ] **Windows AMD GPU detection.** Today Windows AMD hosts get "GPU detection unavailable" in the host pane (daemon + proxy + supervisor still work). Follow-up brainstorm needs to pick a probe path: DXGI (broadest reach, querying adapter info) vs. WMI (`Win32_VideoController`, slow but standard) vs. ADLX (AMD's official C SDK, most accurate but vendor-specific). 0.0.2 plan §Scope Boundaries.
-- [ ] **ConEmu / Alacritty / PowerShell ISE TUI verify.** 0.0.2 documents that the TUI is verified manually in Windows Terminal only (see `docs/testing/hardware-uat.md` Windows section); other terminals are presumed-working but unverified.
+- [ ] Verify in WIndows
 - [ ] **Need brainstorm/plan**: **SSE for `logs_tail` streaming.** Today the CLI polls `logs_tail` every 250 ms over HTTP and de-dupes (works correctly; not a regression). SSE would collapse N polls/sec into one long-lived connection. Unit 3 of the 0.0.2 plan was explicitly deferred — needs its own brainstorm + plan.
 - [x] **IP**: Windows support including scoop — landed via [`docs/plans/2026-05-29-001-feat-windows-support-and-http-ipc-plan.md`](docs/plans/2026-05-29-001-feat-windows-support-and-http-ipc-plan.md) in 0.0.2. HTTP-loopback IPC unification, Job Object process control, LockFileEx + DACL hardening, .zip extraction, win-cpu/win-vulkan/win-cuda/win-hip asset routing, install.ps1, Scoop bucket auto-published via release.yml. See below for Windows follow-ups deferred from 0.0.2.
 - [x] **IP**: AUR package
@@ -149,6 +149,7 @@ Two release tracks:
 - [ ] **Need brainstorm/plan**: **Anthropic `/v1/messages` compatibility shim** on top of the OpenAI-compat proxy. Most agents do OpenAI; Claude Code prefers Anthropic shape.
 - [ ] **Need brainstorm/plan**: **LAN-exposed HTTP surfaces — auth + TLS + LAN binding for the proxy.** Today the OpenAI-compat proxy is loopback-only. The HTTP-IPC refactor in 0.0.2 keeps the two listeners structurally separate so the proxy's R34 LAN-binding future stays available without touching the control plane. Brainstorm-grade work; not a small feature.
 - [ ] Windows follow-ups deferred from 0.0.2 (post-0.0.2)
+  - [ ] **ConEmu / Alacritty / PowerShell ISE TUI verify.** 0.0.2 documents that the TUI is verified manually in Windows Terminal only (see `docs/testing/hardware-uat.md` Windows section); other terminals are presumed-working but unverified.
   - [ ] **`aarch64-pc-windows-msvc`** — Snapdragon X / Surface Pro coverage. 0.0.2 ships x86_64 only. Adds another release-matrix row + `install.ps1` arch-detect branch + Scoop manifest `arm64` block. 0.0.2 plan §Scope Boundaries.
   - [ ] **Windows code signing** — release `.zip` is unsigned, so Defender SmartScreen may prompt on `install.ps1` and on first `llamastash.exe` launch. Needs a code-signing certificate (Sectigo/DigiCert OV cert ~$200/yr) and a `signtool` step in `publish-scoop` / release workflow.
   - [ ] **MSI installer + winget submission.** 0.0.2 ships `install.ps1` + Scoop bucket; `winget` and a proper MSI are deferred. MSI via `WiX` or `cargo-wix`; winget submission needs the manifest in `microsoft/winget-pkgs`.
