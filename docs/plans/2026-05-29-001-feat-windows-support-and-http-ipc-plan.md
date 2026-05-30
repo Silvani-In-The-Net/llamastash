@@ -175,7 +175,7 @@ Existing supervisor code calls `ProcessControl` through the trait; the per-OS su
 
 ### Phase A — HTTP control plane (Linux/macOS first)
 
-- [ ] **Unit 1: HTTP control-plane listener + bearer-token middleware**
+- [x] **Unit 1: HTTP control-plane listener + bearer-token middleware**
 
 **Goal:** Replace the Unix-socket accept loop with a hyper service on `127.0.0.1:11436` (with random fallback), generate the per-daemon token, persist URL+token to `runtime.json`, and enforce bearer-token auth on every route except `/health`. Existing JSON-RPC `dispatch_request` is reused unchanged; only the front door is new.
 
@@ -211,7 +211,7 @@ Existing supervisor code calls `ProcessControl` through the trait; the per-OS su
 
 **Verification:** All previously-passing JSON-RPC methods return identical responses; `cargo test --features test-fixtures` passes; daemon listening on `:11436` (or fallback) shows in `netstat`/`lsof`.
 
-- [ ] **Unit 2: IPC client over reqwest + runtime-file attach**
+- [x] **Unit 2: IPC client over reqwest + runtime-file attach**
 
 **Goal:** Rewrite `src/ipc/client.rs` so `Client::connect` reads `runtime.json` (or honors env overrides), holds a pooled `reqwest::Client` with the bearer token baked into a default header, and exposes the same `call(method, params) -> Result<Value>` API the TUI and CLI already use.
 
@@ -276,7 +276,7 @@ Existing supervisor code calls `ProcessControl` through the trait; the per-OS su
 
 **Verification:** `cargo test --features test-fixtures logs_tail_sse` passes; manual `curl -N http://127.0.0.1:11436/logs/tail?launch_id=... -H 'Authorization: Bearer ...'` produces line-delimited frames.
 
-- [ ] **Unit 4: Delete Unix-socket transport, peercred, env-var/flag rename, doc partial-sweep**
+- [x] **Unit 4: Delete Unix-socket transport, peercred, env-var/flag rename, doc partial-sweep**
 
 **Goal:** Delete the now-unused Unix-socket stack and rename env vars / CLI flags. Sweep the AGENTS.md scope-boundaries and SECURITY.md threat-model sections in the same change. After this unit, no `cfg(unix)` socket code remains in the daemon path.
 
