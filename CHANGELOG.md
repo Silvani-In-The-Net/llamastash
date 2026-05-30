@@ -4,273 +4,51 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
-### Fixed
-
-- **`presets save --json` surfaces the overwritten preset.** It reported
-  `replaced: true` (a bare bool) while the docs promise `replaced:
-  <old-params>`; the daemon already returned the previous preset, so the
-  CLI now passes it through (the old `{name, params}` object, or `null` on a
-  fresh save) — callers can audit exactly what they overwrote.
-- **Quant label reads from `general.file_type`, not a byte-weighted tensor
-  scan.** A big-vocab model whose Q6_K token-embedding outweighed its Q4_K
-  body mislabelled in `list` / `show` / `/api/tags` (a `Q4_K_M` gemma read as
-  `Q6_K`). The label now comes from the file's declared `general.file_type`
-  (the value llama.cpp's filename convention uses), falling back to the
-  dominant-tensor scan only when it's absent or an unstable IQ*/TQ* enum.
-- **`logs` and `stop` accept a model-name reference.** Both only resolved a
-  `<launch_id>` or port, so `logs qwen` / `stop gemma` failed with "no
-  running launch matches" even though `start` / `show` / `presets` /
-  `favorites` accept that reference — contradicting the documented model-
-  reference contract. They now also match a case-insensitive substring of a
-  running launch's file name or parent dir (ambiguous → exit `66` with the
-  candidate ids). `ext-<pid>` / port / launch-id behaviour is unchanged.
-- **A malformed config is rejected loudly, not silently defaulted.** A bad
-  value or an unknown key inside a `deny_unknown_fields` block (e.g. a typo
-  under `[proxy]`) used to log one buried `WARN` and boot on defaults —
-  discarding the *entire* config while `daemon start` reported success. The
-  CLI now prints `config error: …` to stderr and exits `64`; `init` and
-  `doctor` stay exempt so a broken file can be repaired. A missing config
-  file is still fine.
-- **`LLAMASTASH_OFFLINE=1` no longer aborts every command.** The env var
-  was bound to a boolean flag clap strict-parsed as `true`/`false`, so the
-  documented `=1` (and `=0`, and an empty value) failed with
-  `error: invalid value '1' for '--offline'`. The value is now normalized
-  before parsing: `1` / `true` / `yes` enable offline; `0`, empty, and
-  unset leave it off.
-- **Usage errors exit `64` consistently.** clap's own arg rejections
-  (unknown flag/subcommand, mutually-exclusive flags, missing value)
-  exited `2`, and a malformed `--render-size` exited `71`; both now map
-  to `USAGE` (64) as the exit-code table documents. `--help` / `--version`
-  still exit `0`.
-- **Orphan re-adoption works against current llama.cpp.** The daemon-restart
-  sweep matched the recorded model only against `/v1/models` `id ==` the full
-  path; `llama-server b9245+` reports just the basename, so every orphan was
-  marked stale and demoted to an unmanaged external. The identity check now
-  accepts the full path **or** the basename (a differing full path is still
-  rejected — PID-reuse guard intact). External-process discovery also
-  de-duplicates kernel threads, so a multi-threaded child surfaces as one
-  `status.external` row instead of one per thread.
-
 ### Added
 
-- **Windows GPU detection via DXGI.** Fills the Windows AMD / Intel
-  gap that the Linux-only `rocm-smi` probe leaves open, and as a
-  bonus covers NVIDIA on stripped Windows installs without
-  `nvidia-smi.exe`. Reports adapter name + dedicated VRAM + shared
-  system memory (UMA APUs like Strix Halo / Phoenix don't
-  double-count weights against RAM). No live util/temp — DXGI
-  doesn't expose them; closing that gap needs vendor SDKs (NVML /
-  ADLX / IGCL) and is tracked under R2. See [`docs/architecture.md
-  §GPU detection`](docs/architecture.md#gpu-detection) for the full
-  coverage matrix.
-
-## [0.0.2] — 2026-05-30
-
-### Added
-
-- **Windows 11 x64 as a first-class platform.** Same binary, same
-  TUI, same CLI. Install via `irm https://llamastash.dev/install.ps1 |
-  iex` or by extracting `llamastash-0.0.2-x86_64-pc-windows-msvc.zip`
-  from the GitHub Release. Process supervision uses Windows Job
-  Objects with kill-on-job-close, the daemon lockfile uses
-  `LockFileEx`, and `runtime.json` + `state.json` get an owner-only
-  Protected DACL. Per-OS scope:
-  - AMD GPU detection on Windows: deferred (shows "GPU detection
-    unavailable").
-  - `aarch64-pc-windows-msvc`: deferred.
-  - Scoop manifest scaffolded under `deployment/scoop/`; bucket
-    publication deferred.
-- **`init`'s GitHub Releases routing now picks Windows assets.**
-  Maps the host's GPU to llama.cpp's `win-cpu-x64.zip` /
-  `win-vulkan-x64.zip` / `win-cuda-*-x64.zip` /
-  `win-hip-radeon-x64.zip`. `safe_extract` gained a `.zip` branch
-  with the same path-traversal / size-cap / drive-prefix defenses
-  as the existing `.tar.gz` codepath.
-- **Windows CI lane.** `clippy` and `test` matrices in `ci.yml` now
-  include `windows-latest`; the release workflow ships
-  `x86_64-pc-windows-msvc` as a `.zip` artifact alongside the
-  existing Linux/macOS tarballs.
+- Windows 11 x64 as a first-class platform — same binary, TUI, and CLI. Install via `install.ps1` or the release `.zip`; supervision uses Job Objects, the lockfile uses `LockFileEx`, and `runtime.json` / `state.json` get owner-only DACLs. (Windows AMD GPU detection and `aarch64` deferred.)
+- Windows GPU detection via DXGI — covers AMD / Intel, plus NVIDIA on installs without `nvidia-smi.exe`; reports adapter name and VRAM (no live util/temp). See [`docs/architecture.md §GPU detection`](docs/architecture.md#gpu-detection).
+- `init` routes GitHub Releases to Windows llama.cpp assets, and `safe_extract` gained a hardened `.zip` branch matching the `.tar.gz` defenses.
+- Windows CI lane — `clippy` / `test` on `windows-latest`, release ships a `.zip` artifact.
+- `init` patches AI dev-tool configs (OpenCode, Aider, Continue.dev, Zed, pi.dev) plus a sourceable `env.sh`; non-interactive via `init --integrations …`. Merges preserve user-authored keys, and API keys are written as env-var references, never literals. Detects existing JSONC variants, gives embed models embed-shaped config, derives the model id from the GGUF stem, and the summary lists each patched tool + path.
+- `show <model>` projects everything LlamaStash knows about one model — GGUF metadata, per-shard sizes, and the resolved launch params; `--json` emits a stable envelope.
+- Interactive picker for `start` / `stop` when no argument is given (refuses non-TTY / `--json` so CI gets an actionable error).
+- `list` shows a live `STATUS` per model (e.g. `● ready :41100`); `list --json` gains a per-row `status` object.
+- Idle-TTL eviction for proxy-auto-started supervisors (`proxy.idle_ttl_secs`, default 1800, `0` disables). Refcount-gated so generations are never killed mid-stream; manually launched models stay resident.
+- `daemon start --no-proxy-fallback` (+ config / env) makes a failed auto-start return 503 instead of being served by a different Ready model.
+- `daemon stop --force` as an escape hatch for a stale daemon holding the flock with no `runtime.json`.
+- `init` model picker gains a "Skip — don't download a model" entry.
+- `?` help overlay gains a `Legend` explaining the `RAM*` glyph.
 
 ### Changed (breaking)
 
-- **IPC transport rewritten on HTTP loopback + bearer token.** The
-  daemon's Unix-domain socket and `SO_PEERCRED` auth are gone.
-  Clients now attach via the URL + bearer token written to
-  `runtime.json` under the state dir (`chmod 0600` on Unix,
-  owner-only Protected DACL on Windows). The `LLAMASTASH_SOCKET`
-  env var and `--socket-path` CLI flag are removed; use
-  `LLAMASTASH_STATE_DIR` (for the binary's own path resolution) or
-  `LLAMASTASH_IPC_URL` + `LLAMASTASH_IPC_TOKEN` (direct override)
-  instead. The OpenAI-compat proxy listener is unchanged. See
-  `docs/plans/2026-05-29-001-feat-windows-support-and-http-ipc-plan.md`.
-- **Default control-plane port is `48134`** (high range, outside the
-  proxy's `11434..11440` family). On collision the daemon falls
-  back to a random port in `41100..=41300`. Users never need to
-  memorise the port — it's discovered via `runtime.json`.
-- **`daemon stop --force` added** as an escape hatch for stale
-  daemons whose flock is held but whose `runtime.json` is missing.
-  Pretty error messages now point at the stale state explicitly.
-
-### Added
-
-- **`init` integrations: alt-path detection + comment-tolerant
-  reader.** Patchers now check existing-file variants before
-  creating a parallel canonical file — `opencode.jsonc` (with `//`
-  / `/* */` comments **and trailing commas**) gets patched in
-  place rather than spawning a sibling `opencode.json`, and
-  `config.yml` / `.aider.conf.yaml` are detected likewise. JSON
-  reads run through string-safe comment + trailing-comma strippers
-  so VSCode-style JSONC and Zed's JSON5-shaped `settings.json`
-  parse cleanly. Writes always emit strict JSON; comments in the
-  source file are not preserved.
-- **`init` summary surfaces what each integration touched.** The
-  outro now lists each patched tool's display name and target path,
-  and shows the `source ~/.config/llamastash/env.sh` one-liner when
-  the shell-env writer ran.
-- **`init` model id is the GGUF stem, not the first downloaded
-  file.** Previous behaviour grabbed `m.files.first()` and got
-  `.gitattributes` when HF dropped that into the snapshot dir; the
-  resolver now filters for `.gguf` and routes the basename through
-  `discovery::split_gguf::parse_shard_name` so multi-shard models
-  resolve to the same canonical base the discovery scanner already
-  shows in `list` / TUI.
-- **`init` integrations: embed models get embed-shaped config.**
-  Continue.dev `roles` flips from `[chat, edit]` to `[embed]` and
-  pi.dev `api` flips from `openai-completions` to
-  `openai-embeddings` when the model id contains `embed`
-  (nomic-embed-text, snowflake-arctic-embed, bge-embed, etc.).
-  Other tools register the model unchanged. Detection is a
-  filename heuristic for now; upgrading to GGUF `ModeHint` is
-  queued.
-- **`init` patches AI dev tool configs.** A new integrations step
-  presents a cliclack multiselect over five supported tools —
-  **OpenCode** (`~/.config/opencode/opencode.json`), **Aider**
-  (`~/.aider.conf.yml`), **Continue.dev** (`~/.continue/config.yaml`),
-  **Zed** (`~/.config/zed/settings.json` →
-  `language_models.openai_compatible.LlamaStash`), **pi.dev**
-  (`~/.pi/agent/models.json`) — plus a sourceable
-  `~/.config/llamastash/env.sh` that exports `OPENAI_BASE_URL` /
-  `OPENAI_API_BASE` / `OPENAI_API_KEY` / `LLAMASTASH_API_KEY`.
-  Non-interactive opt-in: `init --integrations
-  opencode,aider,env-sh`. Per-tool merge keeps user-authored keys
-  outside our blocks; Continue.dev's top-level `models[]` is spliced
-  by `name` so re-running init never wipes the user's other models.
-  API keys are written as env-var references (`{env:LLAMASTASH_API_KEY}`,
-  `$LLAMASTASH_API_KEY`) — the literal stub never lands on disk. The
-  same redaction allowlist that protects `config.yaml` writes
-  (`token`, `secret`, `password`, `key`, `credential`) applies to all
-  integration diffs.
-- **Interactive picker for `start` / `stop`.** `llamastash start` with
-  no positional argument opens a cliclack picker over the catalog;
-  `llamastash stop` with no argument opens a picker over running
-  launches. Both pickers refuse non-TTY or `--json` contexts and tell
-  the caller to pass an explicit argument, so CI and pipes still get
-  an actionable error instead of a hung prompt.
-- **`list` shows live STATUS for each model.** Catalog rows now carry
-  a `STATUS` column showing `<glyph> <state> :<port>` for any model
-  with a running supervisor (e.g. `● ready :41100`). The glyph is the
-  same one the TUI uses, lifted via a shared
-  `SurfaceState::from_wire_label` mapping so the two surfaces never
-  drift. `list --json` gains a per-row `status: { state, port,
-  launch_id }` object for agents.
-- **Idle-TTL eviction for proxy-auto-started supervisors.** After
-  `proxy.idle_ttl_secs` of no inbound request and no in-flight
-  forward, the daemon's eviction sweeper calls `model.stop(5s grace)`
-  so a long-running daemon doesn't pin VRAM on models nobody is
-  using. Default 1800 (30 min); `0` disables the sweeper entirely.
-  - **Refcount-gated**: in-flight requests bump an atomic counter on
-    the supervisor (decremented when the streamed response body is
-    dropped — covers happy-path completion, abandoned client
-    connections, and upstream errors uniformly). Long generations
-    can never get SIGTERM'd mid-stream.
-  - **Scope: auto-start only.** Manually launched models (TUI, CLI
-    `start`, IPC `start_model`) carry `LaunchOrigin::Manual` and stay
-    resident regardless of idle time — mirrors LM Studio's "manually
-    loaded models are exempt" rule.
-  - **MRU seeded on Ready.** `proxy::launch::drive_launch_as_leader`
-    touches the MRU when an auto-start supervisor reaches Ready, so a
-    loaded-but-never-queried model has a starting deadline.
-- `llamastash show <model>` subcommand projects everything LlamaStash
-  knows about a single model in one block: parsed GGUF metadata, a
-  per-shard listing with each shard's path + individual size for
-  split GGUFs, the yaml + built-in `arch_defaults` that would feed a
-  launch, and the last `start_model` params recorded for the file.
-  Reuses the same matcher `start` and `/v1/...` use, so a reference
-  that works on one surface works here. `--json` emits the stable
-  composite envelope (`size.shards: [...]` for the per-shard
-  breakdown).
-- Per-shard on-disk-size computation moved into a shared
-  `discovery::shard_sizes` util — scanner, `show`, and any future
-  consumer go through the same `on_disk_total` / `per_shard` helpers
-  so the byte counts agree across surfaces.
-- `?` help overlay now has a `Legend` section explaining the `RAM*`
-  glyph (unified-memory pool shared with VRAM).
-- `daemon start --no-proxy-fallback` flag (and matching
-  `proxy.fallback_enabled: false` config / `LLAMASTASH_NO_PROXY_FALLBACK`
-  env) disables the family-MRU fallback so a failed auto-start surfaces
-  as a 503 instead of being served by a different Ready supervisor.
-  Lets embedding clients refuse silent cross-model serves.
-- `init` model picker now has a final "Skip — don't download a model"
-  entry so the wizard can finish without a download from the UI
-  (previously only reachable via `--model none`).
+- IPC transport rewritten on HTTP loopback + bearer token — the Unix socket and `SO_PEERCRED` auth are gone. `LLAMASTASH_SOCKET` / `--socket-path` are removed; clients use the URL + token in `runtime.json` (0600 / owner-only DACL) or `LLAMASTASH_IPC_URL` + `LLAMASTASH_IPC_TOKEN`. The proxy listener is unchanged.
+- Default control-plane port is `48134` (random `41100..41300` on collision), discovered via `runtime.json`.
 
 ### Changed
 
-- **`status` text output drops the `PATH` column** in favour of
-  `NAME` (file basename), matching the rest of the CLI's compact
-  human surfaces. `status --json` keeps the full `model_path` so
-  agents pinning the canonical path are unaffected.
-- Apple Metal GPU row in the Host panel now reads `GPU  unified`
-  instead of `GPU  unified memory`. The `RAM*` glyph already flags the
-  unified-memory machine, so the long form was redundant.
+- `status` text output replaces the `PATH` column with `NAME` (basename); `status --json` keeps the full `model_path`.
+- Apple Metal GPU row now reads `GPU  unified` instead of `GPU  unified memory`.
 
 ### Fixed
 
-- Launch health-probe timeout now scales by model weight size so a
-  53 GB GGUF on slow disk / HIP doesn't trip the 120 s default
-  before llama-server finishes loading weights. Formula: base 120 s
-  plus an extra second per 200 MiB at conservative load rate, capped
-  at +1 hour. Catalog-aware: pulls the corrected (multipart-summed)
-  `weights_bytes` via `discovery::shard_sizes`.
-- `llamastash status` and `status --json` now surface the daemon's
-  `ManagedState::Error { cause }` payload (e.g. `health probe
-  timeout (last status 503); last stderr lines: …`) so users don't
-  have to grep the launch log to find out *why* a launch landed in
-  the `error` state.
-- `llamastash show --json` now emits a `{"error": {"code", "message"}}`
-  envelope on every failure path (model not found / ambiguous / IPC
-  failure / daemon-spawn failure) instead of human prose. Exit code
-  is preserved. Restores the "every CLI command supports `--json`"
-  contract.
-- The SIZE column in `llamastash list` and the TUI Models pane now
-  computes the on-disk total via `discovery::shard_sizes` directly
-  from each row's path + sibling list, instead of trusting the
-  daemon's cached `weights_bytes`. Self-correcting across binary
-  upgrades — a daemon whose catalog was populated before the
-  split-shard aggregation fix no longer shows ~half the real size in
-  `list` and the TUI.
-- Split-GGUF entries now report the **summed** on-disk size across
-  every shard instead of just shard 1. Visible as a correct SIZE in
-  `llamastash list`, `show`, and the recommender's VRAM-fit
-  predicate; previously a 2-shard 80B Q5_K_M model showed ~half its
-  real footprint.
-- HF pull dialog's file-picker page now scrolls to keep the cursor in
-  view. Repos with many shards or quant variants no longer push rows
-  off the bottom of the modal.
+- `presets save --json` now returns the overwritten preset (`replaced: <old-params>`) instead of a bare `true`.
+- Quant label reads from `general.file_type`, fixing big-vocab models the tensor scan mislabelled (e.g. a `Q4_K_M` gemma showing as `Q6_K`) in `list` / `show` / `/api/tags`.
+- `logs` and `stop` accept a model-name reference, matching `start` / `show` / `presets` (ambiguous → exit `66`).
+- A malformed config is rejected loudly (`config error: …`, exit `64`) instead of silently booting on defaults; `init` / `doctor` stay exempt so a broken file can be repaired.
+- `LLAMASTASH_OFFLINE` accepts `1` / `0` / empty / unset, not just `true` / `false`.
+- Usage errors exit `64` consistently — clap rejections and a bad `--render-size` no longer exit `2` / `71`.
+- Orphan re-adoption matches llama.cpp's basename id (`b9245+`), and external-process discovery dedupes kernel threads into one `status.external` row.
+- Launch health-probe timeout scales with weight size, so a large GGUF on slow disk doesn't trip the 120 s default before weights finish loading.
+- `status` surfaces the daemon's error cause (e.g. health-probe timeout + last stderr) so users don't have to grep the launch log.
+- `show --json` emits a `{error: {code, message}}` envelope on every failure path.
+- Split-GGUF SIZE is the summed on-disk total across all shards (in `list`, `show`, TUI, and the VRAM-fit check), computed directly from shard paths so it self-corrects across upgrades.
+- HF pull file-picker now scrolls to keep the cursor in view.
 
 ### Infrastructure
 
-- `make snapshot` (and `regenerate-benchmark-snapshot.py`) now warn
-  when `HF_TOKEN` is unset and record a `regen_environment` manifest
-  (`python_version`, `whichllm_version`, `hf_token_present`, `ci`) in
-  the snapshot envelope. The most common cause of "my local
-  benchmark-snapshot.json differs from CI" is the anonymous-tier HF
-  rate limit hit when `HF_TOKEN` is missing; the warning + manifest
-  surface that cause at a glance.
-- Benchmark snapshot releases (`snapshot-latest` + per-day audit tags)
-  publish with `--prerelease`, so they collapse into the older-releases
-  list on the Releases page instead of headlining alongside product
-  tags. Direct asset URL unchanged — init's `load_remote` keeps working.
+- `make snapshot` warns when `HF_TOKEN` is unset and records a `regen_environment` manifest — surfacing the usual cause of local-vs-CI snapshot drift (anonymous-tier HF rate limits).
+- Benchmark snapshot releases publish with `--prerelease` so they don't headline the Releases page; asset URLs unchanged.
 
 ## [0.0.1] — 2026-05-28
 
