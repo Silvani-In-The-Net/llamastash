@@ -641,10 +641,20 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
 }
 
 /// Windows detached-start. Unlike Unix there's no `fork()` or
-/// `setsid()` — `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` at spawn
-/// time gives us a console-less child outside the parent's group, and
-/// the surrounding `runtime.json` poll loop is identical to the Unix
-/// path.
+/// `setsid()` — `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW` at spawn
+/// time gives us a hidden-console child outside the parent's group,
+/// and the surrounding `runtime.json` poll loop is identical to the
+/// Unix path.
+///
+/// `CREATE_NO_WINDOW` (not `DETACHED_PROCESS`) keeps the symmetry with
+/// `WindowsProcessControl::spawn_supervised` — DETACHED_PROCESS gives
+/// the child no console at all, which interacts poorly with tokio's
+/// piped stdio on Windows (surfaced in CI as the supervisor never
+/// reaching Ready). The daemon itself uses `Stdio::null()` so the
+/// immediate tokio bug wouldn't bite, but matching the supervisor's
+/// spawn flags keeps the daemon-as-grandparent → supervised-child
+/// console inheritance well-defined instead of relying on an unspecified
+/// `DETACHED_PROCESS → CREATE_NO_WINDOW` interaction.
 #[cfg(windows)]
 pub fn start_detached(opts: DaemonOptions) -> Result<StartOutcome> {
   let exe = std::env::current_exe().context("locating current executable for --detach")?;
@@ -658,7 +668,7 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
     os::windows::process::CommandExt,
     process::{Command, Stdio},
   };
-  use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+  use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 
   // Fast path: a live daemon already owns the state dir. Don't spawn a
   // child only to have it bail.
@@ -687,7 +697,7 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::null())
-    .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
 
   let mut child = cmd.spawn().context("spawning detached daemon")?;
 
