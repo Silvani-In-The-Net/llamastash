@@ -144,6 +144,15 @@ async fn drive_to_ready_port() -> (u16, tokio::task::JoinHandle<()>, PathBuf) {
   (port, daemon, socket)
 }
 
+// Skipped on Windows for the same R2 reason as the other
+// supervisor-lifecycle tests: drive_to_ready_port spins up a daemon
+// + fake_llama_server via start_model, and the implicit teardown on
+// test exit hits the same supervisor-stop grace path that CTRL+BREAK
+// can't shortcut on a CREATE_NO_WINDOW child.
+#[cfg_attr(
+  windows,
+  ignore = "windows: supervisor teardown overruns — R2 follow-up"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_stream_drains_deltas_and_signals_finished() {
   let (port, _daemon, _socket) = drive_to_ready_port().await;
@@ -169,6 +178,10 @@ async fn chat_stream_drains_deltas_and_signals_finished() {
   );
 }
 
+#[cfg_attr(
+  windows,
+  ignore = "windows: supervisor teardown overruns — R2 follow-up"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn embed_returns_dim_and_preview() {
   let (port, _daemon, _socket) = drive_to_ready_port().await;
@@ -178,6 +191,10 @@ async fn embed_returns_dim_and_preview() {
   assert!(result.norm > 0.0);
 }
 
+#[cfg_attr(
+  windows,
+  ignore = "windows: supervisor teardown overruns — R2 follow-up"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_stream_surfaces_http_4xx_as_error_message() {
   let (port, _daemon, _socket) = drive_to_ready_port().await;
@@ -202,6 +219,10 @@ async fn chat_stream_surfaces_http_4xx_as_error_message() {
   }
 }
 
+#[cfg_attr(
+  windows,
+  ignore = "windows: supervisor teardown overruns — R2 follow-up"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_stream_skips_malformed_sse_frame_and_emits_delta() {
   let (port, _daemon, _socket) = drive_to_ready_port().await;
@@ -229,6 +250,10 @@ async fn chat_stream_skips_malformed_sse_frame_and_emits_delta() {
   assert!(saw_finished, "stream must terminate with Finished");
 }
 
+#[cfg_attr(
+  windows,
+  ignore = "windows: supervisor teardown overruns — R2 follow-up"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rerank_returns_sorted_scores() {
   let (port, _daemon, _socket) = drive_to_ready_port().await;
