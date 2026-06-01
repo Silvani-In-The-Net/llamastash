@@ -32,6 +32,8 @@ Each cross-tool run pits LlamaStash against raw `llama-server`, Ollama, and LM S
 
 Each cell is **decode tok/s / TTFT ms**, averaged across `defaults` + `normalized` modes on the `chat_turn` workload.
 
+![Apple M1 decode tok/s by tool, defaults vs normalized](../assets/charts/03-m1-decode-defaults-vs-normalized.png)
+
 ✦ In `defaults` mode LlamaStash reaches 99.0 tok/s / 15 ms TTFT vs raw `llama-server`'s 92.3 / 19 — a 7% decode lead from the Metal defaults overlay in `defaults_table.rs`. Normalized mode collapses the gap to <1% (92.2 vs 91.5), confirming zero wrapper overhead.
 
 **Highlights:**
@@ -61,6 +63,10 @@ Full per-workload tables and six findings → [`docs/benchmarks/macos-m1-final-r
 
 Decode tok/s / TTFT ms on `chat_turn`, `normalized` mode (`ctx=4096`, `n_gpu_layers=999`, `flash_attn=on`, `batch=512`, `ubatch=512`). Each row from one bench JSON (no averaging across runs or modes).
 
+![AMD APU decode by tool (HIP/ROCm, chat_turn defaults)](../assets/charts/01-amd-apu-decode.png)
+
+![AMD APU TTFT by tool (HIP/ROCm, chat_turn defaults, log scale)](../assets/charts/02-amd-apu-ttft.png)
+
 ¹ LM Studio's bundled ROCm vendor libraries (v6.4 in `linux-llama-rocm-vendor-v3`) abort in `ggml_cuda_error` during backend initialization on `gfx1151` (Strix Halo), across all LMS-shipped runtime versions (`amd-rocm-avx2@1.33.0`, `@2.16.0`, `@2.18.0`). The system ROCm 7.2.3 loads the same models without issue via raw `llama-server`, so this is an LM Studio vendor-bundle limitation, not a hardware limitation. See [Finding #2 of the full report](https://github.com/llamastash/llamastash/blob/main/docs/benchmarks/linux-amd-apu-final-report.md#2-engine-choice-hip-vs-vulkan-is-workload--and-model-size-dependent--not-a-simple-vulkan-wins).
 
 #### Vulkan addendum — LlamaStash vs LM Studio
@@ -71,6 +77,16 @@ Decode tok/s / TTFT ms on `chat_turn`, `normalized` mode (`ctx=4096`, `n_gpu_lay
 | LM Studio 2.18.0 |     93.6 / 191 |     7.1 / 2307 |        **8.0 / 801** |             38.4 / 227 |
 
 Vulkan via self-built `llama-server b9440 Vulkan` (LlamaStash) and bundled `vulkan-avx2@2.18.0` (LM Studio). Same GGUF bytes. raw `llama-server` and Ollama omitted (wrapper-overhead claim already covered above; mainline Ollama has no Vulkan support).
+
+![AMD APU Vulkan addendum: LlamaStash vs LM Studio (chat_turn defaults)](../assets/charts/05-amd-apu-vulkan-addendum.png)
+
+#### Combined view — all tools × backends × modes
+
+![AMD APU combined: chat_turn across HIP/ROCm + Vulkan, defaults + normalized](../assets/charts/06-amd-apu-combined.png)
+
+![AMD APU combined: agent_decode across HIP/ROCm + Vulkan, defaults + normalized](../assets/charts/07-amd-apu-combined-agent-decode.png)
+
+Light mauve / dark mauve = HIP/ROCm defaults / normalized. Light teal / dark teal = Vulkan defaults / normalized. Em-dashes mark cells not run (raw and Ollama on Vulkan) or backend-init crashes (LM Studio on HIP for `mid`, `large_dense`, `large_moe`). `agent_decode` is the longer-context workload (256-token target vs 64 for `chat_turn`).
 
 **Highlights:**
 
@@ -100,6 +116,8 @@ Regenerate this table any time: `make bench-table`.
 
 Each cell is **decode tok/s / TTFT ms** on `chat_turn`, `defaults` mode. (CUDA/Vulkan here refer to the engine used by each tool, explicitly pinned per the methodology.)
 
+![NVIDIA RTX 3050 Ti decode tok/s by tool, CUDA vs Vulkan, defaults](../assets/charts/04-nvidia-decode-cuda-vs-vulkan.png)
+
 **Highlights:**
 
 - **Vulkan decode ≥ CUDA decode** in 26 of 28 comparable cells (median +5%) — the "CUDA wins on NVIDIA" intuition does not hold for bandwidth-bound Q3 decode on a 4 GiB Ampere card.
@@ -120,6 +138,10 @@ Suite A runs `llamastash start <model>` and raw `llama-server` back-to-back with
 
 The orchestrator also asserts argv **byte-equality** (after stripping `--port`) so there's no place for a hidden tweak to hide. Per-host results land in [`docs/benchmarks/overhead/<host-id>/`](https://github.com/llamastash/llamastash/blob/main/docs/benchmarks/overhead/). Thresholds are tunable in `scripts/bench/overhead/thresholds.json`.
 
+![Suite A overhead: LlamaStash vs raw llama-server across six matched-flags cells, with advisory and hard-fail lines](../assets/charts/08-suite-a-overhead.png)
+
+Top: decode delta % per cell, positive = LlamaStash faster. Bottom: TTFT delta ms. Yellow dashed lines are the advisory thresholds (±0.5% decode, ±30 ms TTFT); red dashed lines are the hard-fail thresholds (±2% decode; ±200 ms TTFT is off-chart). All six cells inside the hard-fail box.
+
 ## Proxy overhead (Suite C)
 
 Suite C answers a simple question: if you talk to the LlamaStash proxy instead of `llama-server` directly, does it cost you anything?
@@ -131,6 +153,10 @@ Results so far:
 - **AMD APU** (`deepu-flowz13-arch`, gemma-4-E2B-it-Q4\_K\_M, 15 requests each side): TTFT +0.45 ms at the median (52.37 → 52.82 ms), tokens/sec unchanged (92.80 → 92.70).
 - **Apple M1** (`macos-m1`, Qwen2.5-0.5B-Instruct Q4\_K\_M, 5 measured reps per phase): TTFT −0.6 ms (within noise), decode +1.4% (within noise).
 - **NVIDIA RTX 3050 Ti** (`deepu-xps`, gemma-3-4b-it.Q3\_K\_M, Vulkan lane, 4 measured reps per phase): TTFT +0.57 ms, decode −0.20% (within noise).
+
+![Suite C proxy overhead: decode delta % (top) and TTFT delta ms (bottom) across AMD APU, Apple M1, RTX 3050 Ti](../assets/charts/09-suite-c-proxy.png)
+
+TTFT panel is zoomed to ±1.6 ms so the sub-millisecond deltas are visible (advisory ±30 ms and hard-fail ±200 ms both off-chart at that zoom).
 
 On all three platforms: **zero measurable proxy cost.** Full numbers and method → [`docs/benchmarks/proxy/results.md`](https://github.com/llamastash/llamastash/blob/main/docs/benchmarks/proxy/results.md).
 

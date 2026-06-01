@@ -102,22 +102,24 @@ Two release tracks:
 ## R2 (v0.0.2 checklist)
 
 - [x] **IP**: **R1 launch promotion** — telling the world about v0.0.1.
-  - [ ] Release blog.
+  - [x] Release blog.
+  - [ ] Bench blog
   - [ ] Social promotion — research an approach for max reach.
 - [x] **IP**: Agent run UAT
-- [x] ~~**Windows AMD GPU detection.**~~ — DXGI-based probe (`src/gpu/dxgi.rs`) added in the GPU chain between AMD-rocm and Metal. Surfaces adapter name + dedicated VRAM + shared-system memory for AMD / Intel / NVIDIA-without-nvidia-smi.exe on Windows. Static data only — no live util%/temp/per-PID VRAM (DXGI API doesn't expose them). See [`docs/architecture.md §GPU detection`](docs/architecture.md#gpu-detection) for full coverage matrix. PDH counters (VRAM-used / util%) or vendor SDKs — ADLX / NVML / IGCL (temp, per-PID) — for live metrics is the remaining gap, tracked below.
+  - [x] Linux
+  - [x] Windows
+  - [ ] macOS
+- [x] ~~**Windows AMD GPU detection.**~~ — DXGI-based probe (`src/gpu/dxgi.rs`) added in the GPU chain between AMD-rocm and Metal. Surfaces adapter name + dedicated VRAM + shared-system memory for AMD / Intel / NVIDIA-without-nvidia-smi.exe on Windows. Static data only — no live util%/temp/per-PID VRAM (DXGI API doesn't expose them). See [`docs/architecture.md §GPU detection`](docs/architecture.md#gpu-detection) for full coverage matrix. ADLX / NVML / IGCL for live metrics is the remaining gap, tracked below.
 - [ ] Verify in WIndows
   - `llamastash daemon start` (the `actual start_detached_with_exe` path, not `cargo test`) on Win11. Confirm supervisor pumps reach Ready when the daemon was launched via
     `DETACHED_PROCESS` (finding #2).
-  - `install.ps1` against a tagged release end-to-end: download → SHA256SUMS verify → extract → PATH update.
-  - Protected `DACL` on `%LOCALAPPDATA%\llamastash\runtime.json` via `icacls`. The Linux audit only proves the syscall returned success.
   - `CTRL+BREAK` non-delivery to a real `llama-server.exe` (validates the `signal_graceful = signal_kill` decision under the actual workload).
-  - Long-running daemon + repeated launch churn → check `Handle Count` in Task Manager Performance tab to confirm finding #1 in practice.
+  - `install.ps1` against a tagged release end-to-end: download → SHA256SUMS verify → extract → PATH update.
   - Scoop install from the live bucket: `scoop bucket add llamastash https://github.com/llamastash/scoop-llamastash; scoop install llamastash`.
-  - [x] Wrong ram and unified indicator '*' in Host panel. Init shows correct values. Both values should be derived via the same codepath. DRY.
+  - [ ] UI is slow and glitchy and random crashes as well sometimes. (needs more testing and hardening)
   - [ ] Shift + / (?) doesn't work
-  - [ ] VRAM load doesn't show up in Host panel on Windows AMD GPU. Check if the DXGI probe is correctly identifying the GPU and if the metrics sampler is correctly parsing the output.
-  - [ ] UI is slow and glitchy (needs more testing and hardening)
+  - [x] Wrong ram and unified indicator '*' in Host panel. Init shows correct values. Both values should be derived via the same codepath. DRY.
+  - [x] **deferred**: VRAM load doesn't show up in Host panel on Windows AMD GPU. Check if the DXGI probe is correctly identifying the GPU and if the metrics sampler is correctly parsing the output.
   - [x] llamastash.exe fails to start from `init` (retest with an install, maybe due to cargo run)
 - [x] **IP**: Windows support including scoop — landed via [`docs/plans/2026-05-29-001-feat-windows-support-and-http-ipc-plan.md`](docs/plans/2026-05-29-001-feat-windows-support-and-http-ipc-plan.md) in 0.0.2. HTTP-loopback IPC unification, Job Object process control, LockFileEx + DACL hardening, .zip extraction, win-cpu/win-vulkan/win-cuda/win-hip asset routing, install.ps1, Scoop bucket auto-published via release.yml. See below for Windows follow-ups deferred from 0.0.2.
 - [x] **IP**: AUR package
@@ -149,7 +151,7 @@ Two release tracks:
   - [ ] Apple Metal : macOS
   - [ ] AMD GPU ROCm: Linux
   - [ ] AMD GPU Vulkan: Linux
-  - [ ] AMD GPU Vulkan: Windows
+  - [x] AMD GPU Vulkan: Windows
   - [ ] AMD GPU ROCm: Windows
   - [ ] NVidia CUDA: Windows
   - [ ] NVidia Vulkan: Windows
