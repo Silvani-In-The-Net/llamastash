@@ -65,6 +65,14 @@ fn try_bind(port: u16) -> bool {
   TcpListener::bind(addr).is_ok()
 }
 
+/// Public alias of [`try_bind`] for callers outside this module —
+/// `registry::reserve_port` uses it to probe explicit / soft-
+/// preferred ports before reserving. Same semantics: returns `true`
+/// when the OS would let us bind 127.0.0.1:port right now.
+pub fn try_bind_probe(port: u16) -> bool {
+  try_bind(port)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

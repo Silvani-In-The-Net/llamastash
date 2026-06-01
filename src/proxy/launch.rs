@@ -31,7 +31,7 @@ use std::time::Duration;
 use crate::cli::resolve::CatalogRow;
 use crate::daemon::supervisor::ManagedState;
 use crate::gguf::identity::ModelId;
-use crate::ipc::methods::{start_model_inner, StartParams};
+use crate::ipc::methods::{start_model_inner, LaunchModeWire, StartParams};
 
 use super::coalesce::{AcquireOutcome, SharedOutcome};
 use super::state::ProxyState;
@@ -147,8 +147,23 @@ async fn drive_launch_as_leader(
   resolved: &CatalogRow,
   model_id: ModelId,
 ) -> LaunchOutcome {
+  // Mode is read from the catalog row's GGUF-derived mode_hint so
+  // `start_model_inner` composes the right argv (`--embeddings` for
+  // embedding-only models, `--rerank` for rerank models). Without
+  // this the proxy auto-start path defaulted every model to chat
+  // mode and embedding requests against a nomic/jina/etc model
+  // came back 501 (`This server does not support embeddings`) even
+  // though `llamastash start <model>` worked fine. `Unknown` /
+  // missing hint leaves `mode = None` so `start_model_inner`'s
+  // chat default still applies.
   let params = StartParams {
     model_path: std::path::PathBuf::from(&resolved.path),
+    mode: resolved.mode_hint.as_deref().and_then(|s| match s {
+      "chat" => Some(LaunchModeWire::Chat),
+      "embedding" => Some(LaunchModeWire::Embedding),
+      "rerank" => Some(LaunchModeWire::Rerank),
+      _ => None,
+    }),
     ..StartParams::default()
   };
   let started = match start_model_inner(

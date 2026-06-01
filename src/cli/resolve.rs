@@ -447,6 +447,18 @@ pub struct ExternalRow {
   pub pid: u64,
   pub cmdline: String,
   pub model_path: Option<String>,
+  /// Listening port parsed from the orphan's argv on the daemon
+  /// side. `None` when the cmdline didn't carry `--port` / `-p`
+  /// (rare for llamastash-launched orphans — the supervisor always
+  /// emits the long flag). Surfaced into `status --json` so agents
+  /// can diff against `ss`/`lsof` without re-parsing argv client-side.
+  pub port: Option<u16>,
+  /// True when the orphan's environment carried `LLAMASTASH_LAUNCHED=1`
+  /// at sweep time — i.e. it was spawned by some llamastash
+  /// instance (this daemon's previous run, a sibling UAT daemon,
+  /// etc.). Drives `collect_in_use_ports` on the daemon side; here
+  /// it lives so the `daemon status` formatter can flag the row.
+  pub launched_by_llamastash: bool,
 }
 
 impl ExternalRow {
@@ -531,10 +543,20 @@ fn parse_external_row(v: &Value) -> Option<ExternalRow> {
     .get("model_path")
     .and_then(Value::as_str)
     .map(str::to_string);
+  let port = v
+    .get("port")
+    .and_then(Value::as_u64)
+    .and_then(|p| u16::try_from(p).ok());
+  let launched_by_llamastash = v
+    .get("launched_by_llamastash")
+    .and_then(Value::as_bool)
+    .unwrap_or(false);
   Some(ExternalRow {
     pid,
     cmdline,
     model_path,
+    port,
+    launched_by_llamastash,
   })
 }
 

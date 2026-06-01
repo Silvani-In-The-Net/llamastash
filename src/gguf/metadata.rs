@@ -279,6 +279,21 @@ pub enum ModeHint {
   Unknown,
 }
 
+impl ModeHint {
+  /// Stable lowercase label matching the CLI / IPC wire
+  /// (`--mode chat|embedding|rerank`). `Unknown` returns `None` so
+  /// callers can branch on "no signal" without comparing against a
+  /// magic string.
+  pub fn as_label(&self) -> Option<&'static str> {
+    match self {
+      ModeHint::Chat => Some("chat"),
+      ModeHint::Embedding => Some("embedding"),
+      ModeHint::Rerank => Some("rerank"),
+      ModeHint::Unknown => None,
+    }
+  }
+}
+
 /// Distil a parsed header into [`ModelMetadata`].
 pub fn summarise(header: &GgufHeader) -> ModelMetadata {
   let arch_raw = header.string(&["general.architecture"]).map(str::to_string);

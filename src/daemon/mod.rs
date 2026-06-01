@@ -253,6 +253,13 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
       ),
       model_path: Some(adopted.id.path.clone()),
       start_time_secs,
+      port: Some(adopted.port),
+      // Adopted entries went through our state.json before the
+      // restart — by construction they were launched by *this*
+      // daemon's previous instance and therefore carry the same
+      // env marker. Marking them keeps `collect_in_use_ports`
+      // consistent across the adopted-vs-external split.
+      launched_by_llamastash: true,
     });
   }
   log::info!(

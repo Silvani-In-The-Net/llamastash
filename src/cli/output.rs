@@ -499,6 +499,8 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
         "pid": r.pid,
         "cmdline": r.cmdline,
         "model_path": r.model_path,
+        "port": r.port,
+        "launched_by_llamastash": r.launched_by_llamastash,
       })
     })
     .collect();
@@ -853,6 +855,8 @@ mod tests {
         pid: 999,
         cmdline: "llama-server".into(),
         model_path: Some("/m/b.gguf".into()),
+        port: Some(41101),
+        launched_by_llamastash: true,
       }],
       gpu: Value::String("CpuOnly".into()),
       host: serde_json::json!({"gpu_backend": "amd", "cpu_pct": 12.5}),
@@ -958,6 +962,8 @@ mod tests {
         pid: 9999,
         cmdline: "llama-server".into(),
         model_path: Some("/m/ext.gguf".into()),
+        port: None,
+        launched_by_llamastash: false,
       }],
       gpu: Value::Null,
       host: Value::Null,

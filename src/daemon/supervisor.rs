@@ -381,6 +381,19 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   ] {
     cmd.env_remove(var);
   }
+  // Stamp an inheritance marker so a future daemon — possibly a
+  // restart of this one, possibly an unrelated llamastash instance
+  // on the same machine — can recognise this `llama-server` as
+  // already-llamastash-launched on its boot sweep. The sweep reads
+  // `/proc/<pid>/environ` (see `orphans::sweep`) and uses the
+  // presence of this var to (a) treat the orphan's port as
+  // unavailable in `collect_in_use_ports` so the allocator skips it,
+  // and (b) surface a "launched by llamastash" hint on the external
+  // row. Value is intentionally `"1"` rather than the state-dir or
+  // daemon pid — a stable marker is all the Tier A port-tracking
+  // path needs; richer attribution belongs in a future adoption
+  // pass that re-incorporates the orphan as a managed supervisor.
+  cmd.env("LLAMASTASH_LAUNCHED", "1");
   // Process-group setup + spawn go through [`ProcessControl`] so
   // Unit 6's Windows backend can swap in `CREATE_NEW_PROCESS_GROUP`
   // without touching this call site.

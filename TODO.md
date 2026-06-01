@@ -148,9 +148,7 @@ Two release tracks:
   - [ ] AMD GPU ROCm: Windows
   - [ ] NVidia CUDA: Windows
   - [ ] NVidia Vulkan: Windows
-- [ ] Benchmark against Ollama, LMStudio and other popular options.
-  - [ ] AMD GPU : Linux
-    - [ ] gemma-3-4b-it.Q3_K_M
+- [ ] Adopt external running loads (user forced via keybinding/cli)
 - [ ] **Need brainstorm/plan**: **SSE for `logs_tail` streaming.** Today the CLI polls `logs_tail` every 250 ms over HTTP and de-dupes (works correctly; not a regression). SSE would collapse N polls/sec into one long-lived connection. Unit 3 of the 0.0.2 plan was explicitly deferred — needs its own brainstorm + plan.
 - [ ] **Build CUDA llama.cpp prebuilts in CD** — ggml-org ships CUDA only for Windows (`cudart-llama-bin-win-cuda-{12.4,13.3}-x64.zip`); Linux+NVIDIA users get routed to the Vulkan prebuilt today, which is ~10–30% slower than native CUDA for LLM inference. Building CUDA doesn't need a GPU runner (only `nvcc`), so a standard `ubuntu-latest` runner + `Jimver/cuda-toolkit` action + `cmake -DGGML_CUDA=1 -DCMAKE_CUDA_ARCHITECTURES="70;75;80;86;89;90"` produces a fat binary covering Volta→Hopper. Publish to `llamastash/llamastash` releases tagged with the same `bNNNN` as the upstream llama.cpp tag so `pick_release_with_asset` keeps working. Then extend `pick_asset_suffix` in `src/init/install/gh_releases.rs:70` with a CUDA branch for Linux+NVIDIA (parameterise `RELEASES_URL` per-asset), and add a wizard prompt to choose CUDA vs Vulkan. Static-link libcudart (Ollama precedent) so users don't need the CUDA toolkit installed — adds ~100MB but zero user-side prereqs. Scope: ~1–2 days for workflow + routing + tests. Folds into the broader [version-drift brainstorm](#) above since both questions share the "do we own a llama.cpp build pipeline?" decision.
 - [ ] **Need brainstorm/plan**: **Anthropic `/v1/messages` compatibility shim** on top of the OpenAI-compat proxy. Most agents do OpenAI; Claude Code prefers Anthropic shape.
@@ -172,6 +170,13 @@ Two release tracks:
 
 ### Low priority
 
+- [ ] Benchmark against Ollama, LMStudio and other popular options.
+  - [ ] AMD GPU : Linux
+  - [ ] AMD GPU: Windows
+  - [ ] AMD APU: Windows
+  - [ ] NVidia: Linux
+  - [ ] NVidia: Windows
+  - [ ] Apple Metal : macOS
 - [ ] No glyphs fallback.
 - [ ] **Need brainstorm/plan**: HTTP and MCP surfaces (origin: R34).
   - [ ] **MCP server surface.** Tracked under R34 alongside LAN exposure. The CLI is already agent-friendly via `--json`; MCP would add a Model Context Protocol server endpoint for agents that prefer it.

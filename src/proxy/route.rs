@@ -267,6 +267,18 @@ fn catalog_row_from_discovered(m: &DiscoveredModel) -> CatalogRow {
     .unwrap_or(false);
   let tokenizer_kind = m.metadata.as_ref().and_then(|md| md.tokenizer_kind.clone());
   let total_parameters = m.metadata.as_ref().and_then(|md| md.total_parameters);
+  // Surface the GGUF-derived mode hint to the proxy so auto-start
+  // composes the right `llama-server` argv (embedding / rerank
+  // builds need the `--embeddings` / `--rerank` flag set up front;
+  // chat builds need it absent). Without this the proxy defaulted
+  // every auto-start to chat mode and any `POST /v1/embeddings`
+  // call against an embedding-only model returned a 501 from
+  // `llama-server` ("This server does not support embeddings").
+  let mode_hint = m
+    .metadata
+    .as_ref()
+    .and_then(|md| md.mode_hint.as_label())
+    .map(str::to_string);
   CatalogRow {
     path,
     model_id: None,
@@ -275,7 +287,7 @@ fn catalog_row_from_discovered(m: &DiscoveredModel) -> CatalogRow {
     arch,
     quant,
     native_ctx,
-    mode_hint: None,
+    mode_hint,
     parameter_label,
     weights_bytes,
     display_label: m.display_label.clone(),
@@ -536,5 +548,75 @@ mod tests {
       fallback_reason_for(Some("bert"), Some("llama")),
       "family_mismatch"
     );
+  }
+
+  // ─── Mode-hint propagation into the proxy CatalogRow ────────────
+  //
+  // Regression cover for the bug where a `POST /v1/embeddings`
+  // against an embedding-only model that wasn't already running
+  // returned a 501 from `llama-server` — the proxy auto-start dropped
+  // the GGUF-derived mode hint and the supervisor defaulted to chat
+  // mode (no `--embeddings` flag in the composed argv).
+  #[allow(unused_imports)]
+  use super::catalog_row_from_discovered;
+  use crate::discovery::DiscoveredModel;
+  use crate::gguf::metadata::{ModeHint, ModelMetadata};
+
+  fn discovered_with_mode(mode: ModeHint) -> DiscoveredModel {
+    DiscoveredModel {
+      path: std::path::PathBuf::from("/tmp/fake.gguf"),
+      parent: std::path::PathBuf::from("/tmp"),
+      source: crate::discovery::ModelSource::HuggingFace,
+      display_label: None,
+      parse_error: None,
+      split_siblings: vec![],
+      metadata: Some(ModelMetadata {
+        arch: Some("nomic-bert".into()),
+        quant: crate::gguf::metadata::Quant::Q2_K,
+        native_ctx: Some(2048),
+        parameter_label: Some("0.5B".into()),
+        weights_bytes: Some(100_000_000),
+        chat_template: None,
+        tokenizer_kind: Some("bert".into()),
+        total_parameters: Some(500_000_000),
+        reasoning_hint: false,
+        mode_hint: mode,
+      }),
+    }
+  }
+
+  #[test]
+  fn catalog_row_propagates_embedding_mode_hint_to_proxy() {
+    let m = discovered_with_mode(ModeHint::Embedding);
+    let row = catalog_row_from_discovered(&m);
+    assert_eq!(
+      row.mode_hint.as_deref(),
+      Some("embedding"),
+      "proxy auto-start needs embedding hint to add --embeddings"
+    );
+  }
+
+  #[test]
+  fn catalog_row_propagates_rerank_mode_hint_to_proxy() {
+    let m = discovered_with_mode(ModeHint::Rerank);
+    let row = catalog_row_from_discovered(&m);
+    assert_eq!(row.mode_hint.as_deref(), Some("rerank"));
+  }
+
+  #[test]
+  fn catalog_row_propagates_chat_mode_hint_to_proxy() {
+    let m = discovered_with_mode(ModeHint::Chat);
+    let row = catalog_row_from_discovered(&m);
+    assert_eq!(row.mode_hint.as_deref(), Some("chat"));
+  }
+
+  #[test]
+  fn catalog_row_leaves_unknown_mode_hint_as_none() {
+    // Unknown stays None so the start_model_inner default (chat) is
+    // what kicks in — same posture as before the propagation patch
+    // when the GGUF carried no signal.
+    let m = discovered_with_mode(ModeHint::Unknown);
+    let row = catalog_row_from_discovered(&m);
+    assert_eq!(row.mode_hint, None);
   }
 }

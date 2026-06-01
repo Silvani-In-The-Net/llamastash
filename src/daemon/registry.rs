@@ -111,6 +111,20 @@ impl SupervisorRegistry {
         if reserved.contains(&p) || live_in_use.contains(&p) {
           return Err(format!("port {p} is already in use by another launch"));
         }
+        // Probe-before-reserve: the supervisor's reservation set only
+        // tracks ports it has handed out. An externally-held port —
+        // e.g. a `llama-server` from a previous daemon instance, or
+        // any other process bound to a slot inside our configured
+        // range — passes the in-set check above but the subsequent
+        // child still fails to bind, surfacing as
+        // `couldn't bind HTTP server socket` in the launch log. The
+        // auto-allocator path (`ports::allocate`) already probes via
+        // `try_bind`; explicit / soft-preferred ports must do the
+        // same so a `prefer_port: <stale>` from the TUI's last-used
+        // memory doesn't lock the user into a broken launch.
+        if !crate::daemon::ports::try_bind_probe(p) {
+          return Err(format!("port {p} is already in use (external bind)"));
+        }
         p
       }
       None => crate::daemon::ports::allocate(range, &combined).map_err(|e| e.to_string())?,
@@ -151,5 +165,58 @@ mod tests {
     assert_eq!(s, "\"L42\"");
     let back: LaunchId = serde_json::from_str(&s).unwrap();
     assert_eq!(back, id);
+  }
+
+  use crate::config::loader::PortRange;
+  use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
+
+  #[tokio::test]
+  async fn explicit_port_held_externally_is_rejected() {
+    // Simulate an external process holding a port inside our range:
+    // bind it and hold the socket open for the duration of the test.
+    // The supervisor doesn't know about this port (live_in_use +
+    // reserved are both empty), so the only thing that can catch it
+    // is the bind probe.
+    let holder = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+      .expect("OS gives us a free loopback port");
+    let busy = holder.local_addr().unwrap().port();
+    let range = PortRange {
+      start: busy,
+      end: busy,
+    };
+    let r = SupervisorRegistry::new();
+    let err = r
+      .reserve_port(Some(busy), &[], &range)
+      .await
+      .expect_err("must refuse a port held by an external process");
+    assert!(
+      err.contains("external") || err.contains("already in use"),
+      "error must name the external-bind failure mode, got: {err}"
+    );
+  }
+
+  #[tokio::test]
+  async fn explicit_port_that_is_actually_free_succeeds() {
+    // Probe a port we know is free: bind to grab one, immediately
+    // drop the holder, then ask `reserve_port` for the same number.
+    // The OS may keep the slot in TIME_WAIT briefly on some hosts,
+    // so we retry against a small range until something sticks.
+    let r = SupervisorRegistry::new();
+    let mut chosen = None;
+    for offset in 0..16u16 {
+      let holder = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .expect("OS gives us a free loopback port");
+      let port = holder.local_addr().unwrap().port().wrapping_add(offset);
+      drop(holder);
+      let range = PortRange {
+        start: port,
+        end: port,
+      };
+      if let Ok(p) = r.reserve_port(Some(port), &[], &range).await {
+        chosen = Some(p);
+        break;
+      }
+    }
+    chosen.expect("at least one of 16 attempts must land on a probe-clear port");
   }
 }

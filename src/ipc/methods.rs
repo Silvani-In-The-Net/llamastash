@@ -437,6 +437,13 @@ async fn status_response(ctx: &MethodContext) -> Value {
         "pid": e.pid,
         "cmdline": e.cmdline,
         "model_path": e.model_path,
+        // Tier-A orphan-tracking fields. `port` lets agents diff the
+        // wire snapshot against `ss`/`lsof` without parsing argv;
+        // `launched_by_llamastash` exposes whether the orphan carries
+        // the supervisor's spawn marker so operators can spot
+        // sibling-instance orphans at a glance.
+        "port": e.port,
+        "launched_by_llamastash": e.launched_by_llamastash,
       })
     })
     .collect();
@@ -1376,13 +1383,37 @@ fn spawn_last_params_recorder(
 }
 
 async fn collect_in_use_ports(ctx: &MethodContext) -> Vec<u16> {
-  ctx
+  let mut ports: Vec<u16> = ctx
     .supervisors
     .snapshot()
     .await
     .into_iter()
     .map(|(_, m)| m.port())
-    .collect()
+    .collect();
+  // Also avoid colliding with `llama-server` processes that this
+  // daemon didn't spawn directly but were launched by *some*
+  // llamastash instance — typically a previous run of this daemon
+  // or a sibling UAT/test daemon whose state.json the orphan sweep
+  // didn't see. The `LLAMASTASH_LAUNCHED=1` env marker (stamped by
+  // `supervisor::spawn`) is what makes these recognisable; the port
+  // gets parsed out of the orphan's argv in `orphans::sweep`.
+  //
+  // The bind probe in `ports::try_bind_probe` already rejects an
+  // externally-held port at reservation time, so this list is a
+  // hint to the allocator rather than a correctness gate — it just
+  // lets us skip straight past known-busy slots instead of probing
+  // them one by one on every launch.
+  let externals = ctx.external.read().await;
+  for ext in externals.iter() {
+    if ext.launched_by_llamastash {
+      if let Some(p) = ext.port {
+        if !ports.contains(&p) {
+          ports.push(p);
+        }
+      }
+    }
+  }
+  ports
 }
 
 fn resolve_model_id(path: &std::path::Path) -> Result<ModelId, ErrorObject> {

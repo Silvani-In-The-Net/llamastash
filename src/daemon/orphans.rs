@@ -56,6 +56,23 @@ pub struct ExternalProcess {
   /// signal.
   #[serde(default)]
   pub start_time_secs: u64,
+  /// Listening port parsed from the process's argv (`--port N`).
+  /// `None` when the cmdline doesn't carry one — `llama-server`
+  /// defaults to 8080 but llamastash's supervisor always passes the
+  /// flag explicitly, so this should be `Some` for any process we
+  /// launched. The IPC layer feeds this into `collect_in_use_ports`
+  /// for `launched_by_llamastash` rows so the allocator skips ports
+  /// already held by orphan llamastash children.
+  #[serde(default)]
+  pub port: Option<u16>,
+  /// True when the process's environment carries
+  /// `LLAMASTASH_LAUNCHED=1`. Set by the supervisor's spawn path
+  /// (`src/daemon/supervisor.rs`); a fresh `llama-server` started
+  /// by hand or by another tool never has this marker. Drives the
+  /// port-skip behaviour above and reads in `daemon status` as a
+  /// hint that the orphan came from a sibling/previous llamastash.
+  #[serde(default)]
+  pub launched_by_llamastash: bool,
 }
 
 /// Inputs to a sweep — the daemon hands them in.
@@ -86,9 +103,18 @@ impl<'a> SweepInputs<'a> {
 /// Run a sweep. Pure-ish modulo a `sysinfo` scan of process tables
 /// and one short HTTP probe per adoption candidate.
 pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
+  // `with_environ` makes `proc.environ()` populate `/proc/<pid>/environ`
+  // contents (same-UID readable). Required for the
+  // `LLAMASTASH_LAUNCHED=1` marker check that distinguishes orphan
+  // llamastash children from random user-launched `llama-server`
+  // invocations. Cheap: the daemon reads env once per process per
+  // sweep, not per tick.
   let mut sys = System::new_with_specifics(
-    RefreshKind::nothing()
-      .with_processes(ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always)),
+    RefreshKind::nothing().with_processes(
+      ProcessRefreshKind::nothing()
+        .with_cmd(sysinfo::UpdateKind::Always)
+        .with_environ(sysinfo::UpdateKind::Always),
+    ),
   );
   sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
@@ -144,12 +170,25 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
         return None;
       }
       let model_path = extract_model_path(&cmd);
+      let port = extract_port(&cmd);
       let start_time_secs = proc.start_time();
+      // Inheritance marker — see `supervisor::spawn` for the stamp
+      // side and the docstring on `ExternalProcess::launched_by_llamastash`
+      // for the semantics. `proc.environ()` reads the live OS view,
+      // so this stays accurate even when our own state.json is
+      // empty (e.g. a UAT daemon that wrote to /tmp shut down,
+      // children still alive).
+      let launched_by_llamastash = proc
+        .environ()
+        .iter()
+        .any(|e| e.to_string_lossy() == "LLAMASTASH_LAUNCHED=1");
       Some(ExternalProcess {
         pid: pid_u32,
         cmdline: cmd.join(" "),
         model_path,
         start_time_secs,
+        port,
+        launched_by_llamastash,
       })
     })
     .collect();
@@ -290,6 +329,30 @@ pub fn extract_model_path(cmd: &[String]) -> Option<PathBuf> {
   None
 }
 
+/// Extract `--port N` / `--port=N` / `-p N` from a `llama-server`
+/// argv. The supervisor's composer (`launch::params::compose`) always
+/// emits `--port <N>` for managed children, so this is the canonical
+/// answer for any process that came from us. `None` means the cmdline
+/// didn't carry the flag — the caller treats that as "port unknown"
+/// rather than guessing the llama-server default.
+pub fn extract_port(cmd: &[String]) -> Option<u16> {
+  let mut iter = cmd.iter();
+  while let Some(arg) = iter.next() {
+    if arg == "--port" || arg == "-p" {
+      if let Some(value) = iter.next() {
+        if let Ok(p) = value.parse::<u16>() {
+          return Some(p);
+        }
+      }
+    } else if let Some(rest) = arg.strip_prefix("--port=") {
+      if let Ok(p) = rest.parse::<u16>() {
+        return Some(p);
+      }
+    }
+  }
+  None
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -378,6 +441,41 @@ mod tests {
 
     let bare: Vec<String> = vec!["llama-server".into()];
     assert_eq!(extract_model_path(&bare), None);
+  }
+
+  #[test]
+  fn extract_port_handles_long_short_and_inline_forms() {
+    // Canonical llamastash-composed shape — long flag, space-separated
+    // value. This is what `launch::params::compose` always emits.
+    let canon: Vec<String> = vec![
+      "llama-server".into(),
+      "--port".into(),
+      "41102".into(),
+      "-m".into(),
+      "/m/a.gguf".into(),
+    ];
+    assert_eq!(extract_port(&canon), Some(41102));
+
+    // Short flag.
+    let short: Vec<String> = vec!["llama-server".into(), "-p".into(), "41200".into()];
+    assert_eq!(extract_port(&short), Some(41200));
+
+    // Inline `--port=N` (some users / wrappers prefer it).
+    let inline: Vec<String> = vec!["llama-server".into(), "--port=41201".into()];
+    assert_eq!(extract_port(&inline), Some(41201));
+
+    // No port flag → None (caller decides whether to fall back).
+    let bare: Vec<String> = vec!["llama-server".into(), "-m".into(), "/m/a.gguf".into()];
+    assert_eq!(extract_port(&bare), None);
+
+    // Garbage after the flag → None. The supervisor never emits this,
+    // but a user could; we refuse to guess.
+    let bad: Vec<String> = vec![
+      "llama-server".into(),
+      "--port".into(),
+      "not-a-number".into(),
+    ];
+    assert_eq!(extract_port(&bad), None);
   }
 
   #[test]
