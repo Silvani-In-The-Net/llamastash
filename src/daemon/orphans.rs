@@ -103,19 +103,37 @@ impl<'a> SweepInputs<'a> {
 /// Run a sweep. Pure-ish modulo a `sysinfo` scan of process tables
 /// and one short HTTP probe per adoption candidate.
 pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
-  // `with_environ` makes `proc.environ()` populate `/proc/<pid>/environ`
-  // contents (same-UID readable). Required for the
-  // `LLAMASTASH_LAUNCHED=1` marker check that distinguishes orphan
-  // llamastash children from random user-launched `llama-server`
-  // invocations. Cheap: the daemon reads env once per process per
-  // sweep, not per tick.
-  let mut sys = System::new_with_specifics(
-    RefreshKind::nothing().with_processes(
+  // `with_environ` makes `proc.environ()` populate the process
+  // environment block, which the marker check below reads to spot
+  // orphan llamastash children carrying `LLAMASTASH_LAUNCHED=1`.
+  //
+  // Unix-only: on Linux/macOS the backend reads `/proc/<pid>/environ`
+  // (and the equivalent on macOS) as one same-UID file per process,
+  // measured in single-digit milliseconds. On Windows the backend
+  // walks every process's PEB via `NtQueryInformationProcess` +
+  // `PROCESS_VM_READ`, which is slow and access-restricted enough
+  // that enabling it on the CI runner pushed the daemon's startup
+  // sweep past the test harness's 3-second socket-bind deadline
+  // and broke every `wait_for_socket` integration test. The
+  // marker-driven port-skip is a proactive nice-to-have; the
+  // bind-probe in `ports::try_bind_probe` (called from
+  // `reserve_port`) is the correctness gate and runs on every
+  // platform. Skipping environ on Windows means
+  // `launched_by_llamastash` stays `false` there but launches
+  // still avoid externally-held ports via the probe.
+  let process_refresh = {
+    #[cfg(unix)]
+    {
       ProcessRefreshKind::nothing()
         .with_cmd(sysinfo::UpdateKind::Always)
-        .with_environ(sysinfo::UpdateKind::Always),
-    ),
-  );
+        .with_environ(sysinfo::UpdateKind::Always)
+    }
+    #[cfg(not(unix))]
+    {
+      ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always)
+    }
+  };
+  let mut sys = System::new_with_specifics(RefreshKind::nothing().with_processes(process_refresh));
   sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
   let mut adopted: Vec<RunningSnapshot> = Vec::new();

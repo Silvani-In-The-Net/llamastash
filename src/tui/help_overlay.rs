@@ -473,16 +473,19 @@ mod tests {
     // without bloating the layout with a redundant section.
     let app = App::new(AppOptions::default());
     let frame = render_to_string(140, 60, &app);
-    // Ctrl-letter labels are lower-cased by `ctrl_label!` (matches
-    // the binary's chip + log convention on Linux/Windows; macOS
-    // renders `⌃f`/`⌃b`). `e,i` covers the vim `i` alias for
-    // `EnterEdit` — must appear as a merged row, not a separate one.
-    // `Ctrl+u` is intentionally NOT asserted here. Vim's Ctrl+U is
-    // half-page-up, but llamastash collapses it to full PgUp (same
-    // as Ctrl+B), so listing both in help next to PgUp would just
-    // duplicate the row. It stays dispatchable (muscle memory keeps
-    // working) but hidden via NO_CAT in `keybindings.rs`.
-    for needle in ["Ctrl+f", "Ctrl+b", "0", "$", "gt", "gT", "e,i"] {
+    // Ctrl-letter labels diverge by platform: `ctrl_label!` emits
+    // `⌃f`/`⌃b` on macOS and `Ctrl+f`/`Ctrl+b` elsewhere. Match the
+    // live convention so this test stays green on every CI lane.
+    // `e,i` covers the vim `i` alias for `EnterEdit` — must appear
+    // as a merged row, not a separate one. `Ctrl+u` is intentionally
+    // NOT asserted here. Vim's Ctrl+U is half-page-up, but llamastash
+    // collapses it to full PgUp (same as Ctrl+B), so listing both in
+    // help next to PgUp would just duplicate the row. It stays
+    // dispatchable (muscle memory keeps working) but hidden via
+    // NO_CAT in `keybindings.rs`.
+    let ctrl_f = crate::ctrl_label!("f");
+    let ctrl_b = crate::ctrl_label!("b");
+    for needle in [ctrl_f, ctrl_b, "0", "$", "gt", "gT", "e,i"] {
       assert!(
         frame.contains(needle),
         "vim chord {needle:?} missing from help overlay:\n{frame}"
