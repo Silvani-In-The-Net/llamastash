@@ -348,8 +348,8 @@ MIT © Deepu K Sasidharan
 - [`kdash`](https://github.com/kdash-rs/kdash) — Kubernetes dashboard TUI by the same author. LlamaStash borrows its engineering and release scaffolding from kdash: the org layout (`llamastash/llamastash`, `llamastash/homebrew-llamastash`, `llamastash/llamastash.github.io`), the brew-tap structure, the `cli.rs` subdomain setup, and the release-on-tag workflow shape. The product itself is independent.
 - [`jwt-ui`](https://github.com/jwt-rs/jwt-ui) — JWT decoder / encoder TUI by the same author.
 
-## Star history
+## Star History
 
 If LlamaStash is useful to you, a star helps other people find it.
 
-[![Star History Chart](https://api.star-history.com/svg?repos=llamastash/llamastash&type=Date)](https://star-history.com/#llamastash/llamastash&Date)
+[![Star History Chart](https://api.star-history.com/chart?repos=llamastash/llamastash&type=date&legend=top-left)](https://www.star-history.com/?type=date&repos=llamastash%2Fllamastash)
