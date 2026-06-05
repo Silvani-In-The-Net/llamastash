@@ -1182,6 +1182,41 @@ impl App {
     self.focused_managed()
   }
 
+  /// The launch-device catalog entry for the focused running model,
+  /// but only when that model's binary differs from the daemon's
+  /// default `server_path`. The Daemon panel's `server` row uses this
+  /// to swap in (and highlight) the binary the hovered launch is
+  /// actually running on, so in multi-binary setups the operator can
+  /// see which backend each model uses as the cursor moves.
+  ///
+  /// Returns `None` when the cursor isn't on a running model, when the
+  /// row's `--device` selector has no catalog entry (stale/un-probed),
+  /// or when the resolved binary is the default — in every one of
+  /// those cases the row falls back to the plain default-path render.
+  pub fn focused_override_device(&self) -> Option<&crate::launch::list_devices::LaunchDevice> {
+    let rows = self.rendered_rows();
+    let selector = match rows.get(self.list_cursor) {
+      Some(ListRow::Model {
+        device: Some(d), ..
+      }) => d.clone(),
+      _ => return None,
+    };
+    let entry = self
+      .device_catalog
+      .iter()
+      .find(|e| e.selector == selector)?;
+    let is_default = self
+      .daemon_info
+      .server_path
+      .as_deref()
+      .is_some_and(|def| entry.binary == Path::new(def));
+    if is_default {
+      None
+    } else {
+      Some(entry)
+    }
+  }
+
   /// Build a [`LaunchPickerState`] seeded for the currently
   /// focused model — pure, no side effects. Returns `None` when
   /// the cursor sits on a header (no model focused). Both
@@ -1706,6 +1741,7 @@ mod tests {
   use super::*;
   use crate::discovery::ModelSource;
   use crate::gguf::metadata::{ModeHint, ModelMetadata, Quant};
+  use crate::launch::list_devices::LaunchDevice;
   use serde_json::json;
 
   fn fake(path: &str, parent: &str) -> DiscoveredModel {
@@ -2080,6 +2116,83 @@ mod tests {
       "drill still focuses the right pane (read-only running view)"
     );
     assert_eq!(app.right_tab, RightTab::Settings);
+  }
+
+  fn launch_device(selector: &str, backend: &str, binary: &str) -> LaunchDevice {
+    LaunchDevice {
+      selector: selector.into(),
+      backend: backend.into(),
+      name: "Test GPU".into(),
+      binary: PathBuf::from(binary),
+      total_mib: Some(24576),
+      free_mib: Some(24000),
+    }
+  }
+
+  /// Build an app whose cursor sits on a running model bound to
+  /// `device`, with `server_path` as the daemon's default binary.
+  fn running_on_device_app(device: Option<&str>, server_path: &str) -> App {
+    let m = fake("/m/a.gguf", "/m");
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![m.clone()];
+    app.managed = vec![ManagedRow {
+      launch_id: "L1".into(),
+      path: m.path.clone(),
+      port: 41100,
+      state: SurfaceState::Ready,
+      device: device.map(String::from),
+      rss_bytes: None,
+      cpu_pct: None,
+    }];
+    app.daemon_info = DaemonInfo {
+      server_path: Some(server_path.into()),
+      ..Default::default()
+    };
+    // Rows: [TableHeader, Header(▶ Running), Model(running)] — the
+    // running row lands at index 2.
+    app.list_cursor = 2;
+    app
+  }
+
+  #[test]
+  fn focused_override_device_returns_entry_for_non_default_binary() {
+    let mut app = running_on_device_app(Some("CUDA1"), "/usr/bin/llama-server");
+    app.device_catalog = vec![
+      launch_device("CUDA0", "CUDA", "/usr/bin/llama-server"),
+      launch_device("CUDA1", "CUDA", "/opt/cuda/llama-server"),
+    ];
+    assert!(app.focused_managed().is_some(), "cursor must be on the run");
+    let dev = app
+      .focused_override_device()
+      .expect("non-default binary must surface as an override");
+    assert_eq!(dev.binary, PathBuf::from("/opt/cuda/llama-server"));
+  }
+
+  #[test]
+  fn focused_override_device_none_when_binary_is_default() {
+    // The hovered launch runs on the *default* binary's own device —
+    // no override, so the server row stays on the plain default render.
+    let mut app = running_on_device_app(Some("CUDA0"), "/usr/bin/llama-server");
+    app.device_catalog = vec![launch_device("CUDA0", "CUDA", "/usr/bin/llama-server")];
+    assert!(app.focused_override_device().is_none());
+  }
+
+  #[test]
+  fn focused_override_device_none_when_row_not_running() {
+    // No device selector on the row (idle / auto launch) — nothing to
+    // resolve against the catalog.
+    let mut app = running_on_device_app(None, "/usr/bin/llama-server");
+    app.device_catalog = vec![launch_device("CUDA1", "CUDA", "/opt/cuda/llama-server")];
+    assert!(app.focused_override_device().is_none());
+  }
+
+  #[test]
+  fn focused_override_device_none_when_selector_absent_from_catalog() {
+    // Stale persisted selector (catalog re-probed without it) must not
+    // panic or fabricate an override.
+    let mut app = running_on_device_app(Some("ROCm0"), "/usr/bin/llama-server");
+    app.device_catalog = vec![launch_device("CUDA0", "CUDA", "/usr/bin/llama-server")];
+    assert!(app.focused_override_device().is_none());
   }
 
   #[test]
