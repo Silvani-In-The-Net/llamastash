@@ -370,6 +370,7 @@ mod tests {
       path: PathBuf::from(path),
       port,
       state,
+      device: None,
       rss_bytes: Some(4_200_000_000),
       cpu_pct: Some(312.0),
     }

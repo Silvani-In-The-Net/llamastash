@@ -3204,6 +3204,7 @@ mod tests {
       path: PathBuf::from("/m/qwen.gguf"),
       port: 41100,
       state: SurfaceState::Error,
+      device: None,
       rss_bytes: None,
       cpu_pct: None,
     }];
@@ -3232,6 +3233,7 @@ mod tests {
       path: PathBuf::from("/m/qwen.gguf"),
       port: 41200,
       state: SurfaceState::External,
+      device: None,
       rss_bytes: None,
       cpu_pct: None,
     }];
@@ -4301,6 +4303,7 @@ mod tests {
       path: PathBuf::from(path),
       port,
       state: SurfaceState::Ready,
+      device: None,
       rss_bytes: None,
       cpu_pct: None,
     }

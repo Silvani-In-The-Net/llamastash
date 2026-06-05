@@ -68,6 +68,8 @@ pub struct ManagedRow {
   pub path: PathBuf,
   pub port: u16,
   pub state: SurfaceState,
+  /// Launch device selector (`CUDA0`, `Vulkan1`, etc.) when set.
+  pub device: Option<String>,
   /// Latest per-PID RSS reading in bytes. `None` until the daemon's
   /// per-launch sampler has emitted at least one reading.
   pub rss_bytes: Option<u64>,
@@ -912,6 +914,7 @@ impl App {
         path: m.path.clone(),
         port: m.port,
         state: m.state,
+        device: m.device.clone(),
       })
       .collect();
     let mut all = build_rows(RowInputs {
@@ -1632,6 +1635,7 @@ fn parse_external_row(row: &Value) -> Option<ManagedRow> {
     // know to hide the endpoint slot for these rows.
     port: 0,
     state: SurfaceState::External,
+    device: None,
     rss_bytes: None,
     cpu_pct: None,
   })
@@ -1680,11 +1684,18 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
     .get("latest_cpu_pct")
     .and_then(Value::as_f64)
     .map(|n| n as f32);
+  let device = row
+    .get("params")
+    .and_then(|p| p.get("knobs"))
+    .and_then(|k| k.get("device"))
+    .and_then(Value::as_str)
+    .map(|s| s.to_string());
   Some(ManagedRow {
     launch_id,
     path,
     port,
     state,
+    device,
     rss_bytes,
     cpu_pct,
   })
@@ -2052,6 +2063,7 @@ mod tests {
       path: m.path.clone(),
       port: 41100,
       state: SurfaceState::Ready,
+      device: None,
       rss_bytes: None,
       cpu_pct: None,
     }];
@@ -2161,6 +2173,7 @@ mod tests {
       path: PathBuf::from(path),
       port,
       state,
+      device: None,
       rss_bytes: None,
       cpu_pct: None,
     }

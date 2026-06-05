@@ -77,6 +77,10 @@ pub enum ListRow {
     /// rows that aren't currently running — the column renders `—`
     /// in that case so the slot stays aligned across the table.
     port: Option<u16>,
+    /// Launch device selector (`CUDA0`, `Vulkan1`, etc.) when set.
+    /// `None` for rows that aren't currently running or have no
+    /// explicit device override.
+    device: Option<String>,
     /// Launch identity the row is bound to. `Some(id)` only for
     /// rows in the `▶ Running` group — that's how the right pane
     /// disambiguates between duplicate launches of the same model.
@@ -129,6 +133,8 @@ pub struct RunningLaunchRow {
   pub path: PathBuf,
   pub port: u16,
   pub state: SurfaceState,
+  /// Launch device selector (`CUDA0`, `Vulkan1`, etc.) when set.
+  pub device: Option<String>,
 }
 
 /// Group `models` into:
@@ -203,6 +209,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         surface_state_for(m, inputs.model_states),
         inputs.model_ports.get(&m.path).copied(),
         None,
+        None,
       ));
     }
   }
@@ -243,6 +250,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         surface_state_for(m, inputs.model_states),
         inputs.model_ports.get(&m.path).copied(),
         None,
+        None,
       ));
     }
     // Visual separator between favorites and folder groups —
@@ -270,6 +278,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         surface_state_for(m, inputs.model_states),
         inputs.model_ports.get(&m.path).copied(),
         None,
+        None,
       ));
     }
   }
@@ -283,6 +292,7 @@ fn running_row(m: &DiscoveredModel, launch: &RunningLaunchRow) -> ListRow {
     false,
     launch.state,
     Some(launch.port),
+    launch.device.clone(),
     Some(launch.launch_id.clone()),
   );
   // The favorite glyph drops on Running rows so two launches of the
@@ -315,6 +325,7 @@ fn running_row_stub(launch: &RunningLaunchRow) -> ListRow {
     favorite: false,
     state: launch.state,
     port: Some(launch.port),
+    device: launch.device.clone(),
     launch_id: Some(launch.launch_id.clone()),
   }
 }
@@ -350,6 +361,7 @@ fn model_row(
   favorite: bool,
   state: SurfaceState,
   port: Option<u16>,
+  device: Option<String>,
   launch_id: Option<String>,
 ) -> ListRow {
   let (arch, quant, native_ctx, mode_hint, cached_weights_bytes) = match &m.metadata {
@@ -379,6 +391,7 @@ fn model_row(
     favorite,
     state,
     port,
+    device,
     launch_id,
   }
 }
@@ -457,6 +470,7 @@ const PREFERRED_NAME_W: usize = 33;
 /// table-definition time).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ColumnId {
+  Device,
   Arch,
   Quant,
   Ctx,
@@ -485,6 +499,7 @@ struct Column {
 /// - `Size` (10): top decision driver — "will it fit in VRAM".
 /// - `Ctx`  (20): use-case fit (context length).
 /// - `Quant` (30): quality/fit signal.
+/// - `Device` (35): which GPU device this launch targets.
 /// - `Arch` (40): mostly inferable from the name.
 /// - `Mode` (50): almost always `Chat`; low entropy. Same weight
 ///   as `Port` so they drop together once the budget tightens.
@@ -494,6 +509,12 @@ struct Column {
 /// Source order is the display order. Picker reorders by rank only
 /// for the visibility decision.
 const COLUMNS: &[Column] = &[
+  Column {
+    id: ColumnId::Device,
+    label: "Device",
+    width: 9,
+    rank: 35,
+  },
   Column {
     id: ColumnId::Arch,
     label: "Arch",
@@ -940,12 +961,14 @@ fn column_value(id: ColumnId, model: &ListRow) -> String {
     weights_bytes,
     mode_hint,
     port,
+    device,
     ..
   } = model
   else {
     return String::new();
   };
   match id {
+    ColumnId::Device => device.as_deref().unwrap_or("—").to_string(),
     ColumnId::Arch => arch.clone(),
     ColumnId::Quant => quant.clone(),
     ColumnId::Ctx => native_ctx.map(format_tokens).unwrap_or_else(|| "—".into()),
@@ -1184,12 +1207,14 @@ mod tests {
         path: m.path.clone(),
         port: 41101,
         state: SurfaceState::Ready,
+        device: None,
       },
       RunningLaunchRow {
         launch_id: "L1".into(),
         path: m.path.clone(),
         port: 41100,
         state: SurfaceState::Ready,
+        device: None,
       },
     ];
     let rows = build_rows(RowInputs {
@@ -1236,6 +1261,7 @@ mod tests {
       path: a.path.clone(),
       port: 41100,
       state: SurfaceState::Ready,
+      device: None,
     }];
     let recent = vec![a.path.clone(), b.path.clone()];
     let rows = build_rows(RowInputs {
@@ -1409,6 +1435,7 @@ mod tests {
       path: a.path.clone(),
       port: 41100,
       state: SurfaceState::Ready,
+      device: None,
     }];
     let rows_with_running = build_rows(RowInputs {
       models: std::slice::from_ref(&a),
@@ -1816,16 +1843,14 @@ mod tests {
   fn layout_preserves_declaration_order_when_high_rank_columns_drop() {
     // content_w = 76 (the 120-col golden's list pane). budget =
     // 76 - 3 - PREFERRED_NAME_W = 40 cells. Strict rank-tail
-    // cutoff takes Size, Ctx, Quant, Arch (sum 32) then stops at
-    // Mode (32+11=43 > 40). Port shares Mode's rank so it drops
-    // with Mode (same-rank tier breaks together). Source order
-    // preserved: Size (best rank) does not jump to the front.
+    // cutoff takes Size (cost 7), Ctx (8), Quant (8), Device (10)
+    // → sum 33 ≤ 40. Arch (cost 9) would be 42 > 40 → stop.
     let layout = layout_columns(76);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
     assert_eq!(
       ids,
       vec![
-        ColumnId::Arch,
+        ColumnId::Device,
         ColumnId::Quant,
         ColumnId::Ctx,
         ColumnId::Size

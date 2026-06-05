@@ -1109,6 +1109,7 @@ mod tests {
         favorite: false,
         state,
         port: None,
+        device: None,
         launch_id: None,
       }
     }
