@@ -411,7 +411,7 @@ fn open_focused_inline_edit(app: &mut App) {
           .effective_f32(field)
           .map(|v| format!("{v}"))
           .unwrap_or_default(),
-        KnobField::CacheTypeK | KnobField::CacheTypeV => {
+        KnobField::CacheTypeK | KnobField::CacheTypeV | KnobField::Device => {
           picker.effective_str(field).unwrap_or_default()
         }
         // Booleans are filtered out by the `is_editable` guard above.
@@ -514,6 +514,18 @@ fn commit_inline_edit(app: &mut App) -> bool {
         } else {
           Err(format!("expected one of {}", KV_CACHE_TYPES.join(", ")))
         }
+      }
+      KnobField::Device => {
+        // Device accepts any non-empty string; empty resets to default.
+        picker.set_user_str(
+          k,
+          if buffer.is_empty() {
+            None
+          } else {
+            Some(buffer.clone())
+          },
+        );
+        Ok(())
       }
       // Booleans don't have an editable buffer (the `is_editable()`
       // guard in `open_focused_inline_edit` blocks `e:edit` on these
@@ -3192,6 +3204,7 @@ mod tests {
       path: PathBuf::from("/m/qwen.gguf"),
       port: 41100,
       state: SurfaceState::Error,
+      device: None,
       rss_bytes: None,
       cpu_pct: None,
     }];
@@ -3220,6 +3233,7 @@ mod tests {
       path: PathBuf::from("/m/qwen.gguf"),
       port: 41200,
       state: SurfaceState::External,
+      device: None,
       rss_bytes: None,
       cpu_pct: None,
     }];
@@ -4289,6 +4303,7 @@ mod tests {
       path: PathBuf::from(path),
       port,
       state: SurfaceState::Ready,
+      device: None,
       rss_bytes: None,
       cpu_pct: None,
     }
