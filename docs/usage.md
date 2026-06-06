@@ -730,7 +730,12 @@ plus a `default` slot that emits no `--device` flag (auto-select).
 Backspace resets to `default`. The selector is passed through to
 `llama-server` verbatim, so only devices that binary actually exposes
 are offered — on a multi-vendor box, run a Vulkan-capable build to see
-every card. The bottom `extras` row holds the free-form argv tail for
+every card.
+
+The `device` row — and the matching `Device` column in the model list
+— appear **only when more than one GPU device is detected**. Single-GPU
+and CPU-only hosts never see them, so the launcher stays uncluttered
+when there's no device choice to make. The bottom `extras` row holds the free-form argv tail for
 flags the typed editor doesn't model; forbidden flags
 (`--host`, `--listen`, `--bind`, `--api-key`, `--ssl-*`) surface a
 red inline warning with secret values redacted.

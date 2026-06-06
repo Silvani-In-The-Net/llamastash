@@ -375,6 +375,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
         title,
         filter_chip_label: &filter_chip,
         focused: list_focused,
+        show_device: app.multi_device(),
       },
     );
   }

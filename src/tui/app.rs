@@ -1193,6 +1193,15 @@ impl App {
   /// row's `--device` selector has no catalog entry (stale/un-probed),
   /// or when the resolved binary is the default — in every one of
   /// those cases the row falls back to the plain default-path render.
+  /// Whether the host exposes more than one selectable GPU device.
+  /// Drives the multi-GPU UI gates: the launch picker's `device` row
+  /// and the model list's `Device` column only appear when `true`, so
+  /// single-GPU / CPU-only users aren't shown a control that can never
+  /// carry a choice.
+  pub fn multi_device(&self) -> bool {
+    self.device_catalog.len() > 1
+  }
+
   pub fn focused_override_device(&self) -> Option<&crate::launch::list_devices::LaunchDevice> {
     let rows = self.rendered_rows();
     let selector = match rows.get(self.list_cursor) {

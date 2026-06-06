@@ -336,19 +336,51 @@ impl LaunchPickerState {
     }
   }
 
-  /// Move cursor to the next row.
-  pub fn next_field(&mut self) {
-    let all = PickerField::all();
-    if let Some(i) = all.iter().position(|f| *f == self.field) {
-      self.field = all[(i + 1) % all.len()];
+  /// Whether the host exposes more than one selectable device. The
+  /// `device` row is hidden (rendered and skipped in navigation) when
+  /// `false` so single-GPU / CPU-only users don't see a row that can
+  /// only ever hold `default`.
+  pub fn multi_device(&self) -> bool {
+    self.device_catalog.len() > 1
+  }
+
+  /// Whether a row is currently shown / navigable. Only the `device`
+  /// row is conditional — gated on [`Self::multi_device`].
+  pub fn field_visible(&self, field: PickerField) -> bool {
+    match field {
+      PickerField::Knob(KnobField::Device) => self.multi_device(),
+      _ => true,
     }
   }
 
+  /// Move cursor to the next visible row.
+  pub fn next_field(&mut self) {
+    self.step_field(true);
+  }
+
+  /// Move cursor to the previous visible row.
   pub fn prev_field(&mut self) {
+    self.step_field(false);
+  }
+
+  /// Advance the cursor one step in `forward`/back direction, skipping
+  /// any hidden rows (e.g. `device` on single-GPU hosts).
+  fn step_field(&mut self, forward: bool) {
     let all = PickerField::all();
-    if let Some(i) = all.iter().position(|f| *f == self.field) {
-      let n = all.len();
-      self.field = all[(i + n - 1) % n];
+    let Some(i) = all.iter().position(|f| *f == self.field) else {
+      return;
+    };
+    let n = all.len();
+    for step in 1..=n {
+      let idx = if forward {
+        (i + step) % n
+      } else {
+        (i + n - step) % n
+      };
+      if self.field_visible(all[idx]) {
+        self.field = all[idx];
+        return;
+      }
     }
   }
 
@@ -662,6 +694,12 @@ mod tests {
   #[test]
   fn next_field_iterates_every_picker_row() {
     let mut s = LaunchPickerState::for_model("qwen");
+    // A 2-device catalog makes the `device` row visible so navigation
+    // visits every row. The single-GPU skip is covered separately.
+    s.device_catalog = vec![
+      dev("CUDA0", "CUDA", "GPU 0", "/usr/bin/llama-server"),
+      dev("CUDA1", "CUDA", "GPU 1", "/usr/bin/llama-server"),
+    ];
     let all = PickerField::all();
     assert!(
       all.len() > 14,
@@ -670,6 +708,23 @@ mod tests {
     for expected in all.iter().skip(1).chain(std::iter::once(&all[0])) {
       s.next_field();
       assert_eq!(s.field, *expected);
+    }
+  }
+
+  #[test]
+  fn navigation_skips_device_row_on_single_gpu() {
+    // Default picker has an empty catalog → the device row is hidden,
+    // so neither next_field nor prev_field ever lands on it.
+    let mut s = LaunchPickerState::for_model("qwen");
+    assert!(!s.multi_device());
+    let n = PickerField::all().len();
+    for _ in 0..n {
+      s.next_field();
+      assert_ne!(s.field, PickerField::Knob(KnobField::Device));
+    }
+    for _ in 0..n {
+      s.prev_field();
+      assert_ne!(s.field, PickerField::Knob(KnobField::Device));
     }
   }
 

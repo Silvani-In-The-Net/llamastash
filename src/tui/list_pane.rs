@@ -499,8 +499,10 @@ struct Column {
 /// - `Size` (10): top decision driver — "will it fit in VRAM".
 /// - `Ctx`  (20): use-case fit (context length).
 /// - `Quant` (30): quality/fit signal.
-/// - `Device` (35): which GPU device this launch targets.
 /// - `Arch` (40): mostly inferable from the name.
+/// - `Device` (40): which GPU device this launch targets. Only
+///   present on multi-GPU hosts (see [`layout_columns`]'s
+///   `show_device` gate); single-GPU users never see this column.
 /// - `Mode` (50): almost always `Chat`; low entropy. Same weight
 ///   as `Port` so they drop together once the budget tightens.
 /// - `Port` (50): only meaningful for the small subset of running
@@ -509,12 +511,6 @@ struct Column {
 /// Source order is the display order. Picker reorders by rank only
 /// for the visibility decision.
 const COLUMNS: &[Column] = &[
-  Column {
-    id: ColumnId::Device,
-    label: "Device",
-    width: 9,
-    rank: 35,
-  },
   Column {
     id: ColumnId::Arch,
     label: "Arch",
@@ -553,6 +549,13 @@ const COLUMNS: &[Column] = &[
     width: 6,
     rank: 50,
   },
+  // Rendered last (after Port) and gated on multi-GPU hosts.
+  Column {
+    id: ColumnId::Device,
+    label: "Device",
+    width: 9,
+    rank: 40,
+  },
 ];
 
 /// Layout decision for one render pass: which data columns survive
@@ -585,7 +588,7 @@ struct ColumnLayout {
 /// primary signal (the name) stays readable, and the cells that
 /// would otherwise be spent on a redundant Mode column fund a
 /// usable Name column instead.
-fn layout_columns(content_w: usize) -> ColumnLayout {
+fn layout_columns(content_w: usize, show_device: bool) -> ColumnLayout {
   let reserved_for_name = if content_w >= MARKER_W + PREFERRED_NAME_W {
     PREFERRED_NAME_W
   } else {
@@ -593,7 +596,14 @@ fn layout_columns(content_w: usize) -> ColumnLayout {
   };
   let budget = content_w.saturating_sub(MARKER_W + reserved_for_name);
 
-  let mut by_rank: Vec<(usize, &'static Column)> = COLUMNS.iter().enumerate().collect();
+  // The Device column only exists on multi-GPU hosts; on single-GPU /
+  // CPU-only hosts it's filtered out entirely so it never competes for
+  // the width budget or appears in the header.
+  let mut by_rank: Vec<(usize, &'static Column)> = COLUMNS
+    .iter()
+    .enumerate()
+    .filter(|(_, c)| show_device || c.id != ColumnId::Device)
+    .collect();
   by_rank.sort_by_key(|(_, c)| c.rank);
 
   let mut taken: Vec<(usize, &'static Column)> = Vec::with_capacity(COLUMNS.len());
@@ -705,6 +715,10 @@ pub struct RenderInputs<'a> {
   pub title: TitleInputs<'a>,
   pub filter_chip_label: &'a str,
   pub focused: bool,
+  /// Whether the host exposes more than one selectable GPU device.
+  /// When `false` the Device column is omitted entirely so single-GPU
+  /// users aren't shown a column that can never carry a choice.
+  pub show_device: bool,
 }
 
 /// Render `rows` into the supplied area using the active palette.
@@ -715,7 +729,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, palette: &Palette, input: Rende
   // so columns stay column-aligned).
   let inner_w = area.width.saturating_sub(2) as usize;
   let content_w = inner_w.saturating_sub(HIGHLIGHT_GUTTER);
-  let layout = layout_columns(content_w);
+  let layout = layout_columns(content_w, input.show_device);
 
   let rows = input.rows;
   let safe_selected = if rows.is_empty() {
@@ -1811,7 +1825,7 @@ mod tests {
   #[test]
   fn layout_picks_every_column_when_pane_is_wide() {
     // Pane wide enough for every data column plus generous Name.
-    let layout = layout_columns(200);
+    let layout = layout_columns(200, true);
     assert_eq!(
       layout.visible.len(),
       COLUMNS.len(),
@@ -1821,10 +1835,29 @@ mod tests {
   }
 
   #[test]
+  fn layout_omits_device_column_on_single_gpu() {
+    // Single-GPU / CPU-only hosts (show_device = false) never see the
+    // Device column, even on a pane wide enough for everything.
+    let single = layout_columns(200, false);
+    assert!(
+      single.visible.iter().all(|c| c.id != ColumnId::Device),
+      "Device column must be absent on single-GPU hosts"
+    );
+    assert_eq!(single.visible.len(), COLUMNS.len() - 1);
+    // Multi-GPU hosts get it, rendered last (after Port).
+    let multi = layout_columns(200, true);
+    assert_eq!(
+      multi.visible.last().map(|c| c.id),
+      Some(ColumnId::Device),
+      "Device renders last on multi-GPU hosts"
+    );
+  }
+
+  #[test]
   fn layout_drops_no_columns_when_only_zero_budget_remains() {
     // content_w = chrome + MIN_NAME_W → budget == 0. Nothing fits.
     // Name parks exactly at MIN_NAME_W.
-    let layout = layout_columns(MARKER_W + MIN_NAME_W);
+    let layout = layout_columns(MARKER_W + MIN_NAME_W, true);
     assert!(layout.visible.is_empty());
     assert_eq!(layout.name_w, MIN_NAME_W);
   }
@@ -1833,7 +1866,7 @@ mod tests {
   fn layout_keeps_lowest_rank_column_when_only_one_fits() {
     // Budget == one Size column (rank 10, cost 6+1=7). Name still
     // at MIN_NAME_W.
-    let layout = layout_columns(MARKER_W + MIN_NAME_W + 7);
+    let layout = layout_columns(MARKER_W + MIN_NAME_W + 7, true);
     assert_eq!(layout.visible.len(), 1);
     assert_eq!(layout.visible[0].id, ColumnId::Size);
     assert_eq!(layout.name_w, MIN_NAME_W);
@@ -1842,15 +1875,16 @@ mod tests {
   #[test]
   fn layout_preserves_declaration_order_when_high_rank_columns_drop() {
     // content_w = 76 (the 120-col golden's list pane). budget =
-    // 76 - 3 - PREFERRED_NAME_W = 40 cells. Strict rank-tail
-    // cutoff takes Size (cost 7), Ctx (8), Quant (8), Device (10)
-    // → sum 33 ≤ 40. Arch (cost 9) would be 42 > 40 → stop.
-    let layout = layout_columns(76);
+    // 76 - 3 - PREFERRED_NAME_W = 40 cells. Strict rank-tail cutoff
+    // takes Size (cost 7), Ctx (8), Quant (8), Arch (9) → sum 32 ≤ 40.
+    // Device (rank 40, cost 10) would be 42 > 40 → stop. Survivors
+    // keep their declaration order (Arch precedes Quant/Ctx/Size).
+    let layout = layout_columns(76, true);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
     assert_eq!(
       ids,
       vec![
-        ColumnId::Device,
+        ColumnId::Arch,
         ColumnId::Quant,
         ColumnId::Ctx,
         ColumnId::Size
@@ -1867,7 +1901,7 @@ mod tests {
     // primary signal (name) gets ~40 cells, data shrinks to
     // Ctx + Size only — Ctx wins over Quant because Ctx is rank
     // 20 (use-case fit) and Quant is rank 30.
-    let layout = layout_columns(58);
+    let layout = layout_columns(58, true);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
     assert_eq!(ids, vec![ColumnId::Ctx, ColumnId::Size]);
     assert!(
@@ -1881,12 +1915,12 @@ mod tests {
   fn layout_drops_columns_in_strict_rank_order_no_skipping() {
     // Once a column refuses to fit, the picker stops admitting
     // even smaller higher-rank columns. content_w = 76 → budget
-    // = 40. Size, Ctx, Quant, Arch fit (sum 32); Mode (11) → 43
-    // > 40 → break. Port (rank 50, cost 7) is *not* smuggled in
-    // even though 32+7=39 would have fit, because it shares
-    // Mode's rank tier — strict cutoff drops the whole tier
-    // atomically once it overruns.
-    let layout = layout_columns(76);
+    // = 40. Size, Ctx, Quant, Arch fit (sum 32); Device (rank 40,
+    // cost 10) → 42 > 40 → break. Port (rank 50, cost 7) is *not*
+    // smuggled in even though 32+7=39 would have fit, because the
+    // strict cutoff stops at the first overrun and never revisits
+    // higher ranks.
+    let layout = layout_columns(76, true);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
     assert!(
       !ids.contains(&ColumnId::Port),
@@ -1901,7 +1935,7 @@ mod tests {
     // drops with it (rather than slotting in because it's
     // cheaper). Predictable visibility: ranks determine drops,
     // not column widths.
-    let with_both = layout_columns(110);
+    let with_both = layout_columns(110, true);
     let with_both_ids: Vec<ColumnId> = with_both.visible.iter().map(|c| c.id).collect();
     assert!(
       with_both_ids.contains(&ColumnId::Mode) && with_both_ids.contains(&ColumnId::Port),
@@ -1909,7 +1943,7 @@ mod tests {
     );
     // 76 cells = the golden width. Mode doesn't fit (budget=40,
     // 32+11=43). Cutoff fires → Port drops too.
-    let neither = layout_columns(76);
+    let neither = layout_columns(76, true);
     let neither_ids: Vec<ColumnId> = neither.visible.iter().map(|c| c.id).collect();
     assert!(
       !neither_ids.contains(&ColumnId::Mode) && !neither_ids.contains(&ColumnId::Port),
@@ -1921,7 +1955,7 @@ mod tests {
   fn layout_grows_name_with_unspent_budget_on_wide_panes() {
     // At 130 cells (typical wide-mode list pane in a 200-col
     // terminal) every column fits and Name absorbs the rest.
-    let layout = layout_columns(130);
+    let layout = layout_columns(130, true);
     assert_eq!(layout.visible.len(), COLUMNS.len(), "all columns visible");
     let cols_w: usize = COLUMNS.iter().map(|c| c.width + COL_SEP_W).sum();
     assert_eq!(layout.name_w, 130 - MARKER_W - cols_w);

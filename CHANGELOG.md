@@ -6,7 +6,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Added
 
-- Multi-GPU device selection: the new `--device` / `-d` launch knob pins a model to one card instead of letting `llama-server` split it across every visible GPU. The TUI picker cycles the devices that `llama-server --list-devices` reports (`CUDA0`, `ROCm0`, `Vulkan0`, …); the default emits no flag (auto-select). Mixed-vendor hosts now surface every card in host stats, with per-device rows in `status --json`. (#14)
+- Multi-GPU device selection: the new `--device` / `-d` launch knob pins a model to one card instead of letting `llama-server` split it across every visible GPU. The TUI picker cycles the devices that `llama-server --list-devices` reports (`CUDA0`, `ROCm0`, `Vulkan0`, …); the default emits no flag (auto-select). The device row and the model list's `Device` column appear only when more than one GPU is detected, so single-GPU users see no change. Mixed-vendor hosts surface every card in host stats, with per-device rows in `status --json`. (#14)
 
 ## [0.0.2] — 2026-06-02
 
