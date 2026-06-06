@@ -74,46 +74,23 @@ pub(crate) fn normalize_pci(raw: &str) -> Option<String> {
   if trimmed.is_empty() {
     return None;
   }
-  // Try splitting on colons. Expected: [domain:]bus:device.fn
-  let parts: Vec<&str> = trimmed.splitn(4, ':').collect();
-  if parts.len() < 3 {
-    return None;
-  }
-  let domain = match parts.len() {
-    3 => {
-      // Format: bus:device.fn (no domain). Pad to 8 chars.
-      let bus = parts[0].trim();
-      let dev_fn = parts[1].trim();
-      let (dev, func) = if let Some(dot) = dev_fn.find('.') {
-        (dev_fn[..dot].trim(), dev_fn[dot + 1..].trim())
-      } else {
-        // No dot — treat the whole thing as the device, func=0.
-        (dev_fn, "0")
-      };
-      if bus.is_empty() || dev.is_empty() {
-        return None;
-      }
-      let bus_num = u8::from_str_radix(bus, 16).ok()?;
-      let dev_num = u8::from_str_radix(dev, 16).ok()?;
-      Some(format!(
-        "{:08x}:{:02x}:{:02x}.{}",
-        0, bus_num, dev_num, func
-      ))
-    }
-    4 => {
-      // Format: domain:bus:device.fn
-      let domain_str = parts[0].trim();
-      let bus_str = parts[1].trim();
-      let dev_fn = parts[2].trim();
-      let func = parts[3].trim();
-      let domain = u32::from_str_radix(domain_str, 16).ok()?;
-      let bus = u8::from_str_radix(bus_str, 16).ok()?;
-      let dev = u8::from_str_radix(dev_fn, 16).ok()?;
-      Some(format!("{:08x}:{:02x}:{:02x}.{}", domain, bus, dev, func))
-    }
-    _ => None,
+  // `[domain:]bus:device.function`. nvml / rocm-smi / vulkaninfo all
+  // emit the domain; lspci's short form omits it (domain 0 implied).
+  let parts: Vec<&str> = trimmed.split(':').collect();
+  let (domain, bus, dev_fn) = match parts.as_slice() {
+    [bus, dev_fn] => (0u32, *bus, *dev_fn),
+    [domain, bus, dev_fn] => (u32::from_str_radix(domain.trim(), 16).ok()?, *bus, *dev_fn),
+    _ => return None,
   };
-  domain
+  let bus = u8::from_str_radix(bus.trim(), 16).ok()?;
+  // Split `device.function`; a missing dot means function 0.
+  let (dev, func) = match dev_fn.trim().split_once('.') {
+    Some((d, f)) => (d.trim(), f.trim()),
+    None => (dev_fn.trim(), "0"),
+  };
+  let dev = u8::from_str_radix(dev, 16).ok()?;
+  let func = u8::from_str_radix(func, 16).ok()?;
+  Some(format!("{domain:08x}:{bus:02x}:{dev:02x}.{func:x}"))
 }
 
 /// What detection found. Always a complete snapshot — no
@@ -236,14 +213,12 @@ impl GpuInfo {
   }
 }
 
-/// `(name → PCI address, vendor:device → PCI address, enumeration
-/// order)` as returned by [`query_lspci`]. The named alias keeps the
-/// three consumers' signatures readable and drops the
-/// `clippy::type_complexity` allows.
+/// `(card name → PCI address, "vendor:device" → PCI address)` as
+/// returned by [`query_lspci`]. The named alias keeps the consumers'
+/// signatures readable and drops the `clippy::type_complexity` allows.
 type LspciMaps = (
   std::collections::BTreeMap<String, String>,
   std::collections::BTreeMap<String, String>,
-  Vec<String>,
 );
 
 /// lspci is Linux-only. On macOS/Windows the backend probes already
@@ -254,76 +229,94 @@ fn query_lspci() -> Option<LspciMaps> {
   None
 }
 
-/// Queried once per probe cycle: maps GPU names to PCI bus addresses
-/// (e.g. "NVIDIA GeForce RTX 3080" → "00000000:0f:00.0") and also
-/// returns the GPU list in enumeration order (index 0 → first GPU,
-/// index 1 → second GPU, etc.).
-///
-/// Returns `None` on non-Linux or when lspci is unavailable.
+/// Run `lspci -D -nn` and parse it into the lookup maps. Returns `None`
+/// when lspci is missing/fails or finds no GPU lines. `-nn` is required
+/// for the numeric `[vendor:device]` ids; `-D` forces the domain into
+/// the address so it matches the nvml/rocm canonical form.
 #[cfg(target_os = "linux")]
 fn query_lspci() -> Option<LspciMaps> {
-  let cmd = std::process::Command::new("lspci");
+  let mut cmd = std::process::Command::new("lspci");
+  cmd.args(["-D", "-nn"]);
   let output = run_with_timeout(cmd)?;
   if !output.status.success() {
     return None;
   }
   let stdout = String::from_utf8(output.stdout).ok()?;
+  let maps = parse_lspci(&stdout);
+  if maps.0.is_empty() && maps.1.is_empty() {
+    None
+  } else {
+    Some(maps)
+  }
+}
+
+/// Parse `lspci -D -nn` output into `(name → addr, "vendor:device" →
+/// addr)`. A GPU line looks like:
+/// `0000:0f:00.0 VGA compatible controller [0300]: NVIDIA Corporation GA102 [GeForce RTX 3080] [10de:2206] (rev a1)`
+/// — the leading token is the PCI bus address, and the trailing
+/// `[vvvv:dddd]` bracket (only present with `-nn`) is the numeric
+/// vendor:device id used to resolve a Vulkan device that reports
+/// `0xVVVV:0xDDDD` instead of a bus address.
+#[cfg(any(target_os = "linux", test))]
+fn parse_lspci(stdout: &str) -> LspciMaps {
   let mut name_map = std::collections::BTreeMap::new();
-  let mut index_order = Vec::new();
-  // Also build a PCI-ID map: "10de:2216" (vendor:device, lowercase hex,
-  // no "0x" prefix) → canonical PCI address. Used to resolve
-  // vulkaninfo's vendor:device IDs when pciBusLocation is empty.
   let mut pci_id_map = std::collections::BTreeMap::new();
   for line in stdout.lines() {
-    let trimmed = line.trim();
-    // Only VGA/Display/3D controllers.
-    if !trimmed.contains("VGA") && !trimmed.contains("Display") && !trimmed.contains("3D") {
+    let line = line.trim();
+    if !line.contains("VGA") && !line.contains("Display") && !line.contains("3D") {
       continue;
     }
-    // Extract PCI address from brackets: [... [10de:2216] (rev a1)]
-    if let Some(end) = trimmed.rfind(']') {
-      if let Some(start) = trimmed.rfind('[') {
-        let pci_id = &trimmed[start + 1..end];
-        if let Some(colon1) = pci_id.find(':') {
-          if let Some(colon2) = pci_id[colon1 + 1..].find(':') {
-            let vendor = &pci_id[..colon1];
-            // Accept NVIDIA (10de), AMD (1002), or Intel (8086)
-            if vendor == "10de" || vendor == "1002" || vendor == "8086" {
-              let bus = pci_id[..colon1].to_string();
-              let dev = pci_id[colon1 + 1..colon2].to_string();
-              let func = pci_id[colon2 + 1..].trim().to_string();
-              // Build canonical PCI: zero-pad domain to 8 chars, lowercase.
-              let addr = format!(
-                "{:08x}:{:02x}:{:02x}.{}",
-                0,
-                u8::from_str_radix(&bus, 16).ok()?,
-                u8::from_str_radix(&dev, 16).ok()?,
-                func
-              );
-              // Extract the card name: everything after the vendor and before the PCI ID
-              let name = trimmed[..start].trim().to_string();
-              if !name.is_empty() {
-                name_map.insert(name, addr.clone());
-              }
-              // PCI-ID key: lowercase vendor:device (no "0x" prefix)
-              let pci_key = format!(
-                "{:x}:{:x}",
-                u32::from_str_radix(vendor, 16).ok()?,
-                u32::from_str_radix(&pci_id[colon1 + 1..colon2], 16).ok()?
-              );
-              pci_id_map.insert(pci_key, addr.clone());
-              index_order.push(addr);
-            }
-          }
+    let Some((addr_tok, rest)) = line.split_once(' ') else {
+      continue;
+    };
+    let Some(addr) = normalize_pci(addr_tok) else {
+      continue;
+    };
+    if let Some((vendor, device)) = last_vendor_device(rest) {
+      pci_id_map.insert(format!("{vendor}:{device}"), addr.clone());
+    }
+    if let Some(name) = lspci_card_name(rest) {
+      name_map.insert(name, addr.clone());
+    }
+  }
+  (name_map, pci_id_map)
+}
+
+/// Find the last `[vvvv:dddd]` numeric vendor:device bracket in the
+/// line tail, returning lowercase `(vendor, device)` hex strings. The
+/// class bracket (`[0300]`) and the marketing-name bracket carry no
+/// colon / non-hex, so they're skipped.
+#[cfg(any(target_os = "linux", test))]
+fn last_vendor_device(s: &str) -> Option<(String, String)> {
+  let mut rest = s;
+  while let Some(open) = rest.rfind('[') {
+    if let Some(close_rel) = rest[open..].find(']') {
+      let inner = &rest[open + 1..open + close_rel];
+      if let Some((v, d)) = inner.split_once(':') {
+        let (v, d) = (v.trim(), d.trim());
+        if u16::from_str_radix(v, 16).is_ok() && u16::from_str_radix(d, 16).is_ok() {
+          return Some((v.to_lowercase(), d.to_lowercase()));
         }
       }
     }
+    rest = &rest[..open];
   }
-  if index_order.is_empty() {
-    None
-  } else {
-    Some((name_map, pci_id_map, index_order))
-  }
+  None
+}
+
+/// Best-effort card name: the text after the class-bracket `]:`, with
+/// the trailing `[vendor:device]` group trimmed. lspci names rarely
+/// equal the vendor tools' marketing strings, so this is a secondary
+/// fallback behind the PCI-id match.
+#[cfg(any(target_os = "linux", test))]
+fn lspci_card_name(rest: &str) -> Option<String> {
+  let after = rest.split_once("]:").map(|(_, t)| t).unwrap_or(rest).trim();
+  let name = after
+    .rsplit_once(" [")
+    .map(|(head, _)| head)
+    .unwrap_or(after)
+    .trim();
+  (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Resolve a canonical PCI address for a device.
@@ -344,7 +337,7 @@ fn resolve_device_id(device: &GpuDevice, lspci: &Option<LspciMaps>) -> String {
   // Fall back to lspci lookups (name map and PCI-ID map).
   lspci
     .as_ref()
-    .and_then(|(name_map, pci_id_map, _)| {
+    .and_then(|(name_map, pci_id_map)| {
       name_map
         .get(&device.name)
         .or_else(|| {
@@ -656,6 +649,56 @@ fn devices_match(a: &[GpuDevice], b: &[GpuDevice]) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn normalize_pci_canonicalizes_every_vendor_format() {
+    // nvml (8-char domain), rocm-smi (4-char domain), vulkaninfo
+    // (already canonical) and lspci's domain-less short form must all
+    // collapse to the same canonical string so cross-backend dedup
+    // matches the same physical card.
+    for raw in [
+      "00000000:0F:00.0", // nvml
+      "0000:0F:00.0",     // rocm-smi
+      "00000000:0f:00.0", // vulkaninfo
+      "0f:00.0",          // lspci short (no domain)
+    ] {
+      assert_eq!(
+        normalize_pci(raw).as_deref(),
+        Some("00000000:0f:00.0"),
+        "input {raw:?}"
+      );
+    }
+    // Distinct buses stay distinct.
+    assert_ne!(normalize_pci("0e:00.0"), normalize_pci("0f:00.0"));
+    // Garbage is rejected, not silently mangled.
+    assert_eq!(normalize_pci("not-a-pci"), None);
+    assert_eq!(normalize_pci(""), None);
+  }
+
+  #[test]
+  fn parse_lspci_maps_vendor_device_to_canonical_address() {
+    // `lspci -D -nn` shape: leading PCI address + trailing numeric
+    // [vendor:device] bracket.
+    let out = "\
+0000:0f:00.0 VGA compatible controller [0300]: NVIDIA Corporation GA102 [GeForce RTX 3080] [10de:2206] (rev a1)
+0000:0e:00.0 Display controller [0380]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [1002:744c] (rev c8)
+00:1f.3 Audio device [0403]: Intel Corporation Raptor Lake HD Audio [8086:7a50]
+";
+    let (_names, ids) = parse_lspci(out);
+    // The GPU rows resolve vendor:device -> canonical PCI address, even
+    // though the AMD line also carries an "[AMD/ATI]" name bracket
+    // earlier (the right-to-left scan picks the numeric one).
+    assert_eq!(
+      ids.get("10de:2206").map(String::as_str),
+      Some("00000000:0f:00.0")
+    );
+    assert_eq!(
+      ids.get("1002:744c").map(String::as_str),
+      Some("00000000:0e:00.0")
+    );
+    // The non-GPU audio line (no VGA/Display/3D) is ignored.
+    assert!(!ids.contains_key("8086:7a50"));
+  }
 
   #[test]
   fn normalize_card_name_strips_vulkan_driver_tag() {

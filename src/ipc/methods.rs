@@ -1226,15 +1226,10 @@ pub(crate) async fn start_model_inner(
   launch_params.ctx = resolved.knobs.ctx;
   launch_params.reasoning = resolved.knobs.reasoning.unwrap_or(false);
   launch_params.knobs = resolved.knobs;
-  // When no layer set a device (user left it on "default"), resolve
-  // to the first selector in the device catalog so the running
-  // launch view always shows a concrete device, not a blank.
-  if launch_params.knobs.device.is_none() {
-    let catalog = env.device_catalog.read().await;
-    if let Some(first) = catalog.first() {
-      launch_params.knobs.device = Some(first.selector.clone());
-    }
-  }
+  // Leave `device` exactly as the resolver chain set it. When no layer
+  // selected one it stays `None`, so `compose()` emits no `--device`
+  // and `llama-server` keeps its default (auto-select / split across
+  // every visible GPU) — the documented backwards-compatible behavior.
 
   // VRAM-aware ctx auto-fit. When every resolver layer left ctx
   // unset, the spawn would otherwise rely on llama.cpp's `--fit`,
@@ -1303,25 +1298,37 @@ pub(crate) async fn start_model_inner(
   // Pick the binary that owns the chosen `--device` selector. The
   // selector (`Vulkan0`, `CUDA0`, …) came from a specific binary's
   // `--list-devices`, so we must spawn *that* binary or the selector
-  // is invalid. Unset / empty device, or a selector not in the catalog
-  // (stale persisted value, catalog probe failed), falls back to the
-  // default binary with the selector left as-is for compose to emit.
-  let launch_binary = match launch_params.knobs.device.as_deref() {
-    Some(sel) if !sel.is_empty() => {
-      let catalog = env.device_catalog.read().await;
-      catalog
-        .iter()
-        .find(|d| d.selector == sel)
-        .map(|d| d.binary.clone())
-        .unwrap_or_else(|| {
-          log::warn!(
-            "device selector {sel:?} not in launch catalog; spawning default binary {}",
-            env.binary.display()
-          );
-          env.binary.clone()
-        })
+  // is invalid. Unset / empty device falls back to the default binary
+  // with no `--device`.
+  let selector = launch_params
+    .knobs
+    .device
+    .as_deref()
+    .filter(|s| !s.is_empty())
+    .map(str::to_string);
+  let launch_binary = match selector {
+    Some(sel) => {
+      let owning_binary = {
+        let catalog = env.device_catalog.read().await;
+        catalog
+          .iter()
+          .find(|d| d.selector == sel)
+          .map(|d| d.binary.clone())
+      };
+      owning_binary.unwrap_or_else(|| {
+        // Stale persisted selector or the catalog probe failed. Drop
+        // the selector so `compose()` doesn't emit an invalid
+        // `--device` the default binary would reject, and spawn the
+        // default binary with auto-select.
+        log::warn!(
+          "device selector {sel:?} not in launch catalog; dropping it and spawning default binary {}",
+          env.binary.display()
+        );
+        launch_params.knobs.device = None;
+        env.binary.clone()
+      })
     }
-    _ => env.binary.clone(),
+    None => env.binary.clone(),
   };
 
   let spawn_result = supervisor_spawn(ManagedSpawn {

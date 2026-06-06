@@ -251,7 +251,7 @@ fn backend_row<'a>(host: &HostMetricsSnapshot, palette: &'a Palette) -> Line<'a>
           None
         },
         if unknown_count > 0 {
-          Some("unknown · {} GPUs".into())
+          Some(format!("unknown · {}", pluralize_gpu(unknown_count)))
         } else {
           None
         },
