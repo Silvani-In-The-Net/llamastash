@@ -1,16 +1,17 @@
-//! HTTP `/health` probe for a launched `llama-server`.
+//! HTTP readiness probe for a launched backend process.
 //!
-//! Polls `http://127.0.0.1:<port>/health` every 500 ms until a 200
-//! response arrives or the timeout fires. Status 503 (the canonical
-//! "model still loading" shape) keeps us polling. Anything else is
-//! still a miss — `llama-server` only returns 200 once it's fully
-//! ready to serve requests.
+//! Polls `http://127.0.0.1:<port><path>` every 500 ms until the
+//! backend's ready status arrives or the timeout fires. The path + ready
+//! status come from the backend's `Readiness` declaration (llama.cpp =
+//! `/health` + `200`); a non-ready status (e.g. llama.cpp's `503`
+//! "model still loading") keeps us polling until the timeout.
 //!
-//! The probe is hand-rolled HTTP/1.1 (the request is constant, the
-//! response decoding is just "find the status line") to avoid a
-//! `reqwest` / `hyper` dep just for this. Real `llama-server`
-//! supports keep-alive, but the probe always sends `Connection:
-//! close` so we don't fight pipelining.
+//! The probe is hand-rolled HTTP/1.1 (the request is constant for a
+//! given launch — built once and reused across polls — and response
+//! decoding is just "find the status line") to avoid a `reqwest` /
+//! `hyper` dep just for this. Real `llama-server` supports keep-alive,
+//! but the probe always sends `Connection: close` so we don't fight
+//! pipelining.
 
 use std::time::{Duration, Instant};
 
@@ -90,8 +91,11 @@ pub async fn poll_until_ready(
 ) -> ProbeOutcome {
   let deadline = Instant::now() + opts.timeout;
   let mut last_status: Option<u16> = None;
+  // The request is constant for the whole poll loop — build it once
+  // rather than re-formatting the same bytes on every attempt.
+  let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
   loop {
-    match probe_once(port, opts.interval, path).await {
+    match probe_once(port, opts.interval, request.as_bytes()).await {
       Ok(status) if status == ready_status => return ProbeOutcome::Ready,
       Ok(status) => last_status = Some(status),
       Err(_) => {
@@ -110,13 +114,12 @@ pub async fn poll_until_ready(
 
 /// One probe attempt. Returns the HTTP status code on success;
 /// connect / read errors come back as `Err`.
-async fn probe_once(port: u16, op_timeout: Duration, path: &str) -> std::io::Result<u16> {
+async fn probe_once(port: u16, op_timeout: Duration, request: &[u8]) -> std::io::Result<u16> {
   let connect = TcpStream::connect(("127.0.0.1", port));
   let mut sock = tokio::time::timeout(op_timeout, connect)
     .await
     .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout"))??;
-  let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-  let write = sock.write_all(req.as_bytes());
+  let write = sock.write_all(request);
   tokio::time::timeout(op_timeout, write)
     .await
     .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "write timeout"))??;
@@ -195,6 +198,68 @@ mod tests {
       Some(503)
     );
     assert!(parse_status(b"not http").is_none());
+  }
+
+  /// Spawn a loopback responder that answers every connection with
+  /// `status` and forwards each request's first line over the channel so
+  /// a test can assert which path the probe actually requested. Loops
+  /// until the listener is dropped (task end).
+  async fn spawn_status_responder(
+    status: u16,
+  ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+      .await
+      .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+      loop {
+        let Ok((mut sock, _)) = listener.accept().await else {
+          break;
+        };
+        let mut buf = [0u8; 256];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        let _ = tx.send(req.lines().next().unwrap_or_default().to_string());
+        let resp = format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let _ = sock.write_all(resp.as_bytes()).await;
+      }
+    });
+    (port, rx)
+  }
+
+  #[tokio::test]
+  async fn poll_until_ready_honors_custom_path_and_ready_status() {
+    // Backend-declared readiness of /custom/ready + 204 must be used
+    // verbatim — proving the probe is no longer hardwired to /health/200.
+    let (port, mut rx) = spawn_status_responder(204).await;
+    let opts = ProbeOptions {
+      interval: Duration::from_millis(20),
+      timeout: Duration::from_secs(2),
+    };
+    let outcome = poll_until_ready(port, opts, "/custom/ready", 204).await;
+    assert_eq!(outcome, ProbeOutcome::Ready);
+    let request_line = rx.recv().await.expect("responder observed a request");
+    assert_eq!(request_line, "GET /custom/ready HTTP/1.1");
+  }
+
+  #[tokio::test]
+  async fn poll_until_ready_keeps_waiting_until_ready_status_matches() {
+    // Responder always answers 200; the declared ready status is 204, so
+    // the probe must never flip to Ready — proving ready_status is
+    // actually compared, not assumed to be 200.
+    let (port, _rx) = spawn_status_responder(200).await;
+    let opts = ProbeOptions {
+      interval: Duration::from_millis(20),
+      timeout: Duration::from_millis(150),
+    };
+    let outcome = poll_until_ready(port, opts, "/health", 204).await;
+    assert_eq!(
+      outcome,
+      ProbeOutcome::Timeout {
+        last_status: Some(200)
+      }
+    );
   }
 
   #[tokio::test]
