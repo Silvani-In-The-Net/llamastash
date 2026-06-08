@@ -139,16 +139,17 @@ Two release tracks:
 
 ## R3 (v0.0.3 checklist)
 
-- [ ] MultiGPU support (pr #14)
-- [ ] Find mmproj files for vision/audio etc (pr #15)
-- [ ] n-cpu-moe flag support (pr #20)
-- [ ] **Need brainstorm/plan**: Look into gpu/cpu offload split
+- [x] MultiGPU support (pr #14)
+- [x] Find mmproj files for vision/audio etc (pr #15)
+- [x] n-cpu-moe flag support (pr #20)
+- [ ] **gpu/cpu offload knobs (manual)**: expose the offload/placement flags llama-server has but llamastash doesn't surface as typed knobs — `--n-cpu-moe` (PR #20), `--tensor-split`, and optionally `--main-gpu` / `--split-mode`. Each follows the PR #20 pattern (~60 LOC through the central `KnobField`/`KnobSpec` table → argv, resolver, `start` tail-args, arch_defaults, last_params, Settings editor). `--cpu-moe` (redundant with `n-cpu-moe`) and `--override-tensor` (repeatable regex; already works via the `-- extra` tail) are deliberately left to free-form extras. Start by merging PR #20.
+- [ ] **Need brainstorm/plan**: Automatic gpu/cpu offload split — llamastash computes the optimal GPU/CPU layer split from VRAM budget + model size so oversized models load partially-offloaded instead of OOMing or silently going all-CPU (what Ollama/LM Studio do). Today `src/launch/defaults_table.rs` just sets `n_gpu_layers=99` and `src/launch/ctx_fit.rs` explicitly punts on partial offload ("treat 'any GPU layers' as 'all GPU layers'"). Needs per-layer GGUF sizing (today `src/gguf/memory.rs::estimate` only approximates a linear `weights × ngl/n_layers` fraction), a fitting solver that co-solves with `ctx_fit` for the shared VRAM budget, and MoE-awareness (prefer `n-cpu-moe` over dropping `ngl`). Split out from the manual-knobs item above.
 - [ ] `start` should support advanced params like TUI.
 - [ ] reorder knobs by importance in settings ui
 - [ ] **Surface mmproj/vision in the UI.** Multimodal projector auto-detection (PR #15, issue #13) attaches `--mmproj` daemon-side, but nothing tells the user a projector was found and the model launched vision-capable — they only learn by trying image input or reading daemon logs. Add a visible signal: e.g. a "vision" badge on the model row in the TUI list / `llamastash list`, and/or a line in the Settings/Logs tab and `show` output. Detection lives in `src/discovery/scanner.rs::find_mmproj`; the resolved path rides `LaunchParams.mmproj_path`.
 - [ ] **Need brainstorm/plan**: **Anthropic `/v1/messages` compatibility shim** on top of the OpenAI-compat proxy. Most agents do OpenAI; Claude Code prefers Anthropic shape.
 - [ ] **Need brainstorm/plan**: Multiple backend support
-  - [ ] **NPU support via Lemonade Server/FLM (Strix Halo / XDNA)**. llama.cpp has no XDNA backend; AMD's path is Lemonade Server (OpenAI-compatible, ONNX Runtime + VitisAI EP). Tier 1 (~300–500 LOC) is a `--upstream-url` passthrough: user runs Lemonade themselves, llamastash's proxy forwards to it and sources the model list from `/v1/models`. Tier 2 (~1.5–2.5 KLOC) promotes Lemonade to a first-class backend with autostart + supervision. Brainstorm: [`docs/brainstorms/2026-05-31-npu-backend-via-lemonade-requirements.md`](docs/brainstorms/2026-05-31-npu-backend-via-lemonade-requirements.md). Defer until a real user asks for it — Lemonade's ONNX-VitisAI model catalog is narrow and NPU quantization quality on Strix Halo is mixed enough to want measurement first.
+  - [ ] **NPU support via Lemonade Server/FLM (Strix Halo / XDNA)**. llama.cpp has no XDNA backend; AMD's path is Lemonade Server (OpenAI-compatible, ONNX Runtime + VitisAI EP). Tier 1 (~300–500 LOC) is a `--upstream-url` passthrough: user runs Lemonade themselves, llamastash's proxy forwards to it and sources the model list from `/v1/models`. Tier 2 (~1.5–2.5 KLOC) promotes Lemonade to a first-class backend with autostart + supervision. Brainstorm: [`docs/brainstorms/2026-05-31-npu-backend-via-lemonade-requirements.md`](docs/brainstorms/2026-05-31-npu-backend-via-lemonade-requirements.md).
   - [ ] vLLM if cheap to add.
   - [ ] MLX if cheap to add.
   - [ ] whispercpp??
