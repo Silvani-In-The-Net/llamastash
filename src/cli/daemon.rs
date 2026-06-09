@@ -464,6 +464,21 @@ pub(crate) fn build_options(
       opts.proxy.api_key = Some(key);
     }
   }
+  // Normalize a blank / whitespace-only `api_key` (e.g. `proxy.api_key:
+  // ""` hand-edited into config) to `None`. Without this the
+  // fail-closed backstop (`api_key.is_none()`) and the auth layer
+  // (`ProxyAuth` treats a blank key as no auth) would disagree, and a
+  // blank key on a non-loopback host would bind an *unauthenticated*
+  // LAN proxy while skipping the refusal. Treating blank as "no key"
+  // makes the backstop refuse (or the CLI provision a real key).
+  if opts
+    .proxy
+    .api_key
+    .as_deref()
+    .is_some_and(|k| k.trim().is_empty())
+  {
+    opts.proxy.api_key = None;
+  }
   // Ollama-compat: OR of (config field, `--ollama-compat` CLI flag,
   // `LLAMASTASH_OLLAMA_COMPAT` env var). Any one of the three enables
   // the mode — clearing it requires unsetting all three. The env var
@@ -1152,6 +1167,39 @@ mod tests {
     opts.proxy.host = Some("0.0.0.0".parse().unwrap());
     let cli = parse_cli(&["--config", config_path.to_str().unwrap(), "daemon", "start"]);
     (opts, cli)
+  }
+
+  #[test]
+  fn build_options_normalizes_blank_api_key_to_none() {
+    // Fail-closed guard: a blank `proxy.api_key` must not count as a
+    // key, or a non-loopback host would bind unauthenticated while the
+    // backstop (is_none) stayed silent.
+    // Serialize + clear the proxy env overrides so a concurrent
+    // env-driven test can't leak a key into this one.
+    let _env = crate::cli::test_lock::serialize();
+    let prev_key = std::env::var_os("LLAMASTASH_PROXY_API_KEY");
+    std::env::remove_var("LLAMASTASH_PROXY_API_KEY");
+    let cli = parse_cli(&["daemon", "start"]);
+    for blank in ["", "   ", "\t\n"] {
+      let config = Config {
+        proxy: crate::config::loader::ProxyConfig {
+          host: Some("0.0.0.0".parse().unwrap()),
+          api_key: Some(blank.to_string()),
+          ..crate::config::loader::ProxyConfig::default()
+        },
+        ..Config::default()
+      };
+      let opts =
+        build_options(None, None, false, false, None, false, &cli, &config).expect("build_options");
+      assert_eq!(
+        opts.proxy.api_key, None,
+        "blank api_key {blank:?} must normalize to None"
+      );
+      assert!(!opts.proxy.auth_enforced());
+    }
+    if let Some(v) = prev_key {
+      std::env::set_var("LLAMASTASH_PROXY_API_KEY", v);
+    }
   }
 
   #[test]
