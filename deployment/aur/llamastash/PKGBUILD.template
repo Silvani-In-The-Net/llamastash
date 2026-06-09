@@ -7,7 +7,7 @@
 pkgname=llamastash
 pkgver=${version}
 pkgrel=1
-pkgdesc='Fast, keyboard-driven TUI for launching local llama.cpp models'
+pkgdesc='Zero-overhead, terminal-native local-LLM launcher'
 arch=('x86_64' 'aarch64')
 url='https://github.com/llamastash/llamastash'
 license=('MIT')

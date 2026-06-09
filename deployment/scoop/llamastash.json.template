@@ -1,7 +1,7 @@
 {
   "$$schema": "https://raw.githubusercontent.com/ScoopInstaller/Scoop/master/schema.json",
   "version": "$version",
-  "description": "A fast, keyboard-driven TUI for running local models via llama.cpp",
+  "description": "Zero-overhead, terminal-native local-LLM launcher",
   "homepage": "https://github.com/llamastash/llamastash",
   "license": "MIT",
   "architecture": {
