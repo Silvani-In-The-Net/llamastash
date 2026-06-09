@@ -64,6 +64,9 @@ pub(crate) enum RouteDecision {
     /// where a different model could be answering on the same port
     /// by the time we connect.
     served_model_key: ModelId,
+    /// Upstream OpenAI path prefix (`None` → llama.cpp `/v1/...`,
+    /// `Some("/api")` → the Lemonade umbrella's `/api/v1/...`).
+    upstream_path_prefix: Option<String>,
     fallback: bool,
     fallback_reason: Option<String>,
   },
@@ -99,6 +102,14 @@ pub(crate) enum RouteDecision {
   /// `body.model` is absent or empty. Unit 3 emits 400
   /// `invalid_request` with `code: "model_required"`.
   ModelRequired,
+  /// The resolved model is served by a managed-multiplexer backend whose
+  /// umbrella isn't running. Emitted for a Lemonade-tagged row when no
+  /// `lemond` umbrella is registered/Ready — a clean 503 instead of routing
+  /// a GGUF-shaped auto-start that would fail on the missing local file.
+  BackendUnavailable {
+    backend: String,
+    requested_model: String,
+  },
 }
 
 /// Errors raised before [`decide`] returns — these escape the
@@ -209,6 +220,15 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
     }
   };
 
+  // Lemonade-backed models are served by the shared `lemond` umbrella, not
+  // a per-model supervisor: route them to the umbrella's port with the
+  // `/api` prefix Lemonade serves OpenAI on (R10/R11). Handled before the
+  // GGUF supervisor walk because a Lemonade row has no local file for the
+  // path-match (or the GGUF auto-start) to key on.
+  if resolved.source == crate::discovery::ModelSource::Lemonade.label() {
+    return decide_lemonade(state, requested, &resolved).await;
+  }
+
   // Walk the supervisor snapshot for a Ready entry serving the
   // resolved row's path. Two HashMap lookups + one state read each
   // — well within the hot-path budget the plan asks for.
@@ -222,6 +242,7 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
         port: model.port(),
         served_model_id: served_name_for_row(&resolved),
         served_model_key: model.id().clone(),
+        upstream_path_prefix: None,
         fallback: false,
         fallback_reason: None,
       };
@@ -236,6 +257,41 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
     requested_model: requested,
     resolved_row: Box::new(resolved),
     arch,
+  }
+}
+
+/// Routing decision for a Lemonade-backed model. The shared `lemond`
+/// umbrella serves every Lemonade model, so this forwards to the umbrella's
+/// port (with the `/api` OpenAI prefix) when it is registered + Ready, and
+/// returns [`RouteDecision::BackendUnavailable`] otherwise. Lemonade's chat
+/// endpoint autoloads, so no per-model launch is needed on the hot path.
+async fn decide_lemonade(
+  state: &Arc<ProxyState>,
+  requested: String,
+  resolved: &CatalogRow,
+) -> RouteDecision {
+  match state
+    .ctx
+    .supervisors
+    .get(&crate::backend::lemonade::umbrella_launch_id())
+    .await
+  {
+    Some(umbrella) if matches!(umbrella.state().await, ManagedState::Ready) => {
+      RouteDecision::ReadyAt {
+        port: umbrella.port(),
+        served_model_id: served_name_for_row(resolved),
+        // The umbrella's own ModelId — the forward path re-verifies and
+        // takes an inflight guard against this supervisor entry.
+        served_model_key: umbrella.id().clone(),
+        upstream_path_prefix: Some("/api".to_string()),
+        fallback: false,
+        fallback_reason: None,
+      }
+    }
+    _ => RouteDecision::BackendUnavailable {
+      backend: crate::backend::lemonade::LEMONADE_BACKEND_ID.to_string(),
+      requested_model: requested,
+    },
   }
 }
 
@@ -350,6 +406,7 @@ pub(crate) async fn handle_not_running(
           port,
           served_model_id: &served,
           served_model_key: &model_id,
+          upstream_path_prefix: None,
           fallback: false,
           fallback_reason: None,
         },
@@ -380,6 +437,7 @@ pub(crate) async fn handle_not_running(
             port: pick.port,
             served_model_id: &pick.served_model_id,
             served_model_key: &pick.model_id,
+            upstream_path_prefix: None,
             fallback: true,
             fallback_reason: Some(reason),
           },
@@ -475,8 +533,15 @@ async fn collect_fallback_candidates(state: &Arc<ProxyState>) -> Vec<FallbackCan
     by_path.insert(m.path.to_string_lossy().into_owned(), m);
   }
 
+  let umbrella_id = crate::backend::lemonade::umbrella_launch_id();
   let mut out: Vec<FallbackCandidate> = Vec::with_capacity(sup_snap.len());
-  for (_launch_id, model) in sup_snap.into_iter() {
+  for (launch_id, model) in sup_snap.into_iter() {
+    // The Lemonade umbrella is a multiplexer process, not a servable
+    // model — never offer it as a family-MRU fallback (it serves OpenAI
+    // under `/api/v1`, and a bare `/v1` forward to it 404s anyway).
+    if launch_id == umbrella_id {
+      continue;
+    }
     if !matches!(model.state().await, ManagedState::Ready) {
       continue;
     }

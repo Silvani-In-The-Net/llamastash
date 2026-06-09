@@ -1455,21 +1455,18 @@ pub(crate) async fn start_model_inner(
   // Selection honors the per-model override then the R13 identity rule
   // (`Auto` → GGUF binds llama.cpp). The orchestrator owns the branch on
   // plan shape: the process-per-model arm feeds the supervisor; the
-  // managed-multiplexer arm is wired in Unit 3.
+  // managed-multiplexer arm ensures the shared umbrella + delegates.
   let inference_backend = crate::backend::resolve_backend(&identity, launch_params.backend);
   let launch_spec =
     match inference_backend.prepare_launch(&launch_params, port, launch_binary, scaled_probe) {
       LaunchPlan::SpawnProcess(spec) => spec,
-      LaunchPlan::DelegateToManager(_) => {
-        // No managed-multiplexer backend is registered on this build, so
-        // selection never returns one. Release the reserved port and fail
-        // cleanly rather than silently dropping the launch. (A managed-
-        // multiplexer engine wires this arm to ensure its umbrella.)
-        ctx.supervisors.release_reserved_port(port).await;
-        return Err(ErrorObject::new(
-          ErrorCode::InternalError,
-          "managed-multiplexer backends are not yet supported".to_string(),
-        ));
+      LaunchPlan::DelegateToManager(spec) => {
+        // Managed-multiplexer (Lemonade): ensure the shared umbrella is up
+        // and delegate the model to it, rather than spawning a per-model
+        // child. Routing of a Lemonade model's requests through the proxy
+        // is handled separately (catalog-source-based; see `proxy::route`).
+        return start_delegated_lemonade(ctx, spec, port, id, identity, log_path, launch_params)
+          .await;
       }
     };
 
@@ -1551,6 +1548,91 @@ pub(crate) async fn start_model_inner(
     model_id: id,
     port,
     model,
+    log_path,
+  })
+}
+
+/// Start a model on a managed-multiplexer backend (Lemonade): ensure the
+/// shared `lemond` umbrella is supervised + ready, then preload the model
+/// through its API. Returns a [`StartedLaunch`] anchored on the umbrella
+/// (the supervised process), so status + stop see one umbrella for all
+/// Lemonade models. Routing of inference is handled by the proxy
+/// (catalog-source-based; see [`crate::proxy::route`]).
+async fn start_delegated_lemonade(
+  ctx: &MethodContext,
+  spec: crate::backend::ManagerLaunchSpec,
+  reserved_port: u16,
+  id: ModelId,
+  identity: ModelIdentity,
+  log_path: PathBuf,
+  params: LaunchParams,
+) -> Result<StartedLaunch, ErrorObject> {
+  use crate::backend::lemonade::{ensure_umbrella, umbrella_launch_id, LemonadeClient};
+
+  let umbrella = match ensure_umbrella(
+    &ctx.supervisors,
+    reserved_port,
+    spec.umbrella,
+    log_path.clone(),
+  )
+  .await
+  {
+    Ok(m) => m,
+    Err(e) => {
+      ctx.supervisors.release_reserved_port(reserved_port).await;
+      return Err(ErrorObject::new(
+        ErrorCode::InternalError,
+        format!("lemonade umbrella failed to start: {e}"),
+      ));
+    }
+  };
+  // The umbrella owns its registry port now; drop the in-flight reservation
+  // (also frees `reserved_port` when an already-running umbrella was reused).
+  ctx.supervisors.release_reserved_port(reserved_port).await;
+  let umbrella_port = umbrella.port();
+
+  // Preload the model so an explicit launch makes it resident (chat would
+  // autoload too). Best-effort: a load failure (e.g. a non-registry name
+  // from a GGUF+override launch) is logged but does not fail the umbrella
+  // start — the umbrella is up and real registry models autoload on chat.
+  match LemonadeClient::new(umbrella_port) {
+    Ok(client) => {
+      if let Err(e) = client.load(&spec.model.name).await {
+        log::warn!(
+          "lemonade: preload of `{}` failed (umbrella is up; chat will autoload): {e}",
+          spec.model.name
+        );
+      }
+    }
+    Err(e) => log::warn!("lemonade: could not build client to preload: {e}"),
+  }
+
+  // Persist a running snapshot at the umbrella port for status visibility.
+  let pid = umbrella.pid().await.unwrap_or(0) as i32;
+  let started_at = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|d| d.as_secs())
+    .unwrap_or_default();
+  ctx
+    .state
+    .mutate(|s| {
+      s.running
+        .retain(|r| !(r.id == identity && r.port == umbrella_port));
+      s.running.push(RunningSnapshot {
+        id: identity.clone(),
+        pid,
+        port: umbrella_port,
+        started_at,
+        params: params.clone(),
+      });
+    })
+    .await;
+
+  Ok(StartedLaunch {
+    launch_id: umbrella_launch_id(),
+    model_id: id,
+    port: umbrella_port,
+    model: umbrella,
     log_path,
   })
 }
