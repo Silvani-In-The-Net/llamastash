@@ -126,15 +126,12 @@ pub(crate) fn display_size(row: &CatalogRow) -> String {
     .unwrap_or_else(|| "?".to_string())
 }
 
-/// Backend id that serves a catalog row, from its source label (R14):
-/// the Lemonade discovery source maps to `lemonade`; every local-file
-/// source (user / huggingface / ollama / lm-studio) to `llamacpp`.
-pub(crate) fn backend_for_source(source: &str) -> &'static str {
-  if source == "lemonade" {
-    "lemonade"
-  } else {
-    "llamacpp"
-  }
+/// Backend id that serves a catalog row, from its source label (R14).
+/// Every local-file source (user / huggingface / ollama / lm-studio) maps
+/// to `llamacpp`. A future managed-multiplexer backend registers its own
+/// discovery source and adds an arm here.
+pub(crate) fn backend_for_source(_source: &str) -> &'static str {
+  "llamacpp"
 }
 
 /// JSON projection of `list_models` rows. Stable shape — agents pin
@@ -155,8 +152,8 @@ pub fn list_json(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) -> 
         "parent": r.parent,
         "source": r.source,
         // Backend that serves this row (R14 badge): derived from the
-        // source label — a Lemonade-registry row is served by lemonade,
-        // every local-file source by the direct llama.cpp backend.
+        // source label — every local-file source is served by the direct
+        // llama.cpp backend.
         "backend": backend_for_source(&r.source),
         "arch": r.arch,
         "quant": r.quant,
@@ -922,9 +919,12 @@ mod tests {
   #[test]
   fn status_renders_and_serializes_backends_block() {
     let _g = ColorGuard::set(false);
+    // Second row is a synthetic managed-multiplexer backend (no concrete
+    // one ships on this branch) — proves the renderer handles N backends,
+    // the not-installed state, and the managed lifecycle generically.
     let backends = serde_json::json!([
       { "id": "llamacpp", "lifecycle": "process_per_model", "installed": true, "accelerators": ["cpu", "vulkan"] },
-      { "id": "lemonade", "lifecycle": "managed_multiplexer", "installed": false, "accelerators": ["cpu", "npu"] },
+      { "id": "example", "lifecycle": "managed_multiplexer", "installed": false, "accelerators": ["cpu", "npu"] },
     ]);
     let snap = StatusSnapshot {
       models: vec![],

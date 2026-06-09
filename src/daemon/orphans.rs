@@ -144,8 +144,8 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
       continue;
     }
     // Orphan re-adoption is process-based, so it is GGUF-only: a
-    // managed-multiplexer (Lemonade) snapshot has no local file and is
-    // served by the shared umbrella, not a re-adoptable per-model child.
+    // managed-multiplexer snapshot has no local file and is served by the
+    // shared umbrella, not a re-adoptable per-model child.
     // A non-GGUF identity therefore can't be re-adopted — drop it as stale.
     let path = match snap.id.as_gguf() {
       Some(g) => g.path.clone(),

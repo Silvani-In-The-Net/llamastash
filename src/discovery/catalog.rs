@@ -92,7 +92,8 @@ fn model_row(m: &DiscoveredModel) -> Value {
     "parent": m.parent,
     "source": m.source.label(),
     // Backend that serves this row (R14 badge / R13 routing). Additive —
-    // GGUF rows report "llamacpp", Lemonade-registry rows "lemonade".
+    // GGUF rows report "llamacpp"; a backend-registry source reports its
+    // own backend id.
     "backend": m.source.backend_id(),
     "split_siblings": m.split_siblings,
     "metadata": m.metadata.as_ref().map(|md| {

@@ -2029,7 +2029,7 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "extras": extras,
           "mode": mode_str,
           "prefer_port": prefer_port,
-          // Per-model backend override (R17); serde → "auto"/"llamacpp"/"lemonade".
+          // Per-model backend override (R17); serde → "auto"/"llamacpp".
           "backend": backend,
         }),
       )

@@ -416,29 +416,29 @@ mod tests {
 
   #[test]
   fn backend_identity_persists_and_reloads_across_every_map() {
-    // A Lemonade-registry identity (no local file) must persist + reload
+    // A backend-registry identity (no local file) must persist + reload
     // through favorites / last_params / presets / running alongside GGUF
     // rows — the persisted-key generalization (R12).
     use crate::backend::identity::BackendModelId;
     let dir = temp_state_dir("backend-id");
-    let lemon: ModelIdentity = BackendModelId {
-      backend: "lemonade".into(),
+    let bid: ModelIdentity = BackendModelId {
+      backend: "example".into(),
       name: "Qwen2.5-7B-Instruct-GGUF".into(),
     }
     .into();
     let mut s = DaemonState::default();
-    s.favorites.add(lemon.clone());
-    s.upsert_last_params(lemon.clone(), fake_params("/unused"));
+    s.favorites.add(bid.clone());
+    s.upsert_last_params(bid.clone(), fake_params("/unused"));
     let mut presets = Presets::new();
     presets.upsert(NamedPreset {
       name: "fast".into(),
       params: fake_params("/unused"),
     });
-    s.upsert_presets(lemon.clone(), presets);
+    s.upsert_presets(bid.clone(), presets);
     s.running.push(RunningSnapshot {
-      id: lemon.clone(),
+      id: bid.clone(),
       pid: 4321,
-      port: 13305,
+      port: 9100,
       started_at: 1_700_000_001,
       params: fake_params("/unused"),
     });
@@ -449,9 +449,9 @@ mod tests {
     assert_eq!(
       back.last_params[0].id.as_backend().unwrap().name,
       "Qwen2.5-7B-Instruct-GGUF",
-      "the reloaded identity is the Lemonade registry model"
+      "the reloaded identity is the backend registry model"
     );
-    assert!(back.favorites.contains(&lemon));
+    assert!(back.favorites.contains(&bid));
     fs::remove_dir_all(&dir).ok();
   }
 

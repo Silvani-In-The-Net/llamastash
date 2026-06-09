@@ -53,8 +53,8 @@ static ALL_FIELDS: LazyLock<Box<[PickerField]>> = LazyLock::new(|| {
 });
 
 /// Backend choices the picker cycles through, in ←/→ order. `Auto` plus one
-/// entry per concrete backend; a second backend (e.g. Lemonade) adds a
-/// variant here and the chooser row becomes visible.
+/// entry per concrete backend; a second backend adds a variant here and the
+/// chooser row becomes visible.
 const BACKEND_CHOICES: &[BackendChoice] = &[BackendChoice::Auto, BackendChoice::LlamaCpp];
 
 /// Whether the backend chooser row should appear — only when there's an
@@ -190,7 +190,8 @@ pub struct LaunchPickerState {
   pub inline_edit: InlineEdit,
   pub field: PickerField,
   /// Per-model backend choice (R17). `Auto` runs the identity rule (GGUF →
-  /// llama.cpp); `Lemonade` greys the knob rows the umbrella can't honor.
+  /// llama.cpp); a managed-multiplexer backend greys the knob rows it can't
+  /// honor.
   pub backend: BackendChoice,
   pub active_instances: usize,
   pub prefer_port: Option<u16>,
@@ -254,7 +255,8 @@ impl LaunchPickerState {
     }
   }
 
-  /// Cycle the per-model backend choice through Auto → llama.cpp → Lemonade.
+  /// Cycle the per-model backend choice through the registered choices
+  /// (currently Auto → llama.cpp).
   fn cycle_backend(&mut self, forward: bool) {
     let i = BACKEND_CHOICES
       .iter()
@@ -269,7 +271,7 @@ impl LaunchPickerState {
     self.backend = BACKEND_CHOICES[next];
   }
 
-  /// Display label for the backend row value (`auto` / `llamacpp` / `lemonade`).
+  /// Display label for the backend row value (`auto` / `llamacpp`).
   pub fn backend_label(&self) -> &'static str {
     self.backend.label()
   }
@@ -439,7 +441,7 @@ impl LaunchPickerState {
       // Backend chooser only when there's an actual choice — i.e. more than
       // one concrete backend is registered (R17). With only llama.cpp
       // (`[Auto, LlamaCpp]`) it's hidden + skipped in navigation; a second
-      // backend (e.g. Lemonade) flips it on.
+      // backend flips it on.
       PickerField::Backend => backend_choice_available(),
       PickerField::Knob(k) => knob_row_visible(k, self.multi_device()),
       PickerField::Extras => true,

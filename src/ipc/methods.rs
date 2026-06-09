@@ -1165,8 +1165,8 @@ pub(crate) async fn start_model_inner(
   // to re-open the file.
   let (id, arch) = resolve_model_id_and_arch(&parsed.model_path)?;
   // Persisted-keyspace key (state_store / last_params). The GGUF launch
-  // path always produces a `Gguf` identity; the Lemonade `DelegateToManager`
-  // path (Unit 3) will produce a `Backend` identity instead.
+  // path always produces a `Gguf` identity; a managed-multiplexer
+  // `DelegateToManager` path would produce a `Backend` identity instead.
   let identity: ModelIdentity = id.clone().into();
 
   // Mode resolution: explicit override > catalog hint > default to chat.

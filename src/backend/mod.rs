@@ -63,7 +63,8 @@ pub enum Lifecycle {
   /// lifecycle (spawn, probe, evict-by-kill). llama.cpp.
   ProcessPerModel,
   /// One long-lived supervised umbrella process; per-model start/stop
-  /// /list delegated to the backend's own API. Lemonade (Phase 2).
+  /// /list delegated to the backend's own API. Used by managed-multiplexer
+  /// backends (e.g. an NPU server).
   ManagedMultiplexer,
 }
 
@@ -118,7 +119,7 @@ pub struct ProcessLaunchSpec {
 /// this model" for a given backend.
 ///
 /// The two arms mirror the two lifecycle shapes (R2): process-per-model
-/// (llama.cpp) and managed-multiplexer (Lemonade). Adding the second arm
+/// (llama.cpp) and managed-multiplexer. Adding the second arm
 /// is additive — it does not change [`Backend::prepare_launch`]'s
 /// signature, which stays synchronous and infallible (the async work
 /// happens when the plan is *executed*).
@@ -136,7 +137,7 @@ pub enum LaunchPlan {
 /// named model. The umbrella is supervised by the same generic
 /// [`crate::daemon::supervisor`] that runs process-per-model children — it
 /// is just one long-lived child whose readiness is the backend's liveness
-/// endpoint (e.g. Lemonade's `/live`).
+/// endpoint (e.g. a `/live` probe).
 #[derive(Debug, Clone)]
 pub struct ManagerLaunchSpec {
   /// How to ensure the umbrella process is up (spawn it once if not).
@@ -232,10 +233,10 @@ impl KnobCapability {
     }
   }
 
-  /// No knobs honored. Lemonade (Phase 2) takes a model name, not
-  /// llama.cpp launch flags, so the typed-knob IR mostly doesn't apply —
-  /// set knobs drop and (Phase 2b) surface as unsupported. Widen only with
-  /// evidence that `lemond` honors a specific field.
+  /// No knobs honored. A managed-multiplexer backend takes a model name,
+  /// not llama.cpp launch flags, so the typed-knob IR mostly doesn't apply —
+  /// set knobs drop and surface as unsupported. Widen only with evidence
+  /// that the backend honors a specific field.
   pub fn none() -> Self {
     Self {
       supported: BTreeSet::new(),
@@ -277,9 +278,9 @@ pub trait Backend {
   ///
   /// A *static, backend-intrinsic* floor — llama.cpp always runs CPU (GPU
   /// targets are build-/host-specific and surfaced separately via the live
-  /// device catalog); Lemonade's value is CPU + NPU. The `status` backends
-  /// view unions this with host-derived signals (e.g. the llama.cpp device
-  /// catalog) for the full per-host picture.
+  /// device catalog); a managed-multiplexer backend might declare CPU + NPU.
+  /// The `status` backends view unions this with host-derived signals (e.g.
+  /// the llama.cpp device catalog) for the full per-host picture.
   fn accelerators(&self) -> AcceleratorSupport;
 
   /// Compute the stable identity for a model handled by this backend.
@@ -540,7 +541,7 @@ mod tests {
     // The managed-multiplexer arm: an umbrella ProcessLaunchSpec (probed
     // via a liveness endpoint) plus the model the umbrella should serve.
     let umbrella = ProcessLaunchSpec {
-      binary: PathBuf::from("/opt/lemonade/lemond"),
+      binary: PathBuf::from("/opt/example/server"),
       argv: vec![
         OsString::from("--host"),
         OsString::from("127.0.0.1"),

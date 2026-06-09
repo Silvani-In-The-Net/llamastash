@@ -1,36 +1,33 @@
 //! Generalized model identity at the backend seam (R12).
 //!
-//! Phase 1's [`crate::gguf::identity::ModelId`] is `(canonical path, BLAKE3
-//! of header)` — it assumes a **local GGUF file**. A managed-multiplexer
-//! backend (Lemonade — Phase 2) names models from a remote registry that
-//! have no local path or header. [`ModelIdentity`] is the seam-level union
-//! that lets both coexist.
+//! [`crate::gguf::identity::ModelId`] is `(canonical path, BLAKE3 of header)`
+//! — it assumes a **local GGUF file**. A managed-multiplexer backend names
+//! models from a remote registry that have no local path or header.
+//! [`ModelIdentity`] is the seam-level union that lets both coexist.
 //!
 //! # Why a wrapper enum, not "make `ModelId` an enum"
 //!
 //! `ModelId` (the GGUF struct) is a persisted key threaded through
 //! `state.json`, the proxy MRU, the failure tracker, the router, and the
 //! CLI/JSON wire shapes (~30 sites that read `id.path`). Turning *that*
-//! struct into an enum would break every one of them — and in Phase 2's
-//! foundational slice, Lemonade identities are **not** persisted yet
-//! (catalog/discovery is deferred to Phase 2b). So the generalization lives
-//! here, at the [`crate::backend::Backend::identify`] boundary, leaving the
-//! GGUF `ModelId` — and therefore `state.json` — byte-for-byte unchanged.
+//! struct into an enum would break every one of them. So the generalization
+//! lives here, at the [`crate::backend::Backend::identify`] boundary, leaving
+//! the GGUF `ModelId` — and therefore `state.json` — byte-for-byte unchanged.
 //!
-//! When Phase 2b persists Lemonade-backed models, it threads
-//! [`ModelIdentity`] through the stores; the `#[serde(untagged)]`
-//! representation already round-trips a legacy `{ "path", "header_blake3" }`
-//! row into [`ModelIdentity::Gguf`], so that step needs no migration either.
+//! The `#[serde(untagged)]` representation round-trips a legacy
+//! `{ "path", "header_blake3" }` row straight into [`ModelIdentity::Gguf`],
+//! so backend-registry identities persist through the same stores with no
+//! schema break and no migration.
 
 use serde::{Deserialize, Serialize};
 
 use crate::gguf::identity::ModelId;
 
 /// Identity of a model served by a backend-managed registry (no local
-/// GGUF), e.g. `("lemonade", "Qwen2.5-7B-Instruct-GGUF")`.
+/// GGUF), e.g. `("example", "Qwen2.5-7B-Instruct-GGUF")`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct BackendModelId {
-  /// The owning backend's stable id (e.g. `"lemonade"`).
+  /// The owning backend's stable id (e.g. `"example"`).
   pub backend: String,
   /// The model name as the backend's registry / API knows it.
   pub name: String,
@@ -49,7 +46,7 @@ pub enum ModelIdentity {
   /// Declared first so an ambiguous-free legacy `{path, header_blake3}`
   /// object matches here during untagged deserialization.
   Gguf(ModelId),
-  /// A backend-registry model with no local file (Lemonade — Phase 2).
+  /// A backend-registry model with no local file.
   Backend(BackendModelId),
 }
 
@@ -134,13 +131,13 @@ mod tests {
   #[test]
   fn backend_variant_round_trips() {
     let identity = ModelIdentity::Backend(BackendModelId {
-      backend: "lemonade".into(),
+      backend: "example".into(),
       name: "Qwen2.5-7B-Instruct-GGUF".into(),
     });
     let json = serde_json::to_string(&identity).unwrap();
     let back: ModelIdentity = serde_json::from_str(&json).unwrap();
     assert_eq!(identity, back);
-    assert_eq!(back.as_backend().unwrap().backend, "lemonade");
+    assert_eq!(back.as_backend().unwrap().backend, "example");
     assert!(back.as_gguf().is_none());
   }
 
@@ -149,7 +146,7 @@ mod tests {
     let gguf = ModelIdentity::Gguf(compute("/m/Qwen2.5.gguf", b"abc"));
     assert_eq!(gguf.display_name(), "Qwen2.5.gguf");
     let backend = ModelIdentity::Backend(BackendModelId {
-      backend: "lemonade".into(),
+      backend: "example".into(),
       name: "Llama-3.1-8B".into(),
     });
     assert_eq!(backend.display_name(), "Llama-3.1-8B");
@@ -158,15 +155,15 @@ mod tests {
   #[test]
   fn backend_ids_differ_by_name_and_backend() {
     let a = BackendModelId {
-      backend: "lemonade".into(),
+      backend: "example".into(),
       name: "m1".into(),
     };
     let b = BackendModelId {
-      backend: "lemonade".into(),
+      backend: "example".into(),
       name: "m2".into(),
     };
     let c = BackendModelId {
-      backend: "lemonade".into(),
+      backend: "example".into(),
       name: "m1".into(),
     };
     assert_ne!(a, b);

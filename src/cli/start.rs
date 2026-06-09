@@ -481,8 +481,8 @@ mod tests {
       knobs: TypedKnobs::default(),
       extras: vec![],
     };
-    let v = build_payload("/m/a.gguf", "chat", &p, Some("lemonade"));
-    assert_eq!(v["backend"], serde_json::json!("lemonade"));
+    let v = build_payload("/m/a.gguf", "chat", &p, Some("llamacpp"));
+    assert_eq!(v["backend"], serde_json::json!("llamacpp"));
   }
 
   fn osvec(args: &[&str]) -> Vec<OsString> {
