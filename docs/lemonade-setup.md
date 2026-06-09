@@ -1,0 +1,92 @@
+# Lemonade backend setup (NPU / multi-engine)
+
+LlamaStash can use [**Lemonade**](https://github.com/lemonade-sdk/lemonade)
+(`lemond`) as a second backend. Lemonade is a long-lived umbrella server that
+fans out to engines llama.cpp can't reach — most notably **NPU inference** on
+AMD Ryzen AI / XDNA hardware, plus ROCm, ONNX, and others.
+
+It is **opt-in and off by default**. A standard install never contacts
+`lemond`. llama.cpp stays the direct, zero-overhead default.
+
+> **LlamaStash does not install Lemonade.** You set up Lemonade and its
+> engines yourself; LlamaStash finds the `lemond` binary, supervises it, and
+> routes to it. This keeps the install lean and avoids shipping AMD's NPU
+> system stack.
+
+## 1. Install Lemonade
+
+Follow Lemonade's own instructions for your platform:
+<https://github.com/lemonade-sdk/lemonade>.
+
+Install the engines you want Lemonade to serve (e.g. its llama.cpp / ROCm /
+ONNX / Ryzen-AI backends). For **NPU** inference on AMD Ryzen AI you must also
+install AMD's NPU system stack — XRT, the NPU firmware, and `flm` — per AMD's
+documentation. **LlamaStash does not install any of that**; it only talks to a
+working `lemond`.
+
+Verify Lemonade works on its own before wiring it into LlamaStash:
+
+```sh
+lemond            # starts the umbrella (default port 13305)
+# in another shell:
+curl http://127.0.0.1:13305/api/v1/models
+```
+
+## 2. Point LlamaStash at it
+
+Enable the backend with any **one** of these (they OR together):
+
+- **Config** — in `config.yaml`:
+
+  ```yaml
+  lemonade:
+    enabled: true
+    # Optional: explicit path to the lemond binary. If omitted, LlamaStash
+    # looks for `lemond` (or `lemonade`) on your PATH.
+    binary: /opt/lemonade/lemond
+    # Optional: the loopback port lemond binds. Defaults to 13305.
+    port: 13305
+  ```
+
+- **Daemon flag** — `llamastash daemon start --lemonade`
+- **Env var** — `LLAMASTASH_LEMONADE=1`
+
+`binary` resolution: the explicit `lemonade.binary` path if set, otherwise
+`lemond` / `lemonade` on `PATH`.
+
+## 3. How LlamaStash uses it
+
+- **Supervises** one shared `lemond` umbrella (spawned from the resolved
+  binary; it is *not* downloaded). The umbrella's `/live` endpoint is the
+  readiness probe.
+- **Discovers** Lemonade models from `lemond`'s `/api/v1/models` and lists
+  them in the catalog tagged with the `lemonade` backend (list-only — pull
+  models with Lemonade's own tooling).
+- **Routes** inference for a Lemonade model through the OpenAI-compatible
+  proxy to the umbrella (`/api/v1/...`), loopback-only.
+- **Evicts** idle Lemonade models by unloading them from the umbrella
+  (`/api/v1/unload`) rather than killing the shared process — it stays up and
+  autoloads on the next request.
+
+## 4. Verify
+
+```sh
+llamastash status        # the `backends` block lists `lemonade` (installed?, cpu+npu)
+llamastash list          # Lemonade registry models appear, tagged `lemonade`
+```
+
+Send a chat request for a Lemonade model through the proxy and it routes to the
+umbrella. In the TUI Launch picker, the **Backend** row lets you force
+`lemonade` per model (knobs llama.cpp-specific are greyed — Lemonade takes a
+model name, not launch flags).
+
+## 5. Troubleshooting
+
+- **`503 backend_unavailable`** from the proxy — the umbrella isn't running.
+  Confirm Lemonade is enabled, `lemond` is resolvable (PATH or
+  `lemonade.binary`), and start the daemon with `--lemonade`.
+- **`status` shows `lemonade: not installed`** — `lemond` isn't on `PATH`.
+  Either add it to `PATH` or set `lemonade.binary` to its full path.
+- **No NPU acceleration** — Lemonade falls back to CPU/GPU when AMD's NPU
+  system stack (XRT / firmware / `flm`) isn't installed. Check Lemonade's own
+  diagnostics; that stack is AMD's to install, not LlamaStash's.

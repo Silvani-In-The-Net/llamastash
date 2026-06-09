@@ -207,6 +207,19 @@ To reach your models from another machine, opt into LAN mode with `--proxy-host 
 
 TLS is not yet implemented, so LAN mode is plaintext HTTP — keep it on a trusted network or put a TLS-terminating reverse proxy in front. Only the proxy data plane is ever exposed: the control plane and `llama-server` children always stay loopback (`--host 127.0.0.1`, enforced by the `extras` denylist).
 
+## NPU & multi-engine via Lemonade (opt-in)
+
+llama.cpp is the direct, zero-overhead default backend. For engines llama.cpp can't reach, LlamaStash exposes a **pluggable backend seam** and [Lemonade](https://github.com/lemonade-sdk/lemonade) (`lemond`) plugs in as a second backend — most notably **NPU inference** on AMD Ryzen AI / XDNA, plus ROCm / ONNX / others. It is **off by default**: a standard install never contacts `lemond`.
+
+Lemonade is a *managed-multiplexer* — one long-lived umbrella process serving many models behind an OpenAI-compatible API. LlamaStash:
+
+- **finds** `lemond` (explicit `lemonade.binary` or `PATH`) and **supervises** the shared umbrella — it never downloads or installs it;
+- **discovers** the umbrella's models from `/api/v1/models` and tags them with the `lemonade` backend (list-only);
+- **routes** inference for a Lemonade model through the loopback proxy to the umbrella (`/api/v1/...`);
+- **evicts** idle Lemonade models by API unload (the umbrella stays up and autoloads on the next request), never SIGTERM.
+
+Enable per-`[lemonade]` config (`enabled: true`), the `--lemonade` daemon flag, or `LLAMASTASH_LEMONADE=1`. **You install Lemonade and its engines yourself** (including AMD's NPU system stack — XRT / firmware / `flm` — which LlamaStash does not install). Full walkthrough: **[Lemonade setup](docs/lemonade-setup.md)**.
+
 ## Built to be safe to run
 
 ### Bearer-token loopback control plane
