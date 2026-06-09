@@ -383,44 +383,82 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // PortInUse / Unbound); Unit 5's IPC `status` handler reads it
   // via the clone attached to `ctx` above (§8).
   if opts.proxy.enabled {
-    let state = proxy::ProxyState::from_context_with_auth(
-      &ctx,
-      opts.proxy.ollama_compat,
-      opts.proxy.fallback_enabled,
-      opts.proxy.api_key.clone(),
-    );
-    let addr = proxy::server::loopback_addr(opts.proxy.effective_port());
-    let token_for_proxy = token.clone();
-    let status_for_proxy = std::sync::Arc::clone(&proxy_status_cell);
-    let serve_opts = proxy::server::ServeOptions {
-      header_read_timeout: std::time::Duration::from_secs(opts.proxy.header_read_timeout_secs),
-      ..proxy::server::ServeOptions::default()
-    };
-    // Idle-TTL eviction sweeper. Skipped entirely when
-    // `idle_ttl_secs = 0` (operator disabled it). Runs in parallel
-    // with the listener; uses the same shutdown token so daemon stop
-    // tears both down at once.
-    if opts.proxy.idle_ttl_secs > 0 {
-      let state_for_evict = std::sync::Arc::clone(&state);
-      let token_for_evict = token.clone();
-      let ttl = std::time::Duration::from_secs(opts.proxy.idle_ttl_secs);
-      supervisor::spawn_supervised("proxy_eviction_sweeper", async move {
-        proxy::eviction::run(state_for_evict, ttl, token_for_evict).await;
+    let host = opts.proxy.effective_host();
+    let addr = proxy::server::listen_addr(host, opts.proxy.effective_port());
+    // Fail-closed backstop: never expose a non-loopback proxy with no
+    // bearer key unless the operator explicitly opted out. The CLI
+    // `daemon start --proxy-host` path auto-provisions a key so users
+    // don't normally reach this; the backstop catches config-only and
+    // auto-spawn paths that bypass the CLI. The daemon and the control
+    // plane keep running — only the proxy listener is skipped.
+    if !host.is_loopback() && opts.proxy.api_key.is_none() && !opts.proxy.insecure_no_auth {
+      log::error!(
+        "proxy: refusing to bind {addr} without authentication. Set proxy.api_key \
+         (e.g. run `llamastash daemon start --proxy-host {host}` to auto-generate one) \
+         or pass --insecure-no-auth. Daemon continues without the proxy."
+      );
+      if let Ok(mut guard) = proxy_status_cell.write() {
+        *guard = ProxyStatus::RefusedInsecure { addr };
+      }
+    } else {
+      // Loud heads-up whenever the proxy faces the network.
+      if !host.is_loopback() {
+        let auth_note = if opts.proxy.api_key.is_some() {
+          "bearer auth required"
+        } else {
+          "NO authentication (--insecure-no-auth)"
+        };
+        let reachable = if host.is_unspecified() {
+          format!(
+            "port {} on all interfaces (use this machine's LAN IP)",
+            opts.proxy.effective_port()
+          )
+        } else {
+          format!("http://{addr}")
+        };
+        log::warn!(
+          "proxy: exposed on the LAN at {reachable} ({auth_note}); the control plane \
+           and llama-server children stay loopback"
+        );
+      }
+      let state = proxy::ProxyState::from_context_with_auth(
+        &ctx,
+        opts.proxy.ollama_compat,
+        opts.proxy.fallback_enabled,
+        opts.proxy.api_key.clone(),
+      );
+      let token_for_proxy = token.clone();
+      let status_for_proxy = std::sync::Arc::clone(&proxy_status_cell);
+      let serve_opts = proxy::server::ServeOptions {
+        header_read_timeout: std::time::Duration::from_secs(opts.proxy.header_read_timeout_secs),
+        ..proxy::server::ServeOptions::default()
+      };
+      // Idle-TTL eviction sweeper. Skipped entirely when
+      // `idle_ttl_secs = 0` (operator disabled it). Runs in parallel
+      // with the listener; uses the same shutdown token so daemon stop
+      // tears both down at once.
+      if opts.proxy.idle_ttl_secs > 0 {
+        let state_for_evict = std::sync::Arc::clone(&state);
+        let token_for_evict = token.clone();
+        let ttl = std::time::Duration::from_secs(opts.proxy.idle_ttl_secs);
+        supervisor::spawn_supervised("proxy_eviction_sweeper", async move {
+          proxy::eviction::run(state_for_evict, ttl, token_for_evict).await;
+        });
+      }
+      supervisor::spawn_supervised("proxy_listener", async move {
+        if let Err(e) = proxy::server::serve_with_options(
+          state,
+          addr,
+          token_for_proxy,
+          status_for_proxy,
+          serve_opts,
+        )
+        .await
+        {
+          log::warn!("proxy listener task ended with error: {e}");
+        }
       });
     }
-    supervisor::spawn_supervised("proxy_listener", async move {
-      if let Err(e) = proxy::server::serve_with_options(
-        state,
-        addr,
-        token_for_proxy,
-        status_for_proxy,
-        serve_opts,
-      )
-      .await
-      {
-        log::warn!("proxy listener task ended with error: {e}");
-      }
-    });
   } else {
     log::info!("proxy listener disabled in config; daemon stays IPC-only");
     if let Ok(mut guard) = proxy_status_cell.write() {

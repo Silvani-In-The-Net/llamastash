@@ -55,7 +55,13 @@ pub enum ProxyStatus {
   /// `proxy.enabled: false` in config; no listener was attempted.
   Disabled,
   /// Listener bound successfully and is accepting connections.
-  Listening { addr: SocketAddr },
+  /// `auth_enforced` is `true` when a bearer key is configured (the
+  /// data routes require `Authorization: Bearer`), `false` for the
+  /// keyless loopback default.
+  Listening {
+    addr: SocketAddr,
+    auth_enforced: bool,
+  },
   /// `EADDRINUSE` — the configured port is held by another process.
   /// Status surface reports the *attempted* address.
   PortInUse { addr: SocketAddr },
@@ -66,6 +72,13 @@ pub enum ProxyStatus {
     addr: SocketAddr,
     bind_error: String,
   },
+  /// A non-loopback bind was requested with no `api_key` and without
+  /// `insecure_no_auth`, so the daemon refused to expose the proxy
+  /// unauthenticated. The daemon and control plane keep running; `addr`
+  /// is the address it would have bound. Resolve by setting a key (the
+  /// CLI auto-provisions one on `daemon start --proxy-host`) or pass
+  /// `--insecure-no-auth` to opt into an unauthenticated LAN proxy.
+  RefusedInsecure { addr: SocketAddr },
 }
 
 /// Cheap-to-clone handle to the proxy's current status. The proxy
@@ -221,8 +234,18 @@ pub async fn serve_with_options(
   // Re-resolve the bound address (the kernel may have promoted a 0
   // port — useful in tests, harmless in production).
   let bound = listener.local_addr().unwrap_or(addr);
-  write_status(&status, ProxyStatus::Listening { addr: bound });
-  log::info!("proxy listener bound on http://{bound}");
+  let auth_enforced = state.auth.enforced();
+  write_status(
+    &status,
+    ProxyStatus::Listening {
+      addr: bound,
+      auth_enforced,
+    },
+  );
+  log::info!(
+    "proxy listener bound on http://{bound} (auth {})",
+    if auth_enforced { "enforced" } else { "off" }
+  );
 
   let tracker = Arc::new(ConnectionTracker {
     active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -501,7 +524,7 @@ mod tests {
   async fn wait_for_listening(status: &StatusCell, budget: Duration) -> Option<SocketAddr> {
     let deadline = std::time::Instant::now() + budget;
     while std::time::Instant::now() < deadline {
-      if let ProxyStatus::Listening { addr } = status.read().unwrap().clone() {
+      if let ProxyStatus::Listening { addr, .. } = status.read().unwrap().clone() {
         return Some(addr);
       }
       tokio::time::sleep(Duration::from_millis(20)).await;
@@ -689,7 +712,7 @@ mod tests {
     // a few ms across a few syscalls on a loaded box.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let bound_addr = loop {
-      if let ProxyStatus::Listening { addr } = status.read().unwrap().clone() {
+      if let ProxyStatus::Listening { addr, .. } = status.read().unwrap().clone() {
         break addr;
       }
       if std::time::Instant::now() > deadline {
