@@ -194,9 +194,16 @@ pub(crate) fn precheck_indicated_backends(opts: &DaemonOptions) -> std::result::
          start without it."
           .to_string(),
       );
-    } else if !crate::backend::lemonade::umbrella_port_available(opts.lemonade.port) {
+    } else if crate::backend::lemonade::umbrella_port_state(opts.lemonade.port)
+      == crate::backend::lemonade::UmbrellaPortState::Listening
+    {
       // Only probed when a `lemond` binary resolved: without one the port
-      // conflict is moot and reporting both would just be noise.
+      // conflict is moot and reporting both would just be noise. Only a
+      // *live listener* refuses; teardown remnants from a just-stopped
+      // daemon's `lemond` (FIN-WAIT-2 / TIME-WAIT) clear within the
+      // kernel's fin-timeout, and the boot-side umbrella supervision
+      // waits them out — refusing here made every quick
+      // `daemon stop && daemon start --lemonade` fail for up to a minute.
       failures.push(format!(
         "lemonade umbrella port 127.0.0.1:{} is already in use — stop whatever holds it \
          (e.g. a manually started `lemond`) or set `lemonade.port`, or `llamastash daemon start \
@@ -352,11 +359,35 @@ async fn handle_stop(force: bool) -> Result<()> {
     match Client::connect(&attach_dir).await {
       Ok(mut client) => {
         let _ = client.call("shutdown", None).await?;
-        println!(
-          "{}",
-          crate::cli::colors::success("daemon: shutdown requested")
-        );
-        return Ok(());
+        // Wait (bounded) for the process to actually exit. `shutdown`
+        // only *requests* teardown; returning while the old daemon
+        // still holds the lockfile (and its `lemond` umbrella is still
+        // dying) makes a chained `daemon stop && daemon start` race
+        // straight into "already running" / a half-released umbrella
+        // port. Ten seconds covers the slowest observed teardown
+        // (umbrella SIGTERM→SIGKILL escalation is 5 s); on timeout we
+        // fall back to the old fire-and-forget message.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+          match existing_daemon_pid(&attach_dir) {
+            None => {
+              println!("{}", crate::cli::colors::success("daemon: stopped"));
+              return Ok(());
+            }
+            Some(pid) => {
+              if std::time::Instant::now() >= deadline {
+                println!(
+                  "{} ({} {})",
+                  crate::cli::colors::success("daemon: shutdown requested"),
+                  crate::cli::colors::dim("still exiting, pid"),
+                  pid
+                );
+                return Ok(());
+              }
+              tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+          }
+        }
       }
       // No IPC channel — either the daemon is genuinely down, or it's
       // a stale process that didn't publish runtime.json. The

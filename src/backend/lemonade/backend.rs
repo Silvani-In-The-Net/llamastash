@@ -170,21 +170,48 @@ pub fn resolve_lemond_binary(cfg: &crate::config::loader::LemonadeConfig) -> Opt
   None
 }
 
-/// True when the umbrella's loopback `port` is free to bind.
-///
-/// llamastash supervises its *own* `lemond` on this port, so a port already
-/// held by another process (a hand-started `lemond`, a stale instance) means
-/// it cannot take ownership. Callers check this up front and surface a clear
-/// error instead of spawning a child that loses the bind race while the
-/// foreign process keeps answering the `/live` readiness probe — which would
-/// otherwise log a false "umbrella supervised" and only fail later, opaquely,
-/// at routing time.
-///
-/// Binds and immediately drops the listener, releasing the port for the real
-/// `lemond` spawn that follows. The check-then-spawn gap is a benign race:
-/// this is a diagnostic, not a lock.
+/// What the umbrella's loopback `port` looks like to a bind attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UmbrellaPortState {
+  /// Bind succeeded — the port is free for the managed `lemond`.
+  Free,
+  /// Bind failed and something *answers* a connect — a live foreign
+  /// process (e.g. a hand-started `lemond`) owns the port. Spawning
+  /// would lose the bind race while the foreigner keeps answering the
+  /// `/live` readiness probe, logging a false "umbrella supervised"
+  /// that only fails later, opaquely, at routing time. Fail fast.
+  Listening,
+  /// Bind failed but nothing answers — teardown remnants (FIN-WAIT-2 /
+  /// TIME-WAIT sockets from a dying `lemond`'s connections) still hold
+  /// the port. The kernel clears them within its fin-timeout (~60 s);
+  /// callers should wait/retry rather than refuse.
+  Remnants,
+}
+
+/// Probe the umbrella's loopback `port`: bind (and immediately drop the
+/// listener) to test ownership, then distinguish a live owner from
+/// kernel teardown remnants with a connect probe. The check-then-spawn
+/// gap is a benign race: this is a diagnostic, not a lock.
+pub fn umbrella_port_state(port: u16) -> UmbrellaPortState {
+  if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+    return UmbrellaPortState::Free;
+  }
+  let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+  match std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250)) {
+    Ok(_) => UmbrellaPortState::Listening,
+    // ECONNREFUSED (no listener) → remnants. Treat any other failure
+    // (timeout, EPERM, …) as a live-but-unresponsive owner: refusing is
+    // the conservative read, matching the old bind-only behavior.
+    Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => UmbrellaPortState::Remnants,
+    Err(_) => UmbrellaPortState::Listening,
+  }
+}
+
+/// True when the umbrella's loopback `port` is free to bind. See
+/// [`umbrella_port_state`] for the three-way reading callers that can
+/// wait out remnants should prefer.
 pub fn umbrella_port_available(port: u16) -> bool {
-  std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+  umbrella_port_state(port) == UmbrellaPortState::Free
 }
 
 impl Default for LemonadeBackend {
@@ -293,6 +320,20 @@ mod tests {
       umbrella_port_available(port),
       "port {port} was released, should read available"
     );
+  }
+
+  #[test]
+  fn umbrella_port_state_distinguishes_listener_from_free() {
+    // A live listener reads `Listening` (fail-fast case); a released
+    // port reads `Free`. `Remnants` needs orphaned FIN-WAIT-2 sockets
+    // the kernel owns — not fabricable deterministically in a unit
+    // test, so its mapping (bind fails + connect refused) is covered
+    // by the match arms above and the live restart flow.
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral");
+    let port = held.local_addr().unwrap().port();
+    assert_eq!(umbrella_port_state(port), UmbrellaPortState::Listening);
+    drop(held);
+    assert_eq!(umbrella_port_state(port), UmbrellaPortState::Free);
   }
 
   #[test]

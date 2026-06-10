@@ -443,16 +443,64 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
         // and 503-ing opaquely at routing time. Surface that case plainly. Not
         // fatal: the daemon (and llama.cpp routing) stay up; only Lemonade
         // routing is unavailable until the conflict is resolved.
+        //
+        // A port held only by teardown remnants (FIN-WAIT-2 / TIME-WAIT
+        // leftovers of a just-stopped daemon's `lemond`) is waited out
+        // first: the kernel clears them within its fin-timeout (~60 s),
+        // so a quick `daemon stop && daemon start --lemonade` brings the
+        // umbrella up as soon as the port frees instead of failing.
         tokio::spawn(async move {
-          match crate::backend::lemonade::ensure_umbrella(&registry, port, umbrella, log_path).await
-          {
-            Ok(_) => log::info!("lemonade umbrella supervised on 127.0.0.1:{port}"),
-            Err(crate::daemon::supervisor::SpawnError::PortInUse(p)) => log::error!(
-              "lemonade: 127.0.0.1:{p} is already in use — llamastash could not start its own \
-               managed `lemond`. Stop whatever holds that port (e.g. a manually started `lemond`) \
-               or set `lemonade.port`; Lemonade model routing will return 503 until this is resolved."
-            ),
-            Err(e) => log::warn!("lemonade umbrella failed to start at boot: {e}"),
+          use crate::backend::lemonade::{umbrella_port_state, UmbrellaPortState};
+          let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+          let mut waiting_logged = false;
+          loop {
+            if umbrella_port_state(port) == UmbrellaPortState::Free {
+              match crate::backend::lemonade::ensure_umbrella(
+                &registry,
+                port,
+                umbrella.clone(),
+                log_path.clone(),
+              )
+              .await
+              {
+                Ok(_) => {
+                  log::info!("lemonade umbrella supervised on 127.0.0.1:{port}");
+                  return;
+                }
+                // Lost a probe-to-spawn race (e.g. the previous daemon's
+                // dying `lemond` flickering through teardown) — retry
+                // within the window like any other transient holder.
+                Err(crate::daemon::supervisor::SpawnError::PortInUse(_)) => {}
+                Err(e) => {
+                  log::warn!("lemonade umbrella failed to start at boot: {e}");
+                  return;
+                }
+              }
+            }
+            // Held — by a still-exiting previous umbrella (Listening, drops
+            // within its SIGTERM→SIGKILL grace) or by kernel teardown
+            // remnants (FIN-WAIT-2 / TIME-WAIT, clear within the
+            // fin-timeout). Both resolve on their own; a genuinely foreign
+            // holder is normally caught by `daemon start`'s precheck before
+            // this task ever runs, so only after the window do we call it
+            // foreign and give up.
+            if std::time::Instant::now() >= deadline {
+              log::error!(
+                "lemonade: 127.0.0.1:{port} is already in use — llamastash could not start its \
+                 own managed `lemond`. Stop whatever holds that port (e.g. a manually started \
+                 `lemond`) or set `lemonade.port`; Lemonade model routing will return 503 until \
+                 this is resolved."
+              );
+              return;
+            }
+            if !waiting_logged {
+              log::info!(
+                "lemonade: 127.0.0.1:{port} is still held (previous umbrella exiting, or its \
+                 sockets draining); retrying for up to 90 s…"
+              );
+              waiting_logged = true;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
           }
         });
       }

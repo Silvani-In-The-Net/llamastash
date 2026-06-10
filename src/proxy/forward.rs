@@ -180,8 +180,15 @@ pub(crate) async fn forward_to_upstream(
     outbound_headers.append(outbound_name, outbound_value);
   }
 
-  let request = state
-    .http_client
+  // Umbrella upstreams (prefixed path) use the unpooled client so no
+  // keep-alive connection ever idles against the umbrella port — see
+  // `ProxyState::umbrella_client` for the restart-wedge this avoids.
+  let client = if upstream_path_prefix.is_some() {
+    &state.umbrella_client
+  } else {
+    &state.http_client
+  };
+  let request = client
     .request(upstream_method, &upstream_url)
     .headers(outbound_headers)
     .body(body_bytes);

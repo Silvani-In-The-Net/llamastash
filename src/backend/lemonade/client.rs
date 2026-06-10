@@ -130,10 +130,19 @@ pub struct LemonadeClient {
 
 impl LemonadeClient {
   /// Build a client for the `lemond` listening on `127.0.0.1:<port>`.
+  ///
+  /// The idle pool is disabled so every call closes its connection
+  /// client-side when done. A keep-alive left idling against the
+  /// umbrella port outlives `lemond` as a FIN-WAIT-2 orphan *bound to
+  /// that port* when the process dies first, and those orphans block
+  /// every rebind for the kernel's fin-timeout (~60 s) — wedging
+  /// `daemon stop && daemon start --lemonade`. Closing client-side
+  /// parks the teardown remnants on our ephemeral ports instead.
   pub fn new(port: u16) -> Result<Self, LemonadeError> {
     let http = reqwest::Client::builder()
       .no_proxy()
       .timeout(DEFAULT_TIMEOUT)
+      .pool_max_idle_per_host(0)
       .build()
       .map_err(|e| LemonadeError::Transport(e.to_string()))?;
     Ok(Self::with_client(port, http))
