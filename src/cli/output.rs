@@ -282,17 +282,25 @@ fn backends_human(backends: &serde_json::Value, tty: bool) -> Option<String> {
     } else {
       accel.join(", ")
     };
+    // Managed-multiplexer backends carry an `umbrella` health string
+    // (running / starting / not running / disabled) that `installed` alone
+    // can't convey. Absent for process-per-model backends (llama.cpp).
+    let umbrella = b.get("umbrella").and_then(|v| v.as_str());
     if tty {
       let state = if installed {
         colors::success("installed")
       } else {
         colors::dim("not installed")
       };
+      let umbrella_str = umbrella
+        .map(|u| format!("  {}", colors::dim(&format!("umbrella: {u}"))))
+        .unwrap_or_default();
       out.push_str(&format!(
-        "  {} {}  {}\n",
+        "  {} {}  {}{}\n",
         console::style(id).bold(),
         state,
         colors::dim(&accel_str),
+        umbrella_str,
       ));
     } else {
       let state = if installed {
@@ -300,7 +308,12 @@ fn backends_human(backends: &serde_json::Value, tty: bool) -> Option<String> {
       } else {
         "not installed"
       };
-      out.push_str(&format!("backend {id}: {state} [{accel_str}]\n"));
+      let umbrella_str = umbrella
+        .map(|u| format!(" umbrella={u}"))
+        .unwrap_or_default();
+      out.push_str(&format!(
+        "backend {id}: {state} [{accel_str}]{umbrella_str}\n"
+      ));
     }
   }
   out.push('\n');

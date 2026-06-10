@@ -119,6 +119,14 @@ async fn spawn_and_attach(
     ));
   }
   let opts = build_spawn_options(cli, config)?;
+  // Fail-fast: never auto-spawn a daemon that can't bring up an *indicated*
+  // backend (missing `llama-server`, missing/blocked Lemonade umbrella). The
+  // auto-spawn path has no `--force` knob, so a degraded start is never chosen
+  // silently — the user resolves the issue or runs `daemon start --force`. The
+  // TUI surfaces this message in its Daemon → server-info pane.
+  if let Err(msg) = crate::cli::daemon::precheck_indicated_backends(&opts) {
+    return Err(CliExit::new(DAEMON_UNREACHABLE, msg));
+  }
   let attach_for_poll = opts.state_dir.clone();
   match start_detached(opts) {
     Ok(StartOutcome::RanToCompletion) | Ok(StartOutcome::AlreadyRunning(_)) => {

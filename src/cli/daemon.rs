@@ -40,6 +40,7 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
       proxy_host,
       insecure_no_auth,
       lemonade,
+      force,
     } => {
       handle_start(
         foreground,
@@ -50,6 +51,7 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
         proxy_host,
         insecure_no_auth,
         lemonade,
+        force,
         cli,
         config,
       )
@@ -76,6 +78,7 @@ async fn handle_start(
   proxy_host: Option<IpAddr>,
   insecure_no_auth: bool,
   lemonade: bool,
+  force: bool,
   cli: &Cli,
   config: &Config,
 ) -> Result<()> {
@@ -95,6 +98,18 @@ async fn handle_start(
   // printed to the user's terminal; the detached child re-reads it
   // from config. No-op for loopback / pre-set key / --insecure-no-auth.
   provision_proxy_key(&mut opts, cli, foreground)?;
+  // Ride `--force` through to the detached child so it skips the precheck too.
+  opts.force = force;
+  // Fail-fast: refuse to come up silently degraded when an *indicated* backend
+  // can't initialize. `--force` opts out (start degraded; the failed backend is
+  // simply unavailable). Skipped when a daemon is already running — that call
+  // short-circuits to AlreadyRunning, and a precheck would wrongly flag the
+  // umbrella port the running daemon legitimately holds.
+  if !force && existing_daemon_pid(&opts.state_dir).is_none() {
+    if let Err(msg) = precheck_indicated_backends(&opts) {
+      anyhow::bail!(msg);
+    }
+  }
   if foreground {
     // `--foreground` (or `-f`) keeps the daemon attached to the
     // controlling terminal. Print a one-line notice up front so the
@@ -146,6 +161,54 @@ async fn handle_start(
         Ok(())
       }
     }
+  }
+}
+
+/// Fail-fast gate for `daemon start`: refuse to come up silently degraded when
+/// an *indicated* backend can't initialize. llama.cpp is always indicated, so a
+/// missing `llama-server` fails; Lemonade is indicated only when enabled, so a
+/// missing `lemond` binary or an already-held umbrella port fails. `--force`
+/// skips this whole gate and starts degraded. The port check is a fast
+/// bind-probe (not a readiness wait), so it never delays startup; every message
+/// names the override so the user can get past it deliberately.
+///
+/// Every indicated backend is checked (not just the first failure) so one run
+/// reports everything that needs fixing. The `Err` joins one single-line
+/// failure per backend with `\n` — the TUI's Daemon panel splits on lines to
+/// render each backend's failure separately.
+pub(crate) fn precheck_indicated_backends(opts: &DaemonOptions) -> std::result::Result<(), String> {
+  let mut failures: Vec<String> = Vec::new();
+  if opts.binary.is_none() {
+    failures.push(
+      "llama-server binary not found — point `--llama-server` / `LLAMASTASH_LLAMA_SERVER` at it, \
+       run `llamastash init` to install one, or `llamastash daemon start --force` to start without \
+       llama.cpp."
+        .to_string(),
+    );
+  }
+  if opts.lemonade.enabled {
+    if crate::backend::lemonade::resolve_lemond_binary(&opts.lemonade).is_none() {
+      failures.push(
+        "lemonade is enabled but no `lemond` binary was found — set `lemonade.binary` or put \
+         `lemond` on PATH (see docs/lemonade-setup.md), or `llamastash daemon start --force` to \
+         start without it."
+          .to_string(),
+      );
+    } else if !crate::backend::lemonade::umbrella_port_available(opts.lemonade.port) {
+      // Only probed when a `lemond` binary resolved: without one the port
+      // conflict is moot and reporting both would just be noise.
+      failures.push(format!(
+        "lemonade umbrella port 127.0.0.1:{} is already in use — stop whatever holds it \
+         (e.g. a manually started `lemond`) or set `lemonade.port`, or `llamastash daemon start \
+         --force` to start without the managed umbrella.",
+        opts.lemonade.port
+      ));
+    }
+  }
+  if failures.is_empty() {
+    Ok(())
+  } else {
+    Err(failures.join("\n"))
   }
 }
 

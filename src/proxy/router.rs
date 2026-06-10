@@ -234,8 +234,9 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
       StatusCode::SERVICE_UNAVAILABLE,
       "backend_unavailable",
       &format!(
-        "`{requested_model}` is served by the {backend} backend, but its umbrella is not running; \
-         set up {backend} and start the daemon with `--lemonade` (see docs/lemonade-setup.md)"
+        "`{requested_model}` is served by the {backend} backend, but the llamastash managed \
+         instance is not running; set up {backend} and start the daemon with `--lemonade` \
+         (see docs/lemonade-setup.md)"
       ),
     ),
   }

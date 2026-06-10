@@ -76,6 +76,16 @@ pub async fn ensure_umbrella(
   if let Some(existing) = registry.get(&id).await {
     return Ok(existing);
   }
+  // Not yet supervised, so we must bind `port` ourselves to start the umbrella.
+  // If another process already holds it (a hand-started `lemond`, a stale
+  // instance), our spawned child would lose the bind race while the foreign
+  // process keeps answering the `/live` probe — a false "ready". Refuse with a
+  // clear error instead of adopting a process we don't own. Checked *after* the
+  // reuse path (under the single-flight lock) so our own already-running
+  // umbrella, which legitimately holds the port, is never rejected.
+  if !super::umbrella_port_available(port) {
+    return Err(SpawnError::PortInUse(port));
+  }
   let model = spawn(ManagedSpawn {
     id: umbrella_model_id(&umbrella.binary),
     params: LaunchParams::new(umbrella.binary.clone(), LaunchMode::Chat),

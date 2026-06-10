@@ -272,6 +272,14 @@ pub enum DaemonAction {
     /// set it up manually (see `docs/lemonade-setup.md`).
     #[arg(long)]
     lemonade: bool,
+    /// Start the daemon even if an *indicated* backend can't initialize —
+    /// the `llama-server` binary isn't found, or the Lemonade umbrella port
+    /// is already taken / `lemond` is missing. Without this, `daemon start`
+    /// fails fast with an error rather than coming up silently degraded. With
+    /// it, the daemon starts anyway and the failed backend is simply
+    /// unavailable (surfaced in `status` and the TUI server-info section).
+    #[arg(long)]
+    force: bool,
   },
   /// Stop the running daemon. Running models keep running.
   Stop {
@@ -1365,6 +1373,7 @@ mod tests {
         proxy_host,
         insecure_no_auth,
         lemonade,
+        force,
       })) => {
         assert!(!foreground);
         assert!(state_dir.is_none());
@@ -1374,6 +1383,7 @@ mod tests {
         assert!(proxy_host.is_none());
         assert!(!insecure_no_auth);
         assert!(!lemonade);
+        assert!(!force);
       }
       other => panic!("expected daemon start, got {other:?}"),
     }

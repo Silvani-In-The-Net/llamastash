@@ -17,16 +17,21 @@ use crate::discovery::{DiscoveredModel, ModelSource};
 
 /// Synthetic path for a Lemonade-registry model (no local file). Keeps the
 /// catalog's path-keyed map unique per model; the user-facing name lives in
-/// `display_label` and is what resolution / routing key on.
+/// `display_label` and is what resolution / routing key on. The scheme is the
+/// shared [`crate::backend::lemonade::LEMONADE_PATH_SCHEME`] so the launch path
+/// can parse the name back off it.
 fn synthetic_path(name: &str) -> PathBuf {
-  PathBuf::from(format!("lemonade://{name}"))
+  PathBuf::from(format!(
+    "{}{name}",
+    crate::backend::lemonade::LEMONADE_PATH_SCHEME
+  ))
 }
 
 /// Project one Lemonade registry name into a catalog row.
 fn row_for(name: &str) -> DiscoveredModel {
   DiscoveredModel {
     path: synthetic_path(name),
-    parent: PathBuf::from("lemonade://"),
+    parent: PathBuf::from(crate::backend::lemonade::LEMONADE_PATH_SCHEME),
     source: ModelSource::Lemonade,
     metadata: None,
     parse_error: None,

@@ -122,6 +122,12 @@ pub struct DaemonOptions {
   /// `runtime.json` at startup so attaching CLI / TUI clients can
   /// discover them.
   pub control_plane_port: u16,
+  /// `daemon start --force`: came up despite an *indicated* backend failing
+  /// its precheck (missing `llama-server`, missing/blocked Lemonade umbrella).
+  /// The CLI gate (`precheck_indicated_backends`) is what enforces fail-fast;
+  /// this only needs to ride through the detached re-exec so the foreground
+  /// child skips the same gate the parent already waived.
+  pub force: bool,
 }
 
 impl DaemonOptions {
@@ -152,6 +158,7 @@ impl DaemonOptions {
       // [`control_plane::DEFAULT_CONTROL_PORT`] the production CLI
       // uses via `from_defaults`.
       control_plane_port: 0,
+      force: false,
     }
   }
 
@@ -179,6 +186,7 @@ impl DaemonOptions {
       proxy: ProxyConfig::default(),
       lemonade: LemonadeConfig::default(),
       control_plane_port: control_plane::DEFAULT_CONTROL_PORT,
+      force: false,
     })
   }
 }
@@ -413,13 +421,13 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   if opts.lemonade.enabled {
     match crate::backend::lemonade::resolve_lemond_binary(&opts.lemonade) {
       Some(binary) => {
+        let port = opts.lemonade.port;
         if let Err(e) = std::fs::create_dir_all(&opts.log_dir) {
           log::warn!(
             "could not create log dir {}: {e}; lemonade umbrella logs may fail to open",
             opts.log_dir.display()
           );
         }
-        let port = opts.lemonade.port;
         let probe = match opts.probe_timeout_secs {
           Some(secs) => ProbeOptions {
             timeout: std::time::Duration::from_secs(secs),
@@ -430,10 +438,20 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
         let umbrella = crate::backend::lemonade::umbrella_process_spec(port, binary, probe);
         let registry = ctx.supervisors.clone();
         let log_path = opts.log_dir.join("lemonade-umbrella.log");
+        // `ensure_umbrella` refuses to adopt a foreign process already holding
+        // the port (returns `PortInUse`) rather than logging a false "supervised"
+        // and 503-ing opaquely at routing time. Surface that case plainly. Not
+        // fatal: the daemon (and llama.cpp routing) stay up; only Lemonade
+        // routing is unavailable until the conflict is resolved.
         tokio::spawn(async move {
           match crate::backend::lemonade::ensure_umbrella(&registry, port, umbrella, log_path).await
           {
             Ok(_) => log::info!("lemonade umbrella supervised on 127.0.0.1:{port}"),
+            Err(crate::daemon::supervisor::SpawnError::PortInUse(p)) => log::error!(
+              "lemonade: 127.0.0.1:{p} is already in use — llamastash could not start its own \
+               managed `lemond`. Stop whatever holds that port (e.g. a manually started `lemond`) \
+               or set `lemonade.port`; Lemonade model routing will return 503 until this is resolved."
+            ),
             Err(e) => log::warn!("lemonade umbrella failed to start at boot: {e}"),
           }
         });
@@ -778,6 +796,12 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   if opts.lemonade.enabled {
     cmd.arg("--lemonade");
   }
+  // Carry `--force` through so the foreground child skips the same backend
+  // precheck the parent already waived; without it the child re-runs the gate
+  // and exits, defeating the whole point of `--force`.
+  if opts.force {
+    cmd.arg("--force");
+  }
   cmd
     .stdin(Stdio::null())
     .stdout(Stdio::null())
@@ -896,6 +920,11 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   // The env var alone isn't reliable across a detached re-exec.
   if opts.lemonade.enabled {
     cmd.arg("--lemonade");
+  }
+  // Carry `--force` through so the foreground child skips the same backend
+  // precheck the parent already waived.
+  if opts.force {
+    cmd.arg("--force");
   }
   cmd
     .stdin(Stdio::null())

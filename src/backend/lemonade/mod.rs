@@ -11,7 +11,8 @@ pub mod client;
 pub mod orchestrate;
 
 pub use backend::{
-  resolve_lemond_binary, umbrella_process_spec, LemonadeBackend, LEMONADE_BACKEND_ID,
+  registry_name_from_path, resolve_lemond_binary, umbrella_port_available, umbrella_process_spec,
+  LemonadeBackend, LEMONADE_BACKEND_ID, LEMONADE_PATH_SCHEME,
 };
 pub use client::{LemonadeClient, LemonadeError};
 pub use orchestrate::{ensure_umbrella, umbrella_launch_id};

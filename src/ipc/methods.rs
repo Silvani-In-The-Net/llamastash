@@ -592,6 +592,21 @@ async fn backends_status(ctx: &MethodContext) -> Value {
   }
 
   let lemonade = LemonadeBackend::new();
+  let mut lemonade_row = backend_row(
+    lemonade.id(),
+    lemonade.lifecycle().label(),
+    lemond_installed(&ctx.lemonade),
+    lemonade.accelerators().labels(),
+  );
+  // Managed-multiplexer health: surface whether the umbrella llamastash
+  // supervises is actually up, so `status` distinguishes "installed" (binary on
+  // disk) from "running" (umbrella Ready). When enabled but down — e.g. the
+  // configured port was already taken at boot — this reads `not running`, which
+  // is the only visible signal outside the daemon log.
+  if let Some(obj) = lemonade_row.as_object_mut() {
+    obj.insert("enabled".into(), json!(ctx.lemonade.enabled));
+    obj.insert("umbrella".into(), json!(lemonade_umbrella_state(ctx).await));
+  }
   json!([
     backend_row(
       llama.id(),
@@ -599,13 +614,32 @@ async fn backends_status(ctx: &MethodContext) -> Value {
       llama_installed,
       llama_acc.labels()
     ),
-    backend_row(
-      lemonade.id(),
-      lemonade.lifecycle().label(),
-      lemond_installed(&ctx.lemonade),
-      lemonade.accelerators().labels()
-    ),
+    lemonade_row,
   ])
+}
+
+/// The managed `lemond` umbrella's state for `status`, distinct from the
+/// `installed` (binary-resolvable) signal. `disabled` when the backend is off;
+/// otherwise reflects the supervised umbrella: `running` (Ready), `starting`
+/// (spawned, probing), or `not running` (never came up / exited — commonly a
+/// boot-time port conflict).
+async fn lemonade_umbrella_state(ctx: &MethodContext) -> &'static str {
+  use crate::daemon::supervisor::ManagedState;
+  if !ctx.lemonade.enabled {
+    return "disabled";
+  }
+  match ctx
+    .supervisors
+    .get(&crate::backend::lemonade::umbrella_launch_id())
+    .await
+  {
+    Some(m) => match m.state().await {
+      ManagedState::Ready => "running",
+      ManagedState::Launching | ManagedState::Loading => "starting",
+      ManagedState::Error { .. } | ManagedState::Stopping | ManagedState::Stopped => "not running",
+    },
+    None => "not running",
+  }
 }
 
 fn backend_row(id: &str, lifecycle: &str, installed: bool, accelerators: Vec<&str>) -> Value {
@@ -1217,14 +1251,34 @@ pub(crate) async fn start_model_inner(
     )
   })?;
 
-  // Resolve canonical ModelId and architecture from the GGUF header
-  // in a single read so the layered-knob resolver below doesn't have
-  // to re-open the file.
-  let (id, arch) = resolve_model_id_and_arch(&parsed.model_path)?;
-  // Persisted-keyspace key (state_store / last_params). The GGUF launch
-  // path always produces a `Gguf` identity; a managed-multiplexer
-  // `DelegateToManager` path would produce a `Backend` identity instead.
-  let identity: ModelIdentity = id.clone().into();
+  // Resolve identity + (for GGUF) the architecture. A Lemonade synthetic path
+  // (`lemonade://<name>`) has no local file, so derive a backend identity from
+  // the registry name instead of reading a header — that is what makes the
+  // managed-multiplexer dispatch below select Lemonade rather than crashing on
+  // the missing GGUF. Every other path is a local GGUF: one header read yields
+  // both the canonical id and the arch.
+  let (id, arch, identity): (ModelId, Option<String>, ModelIdentity) =
+    match crate::backend::lemonade::registry_name_from_path(&parsed.model_path) {
+      Some(name) => {
+        let backend_id = crate::backend::identity::BackendModelId {
+          backend: crate::backend::lemonade::LEMONADE_BACKEND_ID.to_string(),
+          name: name.to_string(),
+        };
+        // A synthetic ModelId keeps the file-keyed plumbing (log path, running
+        // snapshot retention) working; the sentinel header hash marks it as
+        // not-a-GGUF. Arch is `None` — lemond owns the recipe, not us.
+        let synthetic = ModelId {
+          path: parsed.model_path.clone(),
+          header_blake3: [0u8; 32],
+        };
+        (synthetic, None, ModelIdentity::Backend(backend_id))
+      }
+      None => {
+        let (id, arch) = resolve_model_id_and_arch(&parsed.model_path)?;
+        let identity: ModelIdentity = id.clone().into();
+        (id, arch, identity)
+      }
+    };
 
   // Mode resolution: explicit override > catalog hint > default to chat.
   // The CLI surface refuses to default silently when discovery says
@@ -1391,7 +1445,7 @@ pub(crate) async fn start_model_inner(
   // host-metrics snapshot. `None` (header missing the attention
   // fields, snapshot not ready, budget too tight) leaves ctx unset
   // so `--fit` still gets the final word.
-  if launch_params.ctx.is_none() {
+  if launch_params.ctx.is_none() && identity.as_gguf().is_some() {
     if let Some(host_slot) = ctx.host_metrics.as_ref() {
       let snapshot = host_slot.read().await.clone();
       let model_path = launch_params.model_path.clone();

@@ -23,6 +23,23 @@ use crate::launch::params::LaunchParams;
 /// Stable backend id (mirrors Lemonade's own `lemonade` naming).
 pub const LEMONADE_BACKEND_ID: &str = "lemonade";
 
+/// URI scheme for a Lemonade-registry model's synthetic catalog path
+/// (`lemonade://<registry name>`). A Lemonade model has no local GGUF, so
+/// discovery mints this file-less path as the catalog key and the launch path
+/// reads the registry name back off it. Single source of truth for both the
+/// minting side ([`crate::discovery::lemonade`]) and the parsing side
+/// ([`registry_name_from_path`]).
+pub const LEMONADE_PATH_SCHEME: &str = "lemonade://";
+
+/// Parse a Lemonade synthetic path back to the registry model name the umbrella
+/// API knows, or `None` for any non-Lemonade path. The inverse of
+/// `discovery::lemonade::synthetic_path`: `lemonade://Whisper-Tiny` →
+/// `Some("Whisper-Tiny")`, `/models/x.gguf` → `None`. The launch path uses this
+/// to recognise a managed-multiplexer model and skip the GGUF header read.
+pub fn registry_name_from_path(path: &Path) -> Option<&str> {
+  path.to_str()?.strip_prefix(LEMONADE_PATH_SCHEME)
+}
+
 /// `lemond`'s root liveness endpoint — minimal-work readiness probe for
 /// the umbrella process (distinct from `/api/v1/health`, which reports
 /// loaded models).
@@ -46,12 +63,15 @@ impl LemonadeBackend {
 
   /// Derive the `lemond` registry model name from the launch input.
   ///
-  /// **Interim mechanism.** Until catalog/registry discovery feeds the
-  /// launch, the registry name rides in the `model_path` slot, so we read it
-  /// back from there. Once discovery lands, the name comes from
-  /// `list_models()` / the catalog row.
+  /// The catalog feeds the launch a synthetic `lemonade://<name>` path; strip
+  /// the scheme so the umbrella API gets the bare registry name (`Whisper-Tiny`,
+  /// not `lemonade://Whisper-Tiny`). A non-scheme path (a GGUF launched with an
+  /// explicit `--backend lemonade` override) is passed through verbatim.
   fn registry_name(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    match registry_name_from_path(path) {
+      Some(name) => name.to_string(),
+      None => path.to_string_lossy().into_owned(),
+    }
   }
 
   /// Build the umbrella spec + model ref directly (the body
@@ -153,6 +173,23 @@ pub fn resolve_lemond_binary(cfg: &crate::config::loader::LemonadeConfig) -> Opt
   None
 }
 
+/// True when the umbrella's loopback `port` is free to bind.
+///
+/// llamastash supervises its *own* `lemond` on this port, so a port already
+/// held by another process (a hand-started `lemond`, a stale instance) means
+/// it cannot take ownership. Callers check this up front and surface a clear
+/// error instead of spawning a child that loses the bind race while the
+/// foreign process keeps answering the `/live` readiness probe — which would
+/// otherwise log a false "umbrella supervised" and only fail later, opaquely,
+/// at routing time.
+///
+/// Binds and immediately drops the listener, releasing the port for the real
+/// `lemond` spawn that follows. The check-then-spawn gap is a benign race:
+/// this is a diagnostic, not a lock.
+pub fn umbrella_port_available(port: u16) -> bool {
+  std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
 impl Default for LemonadeBackend {
   fn default() -> Self {
     Self::new()
@@ -218,6 +255,47 @@ mod tests {
     let b = LemonadeBackend::new();
     assert_eq!(b.id(), "lemonade");
     assert_eq!(b.lifecycle(), Lifecycle::ManagedMultiplexer);
+  }
+
+  #[test]
+  fn registry_name_round_trips_through_synthetic_scheme() {
+    // A synthetic catalog path strips back to the bare registry name the
+    // umbrella API knows; a non-scheme path is not a Lemonade model.
+    assert_eq!(
+      registry_name_from_path(Path::new("lemonade://Whisper-Tiny")),
+      Some("Whisper-Tiny")
+    );
+    assert_eq!(
+      registry_name_from_path(Path::new("lemonade://qwen3.5-4b-FLM")),
+      Some("qwen3.5-4b-FLM")
+    );
+    assert_eq!(registry_name_from_path(Path::new("/models/x.gguf")), None);
+    // `registry_name` (the umbrella's model ref) drops the scheme but passes a
+    // bare name through verbatim (GGUF + explicit `--backend lemonade`).
+    assert_eq!(
+      LemonadeBackend::registry_name(Path::new("lemonade://Whisper-Tiny")),
+      "Whisper-Tiny"
+    );
+    assert_eq!(
+      LemonadeBackend::registry_name(Path::new("Qwen2.5-7B")),
+      "Qwen2.5-7B"
+    );
+  }
+
+  #[test]
+  fn umbrella_port_available_reflects_bind_state() {
+    // A port we hold is reported unavailable; once released, available.
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral");
+    let port = held.local_addr().unwrap().port();
+    assert!(
+      !umbrella_port_available(port),
+      "port {port} is held, should read unavailable"
+    );
+    drop(held);
+    assert!(
+      umbrella_port_available(port),
+      "port {port} was released, should read available"
+    );
   }
 
   #[test]
