@@ -196,6 +196,7 @@ async fn lemonade_model_routes_through_proxy_to_umbrella() {
     "response must come from fake_lemond's /api/v1/chat/completions, got: {body}"
   );
 
+  umbrella.stop(Duration::from_secs(3)).await;
   shutdown(token, handle).await;
 }
 
@@ -240,6 +241,7 @@ async fn second_lemonade_model_reuses_the_one_umbrella() {
     assert!(body.contains("hi from lemond"), "{model}: got {body}");
   }
 
+  umbrella.stop(Duration::from_secs(3)).await;
   shutdown(token, handle).await;
 }
 
@@ -299,6 +301,10 @@ async fn idle_lemonade_model_is_unloaded_but_umbrella_stays_up() {
     matches!(still.state().await, ManagedState::Ready),
     "umbrella must stay up — only the model is unloaded"
   );
+
+  // Clean up the umbrella child so `fake_lemond` doesn't leak past the test
+  // (a leaked child hangs `cargo test` exit on Windows).
+  umbrella.stop(Duration::from_secs(3)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

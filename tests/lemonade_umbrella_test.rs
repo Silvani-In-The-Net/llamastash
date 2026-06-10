@@ -104,6 +104,11 @@ async fn supervisor_spawns_lemond_umbrella_and_client_talks_to_it() {
     "fake lemond should list its models, got {models:?}"
   );
   client.load("Qwen2.5-0.5B-Instruct").await.expect("load ok");
+
+  // Stop the umbrella so the spawned `fake_lemond` child doesn't outlive the
+  // test. On Windows a leaked child holding inherited stdio handles makes
+  // `cargo test` hang at exit; on Unix it's harmless but we clean up anyway.
+  model.stop(Duration::from_secs(3)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -138,4 +143,8 @@ async fn ensure_umbrella_is_idempotent() {
     .filter(|(id, _)| *id == umbrella_launch_id())
     .count();
   assert_eq!(umbrellas, 1, "exactly one umbrella should be registered");
+
+  // `first` and `second` are the same reused umbrella — stop it once so the
+  // `fake_lemond` child doesn't leak (Windows `cargo test` exit hang).
+  first.stop(Duration::from_secs(3)).await;
 }
