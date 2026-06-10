@@ -414,7 +414,7 @@ Because an open proxy on the network would let anyone drive your GPU, a non-loop
 
 ### Connecting an agent
 
-Set the OpenAI base URL to `http://127.0.0.1:11435/v1` (default mode) or `http://127.0.0.1:11434/v1` (Ollama-compat mode) and use any string as the API key — the proxy ignores authentication. The base-URL pattern works with any OpenAI-compatible client; the standard env var names across the ecosystem are:
+Set the OpenAI base URL to `http://127.0.0.1:11435/v1` (default mode) or `http://127.0.0.1:11434/v1` (Ollama-compat mode). On the default loopback bind the proxy ignores authentication, so any string works as the API key. If you exposed the proxy on the LAN ([LAN access](#lan-access-opt-in-behind-a-key)), put your `sk-llamastash-…` key in the client's API-key field instead: OpenAI-compatible clients send the API key as `Authorization: Bearer <key>`, which is exactly what the proxy validates, so no client-side change is needed beyond the key value. (The proxy only accepts the `Authorization: Bearer` scheme, not Azure-style `api-key:` headers; Ollama-native clients hitting `/api/*` send no key, so they get a `401` once auth is on.) The base-URL pattern works with any OpenAI-compatible client; the standard env var names across the ecosystem are:
 
 | Client                    | Env var(s)                                                                                           |
 | ------------------------- | ---------------------------------------------------------------------------------------------------- |
