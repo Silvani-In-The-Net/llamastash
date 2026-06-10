@@ -36,6 +36,10 @@ lemond            # starts the umbrella (default port 13305)
 curl http://127.0.0.1:13305/api/v1/models
 ```
 
+Then **stop that manual `lemond`**. Once the backend is enabled, LlamaStash
+spawns and supervises its own `lemond` on the configured port at daemon start —
+leaving your own copy bound to the same port would block it.
+
 ## 2. Point LlamaStash at it
 
 Enable the backend with any **one** of these (they OR together):
@@ -45,8 +49,10 @@ Enable the backend with any **one** of these (they OR together):
   ```yaml
   lemonade:
     enabled: true
-    # Optional: explicit path to the lemond binary. If omitted, LlamaStash
-    # looks for `lemond` (or `lemonade`) on your PATH.
+    # Optional: explicit *absolute* path to the lemond binary. If omitted,
+    # LlamaStash looks for `lemond` (or `lemonade`) on your PATH. Prefer an
+    # absolute path — LlamaStash runs lemond from the binary's own directory
+    # (where its config.json / bin/ live).
     binary: /opt/lemonade/lemond
     # Optional: the loopback port lemond binds. Defaults to 13305.
     port: 13305
@@ -55,14 +61,16 @@ Enable the backend with any **one** of these (they OR together):
 - **Daemon flag** — `llamastash daemon start --lemonade`
 - **Env var** — `LLAMASTASH_LEMONADE=1`
 
-`binary` resolution: the explicit `lemonade.binary` path if set, otherwise
-`lemond` / `lemonade` on `PATH`.
+`binary` resolution: the explicit `lemonade.binary` path if set (and it exists),
+otherwise `lemond` / `lemonade` on `PATH`. The same resolution drives the
+`status` `installed` signal — an off-PATH `lemonade.binary` still reads as
+installed.
 
 ## 3. How LlamaStash uses it
 
-- **Supervises** one shared `lemond` umbrella (spawned from the resolved
-  binary; it is *not* downloaded). The umbrella's `/live` endpoint is the
-  readiness probe.
+- **Supervises** one shared `lemond` umbrella, brought up at daemon start on
+  the configured loopback port (spawned from the resolved binary; it is *not*
+  downloaded). The umbrella's `/live` endpoint is the readiness probe.
 - **Discovers** Lemonade models from `lemond`'s `/api/v1/models` and lists
   them in the catalog tagged with the `lemonade` backend (list-only — pull
   models with Lemonade's own tooling).
@@ -80,17 +88,18 @@ llamastash list          # Lemonade registry models appear, tagged `lemonade`
 ```
 
 Send a chat request for a Lemonade model through the proxy and it routes to the
-umbrella. In the TUI Launch picker, the **Backend** row lets you force
-`lemonade` per model (knobs llama.cpp-specific are greyed — Lemonade takes a
-model name, not launch flags).
+umbrella. In the TUI Launch picker, a Lemonade model shows a **Backend** row
+reading `lemonade` with the llama.cpp-specific knobs greyed (Lemonade takes a
+model name, not launch flags); a plain GGUF row hides the Backend row.
 
 ## 5. Troubleshooting
 
 - **`503 backend_unavailable`** from the proxy — the umbrella isn't running.
   Confirm Lemonade is enabled, `lemond` is resolvable (PATH or
   `lemonade.binary`), and start the daemon with `--lemonade`.
-- **`status` shows `lemonade: not installed`** — `lemond` isn't on `PATH`.
-  Either add it to `PATH` or set `lemonade.binary` to its full path.
+- **`status` shows `lemonade: not installed`** — neither `lemonade.binary` nor
+  a `lemond` / `lemonade` on `PATH` resolved to a file. Add `lemond` to `PATH`
+  or set `lemonade.binary` to its full path.
 - **No NPU acceleration** — Lemonade falls back to CPU/GPU when AMD's NPU
   system stack (XRT / firmware / `flm`) isn't installed. Check Lemonade's own
   diagnostics; that stack is AMD's to install, not LlamaStash's.

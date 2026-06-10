@@ -63,43 +63,83 @@ impl LemonadeBackend {
     binary: PathBuf,
     probe: ProbeOptions,
   ) -> ManagerLaunchSpec {
-    // `lemond <DIR> --host 127.0.0.1 --port <port>`: DIR is the working
-    // directory holding config.json/bin/ — default to the binary's own
-    // directory (typically the user's Lemonade install dir). --host/--port
-    // override config.json so llamastash owns the loopback binding.
-    // `Path::parent` of a bare filename is `Some("")`, not `None`, so guard
-    // the empty case too — `lemond` needs a real working directory.
-    let work_dir = match binary.parent() {
-      Some(p) if !p.as_os_str().is_empty() => p.as_os_str().to_owned(),
-      _ => OsString::from("."),
-    };
-    let argv = vec![
-      work_dir,
-      OsString::from("--host"),
-      OsString::from("127.0.0.1"),
-      OsString::from("--port"),
-      OsString::from(port.to_string()),
-    ];
-    let umbrella = ProcessLaunchSpec {
-      binary,
-      argv,
-      // lemond does not read the llama-server LLAMA_ARG_* bypass vars, and
-      // it may legitimately use HF_* to pull models, so nothing is stripped
-      // here. (Revisit if lemond honors a loopback-bypass env.)
-      env_remove: vec![],
-      readiness: Readiness::HttpPoll {
-        path: LIVE_PATH.to_string(),
-        ready_status: 200,
-      },
-      probe,
-    };
     ManagerLaunchSpec {
-      umbrella,
+      umbrella: umbrella_process_spec(port, binary, probe),
       model: ManagerModelRef {
         name: Self::registry_name(&params.model_path),
       },
     }
   }
+}
+
+/// Build the `lemond` umbrella's [`ProcessLaunchSpec`] for a loopback
+/// `port` and a resolved `binary`. Shared by [`LemonadeBackend::manager_spec`]
+/// (the per-model start path) and the daemon's boot-time umbrella supervision
+/// — both must produce an *identical* spec so [`super::ensure_umbrella`]
+/// treats them as the one shared umbrella.
+pub fn umbrella_process_spec(port: u16, binary: PathBuf, probe: ProbeOptions) -> ProcessLaunchSpec {
+  // `lemond <DIR> --host 127.0.0.1 --port <port>`: DIR is the working
+  // directory holding config.json/bin/ — default to the binary's own
+  // directory (typically the user's Lemonade install dir). --host/--port
+  // override config.json so llamastash owns the loopback binding.
+  // `Path::parent` of a bare filename is `Some("")`, not `None`, so guard
+  // the empty case too — `lemond` needs a real working directory. The start
+  // path resolves `binary` to an absolute path (config.binary or a PATH
+  // lookup), so parent is the real install dir in practice.
+  let work_dir = match binary.parent() {
+    Some(p) if !p.as_os_str().is_empty() => p.as_os_str().to_owned(),
+    _ => OsString::from("."),
+  };
+  let argv = vec![
+    work_dir,
+    OsString::from("--host"),
+    OsString::from("127.0.0.1"),
+    OsString::from("--port"),
+    OsString::from(port.to_string()),
+  ];
+  ProcessLaunchSpec {
+    binary,
+    argv,
+    // lemond does not read the llama-server LLAMA_ARG_* bypass vars, and
+    // it may legitimately use HF_* to pull models, so nothing is stripped
+    // here. (Revisit if lemond honors a loopback-bypass env.)
+    env_remove: vec![],
+    readiness: Readiness::HttpPoll {
+      path: LIVE_PATH.to_string(),
+      ready_status: 200,
+    },
+    probe,
+  }
+}
+
+/// Resolve the `lemond` executable the daemon should supervise.
+///
+/// Resolution order (matches `docs/lemonade-setup.md`):
+///   1. the explicit `lemonade.binary` path, if it points at a file;
+///   2. otherwise `lemond` then `lemonade` on `PATH`.
+///
+/// Returns the resolved absolute path, or `None` when nothing is found —
+/// llamastash never installs `lemond`, so a missing binary is a clean
+/// "backend unavailable" rather than an error to recover from.
+pub fn resolve_lemond_binary(cfg: &crate::config::loader::LemonadeConfig) -> Option<PathBuf> {
+  if let Some(explicit) = &cfg.binary {
+    return explicit.is_file().then(|| explicit.clone());
+  }
+  let names: &[&str] = if cfg!(windows) {
+    &["lemond.exe", "lemonade.exe"]
+  } else {
+    &["lemond", "lemonade"]
+  };
+  let path = std::env::var_os("PATH")?;
+  for dir in std::env::split_paths(&path) {
+    for name in names {
+      let candidate = dir.join(name);
+      if candidate.is_file() {
+        return Some(candidate);
+      }
+    }
+  }
+  None
 }
 
 impl Default for LemonadeBackend {
@@ -239,5 +279,44 @@ mod tests {
         .map(|s| s.to_string_lossy().into_owned()),
       Some(".".to_string())
     );
+  }
+
+  #[test]
+  fn umbrella_process_spec_matches_manager_spec_umbrella() {
+    // Boot supervision and the per-model start path must build an identical
+    // umbrella spec so `ensure_umbrella` treats them as the one umbrella.
+    let b = LemonadeBackend::new();
+    let p = LaunchParams::new(PathBuf::from("ignored-for-umbrella"), LaunchMode::Chat);
+    let binary = PathBuf::from("/opt/lemonade/lemond");
+    let via_manager = b
+      .manager_spec(&p, 13305, binary.clone(), ProbeOptions::default())
+      .umbrella;
+    let direct = umbrella_process_spec(13305, binary, ProbeOptions::default());
+    assert_eq!(via_manager.binary, direct.binary);
+    assert_eq!(via_manager.argv, direct.argv);
+    assert_eq!(via_manager.readiness, direct.readiness);
+  }
+
+  #[test]
+  fn resolve_binary_prefers_explicit_path_then_path_lookup() {
+    use crate::config::loader::LemonadeConfig;
+
+    // Explicit binary that exists resolves to itself.
+    let this_exe = std::env::current_exe().expect("current exe");
+    let cfg = LemonadeConfig {
+      enabled: true,
+      binary: Some(this_exe.clone()),
+      port: 13305,
+    };
+    assert_eq!(resolve_lemond_binary(&cfg), Some(this_exe));
+
+    // Explicit binary that does NOT exist resolves to None (we never fall
+    // back to PATH when the user named a specific file).
+    let cfg_missing = LemonadeConfig {
+      enabled: true,
+      binary: Some(PathBuf::from("/nonexistent/lemond-xyz")),
+      port: 13305,
+    };
+    assert_eq!(resolve_lemond_binary(&cfg_missing), None);
   }
 }

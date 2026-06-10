@@ -4677,11 +4677,12 @@ mod tests {
 
     pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::RightPane);
-    // The Backend chooser row is visible (a second backend is registered),
-    // so it precedes Ctx; Up from Ctx lands on Backend.
+    // A plain GGUF row hides the Backend chooser (Auto == llama.cpp, no
+    // cross-backend choice), so Ctx is the first row and Up from it wraps to
+    // the last row (Extras).
     assert_eq!(
       app.launch_picker.as_ref().expect("picker").field,
-      PickerField::Backend
+      PickerField::Extras
     );
   }
 

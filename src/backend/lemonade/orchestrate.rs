@@ -14,13 +14,14 @@
 //! the `lemond` binary, sentinel header hash) and a reserved
 //! [`umbrella_launch_id`].
 //!
-//! Per-model routing (a Lemonade-backed model appearing in the catalog and
-//! the proxy forwarding to the umbrella's port) is wired separately — it
-//! depends on the catalog `backend` tag and proxy-target work. Until that
-//! lands, [`crate::ipc`]'s `start_model` does not drive this path; the
-//! orchestration here is exercised directly by its integration test.
+//! The umbrella is brought up from two callers, both via [`ensure_umbrella`]:
+//! the daemon's boot-time supervision (when the Lemonade backend is enabled)
+//! and the per-model `start_model` path. Per-model routing reads the catalog
+//! `backend` tag and forwards through the proxy to the umbrella's port.
 
 use std::path::{Path, PathBuf};
+
+use tokio::sync::Mutex;
 
 use crate::backend::ProcessLaunchSpec;
 use crate::daemon::registry::{LaunchId, SupervisorRegistry};
@@ -28,6 +29,11 @@ use crate::daemon::supervisor::{spawn, LaunchOrigin, ManagedModel, ManagedSpawn,
 use crate::gguf::identity::ModelId;
 use crate::launch::mode::LaunchMode;
 use crate::launch::params::LaunchParams;
+
+/// Process-wide single-flight guard for [`ensure_umbrella`]. Serializes the
+/// existence-check + spawn so two concurrent first-callers (e.g. boot
+/// supervision racing an early `start_model`) can't both spawn an umbrella.
+static ENSURE_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Reserved supervisor id for the single `lemond` umbrella. One umbrella
 /// per daemon, shared by all Lemonade-backed models.
@@ -56,16 +62,16 @@ fn umbrella_model_id(binary: &Path) -> ModelId {
 /// fresh spawn the supervisor blocks until the umbrella reports ready or
 /// the probe times out (surfaced as [`SpawnError`]).
 ///
-/// Note: the existence check + spawn are not yet atomic; two concurrent
-/// first-callers could both spawn. Single-flight hardening (reuse the
-/// registry's port-reservation CAS) is a follow-up. The current live caller
-/// is the sequential `start_model` path.
+/// The existence-check + spawn run under a process-wide lock so concurrent
+/// first-callers serialize: the first spawns, the rest observe the registered
+/// umbrella and reuse it (single-flight).
 pub async fn ensure_umbrella(
   registry: &SupervisorRegistry,
   port: u16,
   umbrella: ProcessLaunchSpec,
   log_path: PathBuf,
 ) -> Result<ManagedModel, SpawnError> {
+  let _guard = ENSURE_LOCK.lock().await;
   let id = umbrella_launch_id();
   if let Some(existing) = registry.get(&id).await {
     return Ok(existing);

@@ -52,21 +52,16 @@ static ALL_FIELDS: LazyLock<Box<[PickerField]>> = LazyLock::new(|| {
   v.into_boxed_slice()
 });
 
-/// Backend choices the picker cycles through, in ←/→ order. `Auto` plus one
-/// entry per concrete backend; a second backend adds a variant here and the
-/// chooser row becomes visible.
-const BACKEND_CHOICES: &[BackendChoice] = &[
-  BackendChoice::Auto,
-  BackendChoice::LlamaCpp,
-  BackendChoice::Lemonade,
-];
+/// Backend choices for a GGUF (llama.cpp) model: `Auto` resolves to llama.cpp
+/// via the identity rule, so the explicit entry is redundant and the chooser
+/// row stays hidden (no cross-backend override — a local GGUF is not in any
+/// other backend's registry).
+const LLAMACPP_BACKEND_CHOICES: &[BackendChoice] = &[BackendChoice::Auto, BackendChoice::LlamaCpp];
 
-/// Whether the backend chooser row should appear — only when there's an
-/// actual choice (more than one concrete backend beyond `Auto`).
-fn backend_choice_available() -> bool {
-  // `Auto` + N concrete backends; a real choice needs N >= 2, i.e. > 2 total.
-  BACKEND_CHOICES.len() > 2
-}
+/// Backend choices for a Lemonade-registry model: `Auto` resolves to Lemonade.
+/// The chooser row is surfaced so the user sees the model launches via the
+/// managed-multiplexer (and why the llama.cpp knobs below are greyed).
+const LEMONADE_BACKEND_CHOICES: &[BackendChoice] = &[BackendChoice::Auto, BackendChoice::Lemonade];
 
 impl PickerField {
   /// All rows in render / navigation order. Returns a static slice so
@@ -197,6 +192,11 @@ pub struct LaunchPickerState {
   /// llama.cpp); a managed-multiplexer backend greys the knob rows it can't
   /// honor.
   pub backend: BackendChoice,
+  /// The focused model's *own* concrete backend (the one its catalog source
+  /// binds to under `Auto`): `LlamaCpp` for a GGUF, `Lemonade` for a
+  /// `lemonade://` registry model. Drives which choices the chooser offers and
+  /// what `Auto` resolves to for knob-greying — never `Auto` itself.
+  pub model_backend: BackendChoice,
   pub active_instances: usize,
   pub prefer_port: Option<u16>,
   /// Launch device catalog from `status.device_catalog` — the exact
@@ -226,6 +226,7 @@ impl LaunchPickerState {
       inline_edit: InlineEdit::default(),
       field: PickerField::Knob(KnobField::Ctx),
       backend: BackendChoice::Auto,
+      model_backend: BackendChoice::LlamaCpp,
       active_instances: 0,
       prefer_port: None,
       device_catalog: Vec::new(),
@@ -259,20 +260,46 @@ impl LaunchPickerState {
     }
   }
 
-  /// Cycle the per-model backend choice through the registered choices
-  /// (currently Auto → llama.cpp).
+  /// Backend choices the chooser cycles through, scoped to the focused
+  /// model's own backend. A GGUF offers `[Auto, LlamaCpp]`; a Lemonade
+  /// registry model offers `[Auto, Lemonade]`. There is no cross-backend
+  /// override — a model lives in exactly one backend's catalog.
+  fn backend_choices(&self) -> &'static [BackendChoice] {
+    match self.model_backend {
+      BackendChoice::Lemonade => LEMONADE_BACKEND_CHOICES,
+      _ => LLAMACPP_BACKEND_CHOICES,
+    }
+  }
+
+  /// Whether the backend chooser row appears. Shown for models whose backend
+  /// isn't the default direct llama.cpp (i.e. Lemonade), so the user sees the
+  /// non-default backend and the greyed knobs; hidden for plain GGUF rows
+  /// where `Auto` and `llama.cpp` are the same and there's nothing to choose.
+  fn backend_choice_available(&self) -> bool {
+    matches!(self.model_backend, BackendChoice::Lemonade)
+  }
+
+  /// The backend that actually serves the launch: an explicit choice wins;
+  /// `Auto` resolves to the model's own backend. Drives knob-greying so a
+  /// Lemonade model under `Auto` correctly greys the llama.cpp knobs.
+  fn effective_backend(&self) -> BackendChoice {
+    match self.backend {
+      BackendChoice::Auto => self.model_backend,
+      other => other,
+    }
+  }
+
+  /// Cycle the per-model backend choice through the model-scoped choices.
   fn cycle_backend(&mut self, forward: bool) {
-    let i = BACKEND_CHOICES
-      .iter()
-      .position(|c| *c == self.backend)
-      .unwrap_or(0);
-    let n = BACKEND_CHOICES.len();
+    let choices = self.backend_choices();
+    let i = choices.iter().position(|c| *c == self.backend).unwrap_or(0);
+    let n = choices.len();
     let next = if forward {
       (i + 1) % n
     } else {
       (i + n - 1) % n
     };
-    self.backend = BACKEND_CHOICES[next];
+    self.backend = choices[next];
   }
 
   /// Display label for the backend row value (`auto` / `llamacpp`).
@@ -281,25 +308,24 @@ impl LaunchPickerState {
   }
 
   /// Whether the resolved active backend honors `field` (R6). The Settings
-  /// editor greys rows the active backend can't honor. `Auto`/llama.cpp honor
-  /// every typed knob; Lemonade (managed-multiplexer) honors none.
+  /// editor greys rows the active backend can't honor. llama.cpp honors every
+  /// typed knob; Lemonade (managed-multiplexer) honors none. `Auto` resolves
+  /// to the model's own backend first.
   pub fn knob_supported(&self, field: KnobField) -> bool {
     use crate::backend::lemonade::LemonadeBackend;
     use crate::backend::llama_cpp::LlamaCppBackend;
     use crate::backend::Backend;
-    match self.backend {
+    match self.effective_backend() {
       BackendChoice::Lemonade => LemonadeBackend::new().capabilities().supports(field),
-      BackendChoice::Auto | BackendChoice::LlamaCpp => {
-        LlamaCppBackend::new().capabilities().supports(field)
-      }
+      _ => LlamaCppBackend::new().capabilities().supports(field),
     }
   }
 
   /// The active backend's id for the "not supported by `<id>`" label.
   pub fn active_backend_id(&self) -> &'static str {
-    match self.backend {
+    match self.effective_backend() {
       BackendChoice::Lemonade => "lemonade",
-      BackendChoice::Auto | BackendChoice::LlamaCpp => "llamacpp",
+      _ => "llamacpp",
     }
   }
 
@@ -444,11 +470,10 @@ impl LaunchPickerState {
   /// else is always shown. Delegates to the single-source group table.
   pub fn field_visible(&self, field: PickerField) -> bool {
     match field {
-      // Backend chooser only when there's an actual choice — i.e. more than
-      // one concrete backend is registered (R17). With only llama.cpp
-      // (`[Auto, LlamaCpp]`) it's hidden + skipped in navigation; a second
-      // backend flips it on.
-      PickerField::Backend => backend_choice_available(),
+      // Backend chooser only when it adds information — i.e. the focused
+      // model's backend isn't the default direct llama.cpp (R17). A GGUF row
+      // hides + skips it; a Lemonade registry row surfaces it.
+      PickerField::Backend => self.backend_choice_available(),
       PickerField::Knob(k) => knob_row_visible(k, self.multi_device()),
       PickerField::Extras => true,
     }
@@ -806,6 +831,64 @@ mod tests {
     assert_eq!(s.user_knobs.reasoning, Some(false));
     s.cycle_focused_value_next();
     assert_eq!(s.user_knobs.reasoning, None);
+  }
+
+  #[test]
+  fn gguf_model_hides_backend_row_and_offers_only_llamacpp() {
+    // Default model_backend is LlamaCpp (a GGUF row).
+    let s = LaunchPickerState::for_model("qwen");
+    assert!(!s.backend_choice_available(), "GGUF hides the Backend row");
+    assert_eq!(
+      s.backend_choices(),
+      &[BackendChoice::Auto, BackendChoice::LlamaCpp]
+    );
+    assert!(!s.field_visible(PickerField::Backend));
+    // A GGUF under Auto honors llama.cpp knobs.
+    assert!(s.knob_supported(KnobField::Ctx));
+    assert_eq!(s.active_backend_id(), "llamacpp");
+  }
+
+  #[test]
+  fn lemonade_model_shows_backend_row_and_greys_knobs() {
+    let mut s = LaunchPickerState::for_model("Qwen2.5-7B");
+    s.model_backend = BackendChoice::Lemonade;
+    assert!(
+      s.backend_choice_available(),
+      "Lemonade surfaces the Backend row"
+    );
+    assert_eq!(
+      s.backend_choices(),
+      &[BackendChoice::Auto, BackendChoice::Lemonade]
+    );
+    assert!(s.field_visible(PickerField::Backend));
+    // Under Auto a Lemonade model resolves to Lemonade, which honors no
+    // llama.cpp knobs — the editor greys them.
+    assert!(!s.knob_supported(KnobField::Ctx));
+    assert_eq!(s.active_backend_id(), "lemonade");
+  }
+
+  #[test]
+  fn cycle_backend_stays_within_the_models_backend() {
+    // A GGUF can only ever cycle Auto <-> LlamaCpp; Lemonade is never offered.
+    let mut s = LaunchPickerState::for_model("qwen");
+    s.field = PickerField::Backend;
+    assert_eq!(s.backend, BackendChoice::Auto);
+    s.cycle_backend(true);
+    assert_eq!(s.backend, BackendChoice::LlamaCpp);
+    s.cycle_backend(true);
+    assert_eq!(
+      s.backend,
+      BackendChoice::Auto,
+      "wraps, never reaches Lemonade"
+    );
+
+    // A Lemonade model cycles Auto <-> Lemonade.
+    let mut l = LaunchPickerState::for_model("Llama-3.1-8B");
+    l.model_backend = BackendChoice::Lemonade;
+    l.cycle_backend(true);
+    assert_eq!(l.backend, BackendChoice::Lemonade);
+    l.cycle_backend(true);
+    assert_eq!(l.backend, BackendChoice::Auto);
   }
 
   #[test]

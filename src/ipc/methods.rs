@@ -22,7 +22,7 @@ use tokio::sync::{Mutex, RwLock};
 use super::protocol::{ErrorCode, ErrorObject, Request, Response, JSONRPC_VERSION};
 use crate::backend::identity::ModelIdentity;
 use crate::backend::{Backend, LaunchPlan};
-use crate::config::loader::PortRange;
+use crate::config::loader::{LemonadeConfig, PortRange};
 use crate::daemon::host_metrics::{HostMetricsSnapshot, SamplerHandles};
 use crate::daemon::orphans::ExternalProcess;
 use crate::daemon::probe::ProbeOptions;
@@ -109,6 +109,12 @@ pub struct MethodContext {
   /// debugging port-collision scans). `None` in catalog-only tests
   /// that don't bring up the control plane.
   pub ipc_url: Option<String>,
+  /// Opt-in Lemonade backend config (enable flag + the user's `lemond`
+  /// binary path + loopback port). The `start_model` path reads
+  /// `binary`/`port` to spawn the umbrella with the right executable on
+  /// the right port, and `status` reads it for the `installed` signal.
+  /// Defaults to disabled, so catalog-only tests never touch `lemond`.
+  pub lemonade: LemonadeConfig,
 }
 
 /// Wrapper around the in-memory `DaemonState` plus the directory
@@ -214,6 +220,7 @@ impl MethodContext {
       external: Arc::new(RwLock::new(Vec::new())),
       proxy_status: None,
       ipc_url: None,
+      lemonade: LemonadeConfig::default(),
     }
   }
 
@@ -278,6 +285,13 @@ impl MethodContext {
   /// configured one when a scan landed on an offset).
   pub fn with_ipc_url(mut self, url: impl Into<String>) -> Self {
     self.ipc_url = Some(url.into());
+    self
+  }
+
+  /// Builder helper: attach the opt-in Lemonade backend config so the
+  /// `start_model` + `status` paths can resolve the `lemond` binary / port.
+  pub fn with_lemonade(mut self, lemonade: LemonadeConfig) -> Self {
+    self.lemonade = lemonade;
     self
   }
 }
@@ -588,7 +602,7 @@ async fn backends_status(ctx: &MethodContext) -> Value {
     backend_row(
       lemonade.id(),
       lemonade.lifecycle().label(),
-      lemond_installed(),
+      lemond_installed(&ctx.lemonade),
       lemonade.accelerators().labels()
     ),
   ])
@@ -620,19 +634,12 @@ fn accelerator_from_selector(selector: &str) -> Option<crate::backend::Accelerat
   }
 }
 
-/// Best-effort: is a `lemond` executable on PATH? The "installed" signal
-/// for the Lemonade backend in `status`. (`config.lemonade.binary` is a
-/// stronger signal but isn't on the `MethodContext`; PATH covers the common
-/// case + a manually-installed `lemond` on PATH.)
-fn lemond_installed() -> bool {
-  let exe = if cfg!(windows) {
-    "lemond.exe"
-  } else {
-    "lemond"
-  };
-  std::env::var_os("PATH")
-    .map(|paths| std::env::split_paths(&paths).any(|d| d.join(exe).is_file()))
-    .unwrap_or(false)
+/// The "installed" signal for the Lemonade backend in `status`. Honors the
+/// full resolution order — explicit `lemonade.binary` first, then `lemond` /
+/// `lemonade` on PATH — so a user who points at an off-PATH `lemond` still
+/// reads as installed.
+fn lemond_installed(cfg: &LemonadeConfig) -> bool {
+  crate::backend::lemonade::resolve_lemond_binary(cfg).is_some()
 }
 
 /// Project the proxy listener's status cell into the wire shape
@@ -1482,16 +1489,53 @@ pub(crate) async fn start_model_inner(
   // plan shape: the process-per-model arm feeds the supervisor; the
   // managed-multiplexer arm ensures the shared umbrella + delegates.
   let inference_backend = crate::backend::resolve_backend(&identity, launch_params.backend);
+
+  // A managed-multiplexer backend (Lemonade) supervises its *own* umbrella
+  // executable on its *own* loopback port — not the per-model `llama-server`
+  // binary or the reserved launch-pool port. Resolve the `lemond` binary
+  // (config path → PATH) and use the configured umbrella port so the umbrella
+  // discovery probes and the routing target all agree. The reserved pool port
+  // is released by `start_delegated_lemonade` once the umbrella owns its port.
+  let (plan_binary, plan_port) =
+    if inference_backend.lifecycle() == crate::backend::Lifecycle::ManagedMultiplexer {
+      match crate::backend::lemonade::resolve_lemond_binary(&ctx.lemonade) {
+        Some(bin) => (bin, ctx.lemonade.port),
+        None => {
+          ctx.supervisors.release_reserved_port(port).await;
+          return Err(ErrorObject::new(
+            ErrorCode::InvalidParams,
+            "lemonade backend selected but no `lemond` binary found; set `lemonade.binary` \
+             or put `lemond` on PATH (see docs/lemonade-setup.md)"
+              .to_string(),
+          ));
+        }
+      }
+    } else {
+      (launch_binary, port)
+    };
+
   let launch_spec =
-    match inference_backend.prepare_launch(&launch_params, port, launch_binary, scaled_probe) {
+    match inference_backend.prepare_launch(&launch_params, plan_port, plan_binary, scaled_probe) {
       LaunchPlan::SpawnProcess(spec) => spec,
       LaunchPlan::DelegateToManager(spec) => {
-        // Managed-multiplexer (Lemonade): ensure the shared umbrella is up
-        // and delegate the model to it, rather than spawning a per-model
-        // child. Routing of a Lemonade model's requests through the proxy
-        // is handled separately (catalog-source-based; see `proxy::route`).
-        return start_delegated_lemonade(ctx, spec, port, id, identity, log_path, launch_params)
-          .await;
+        // Managed-multiplexer (Lemonade): ensure the shared umbrella is up on
+        // `plan_port` and delegate the model to it, rather than spawning a
+        // per-model child. The umbrella binds its own configured port, not the
+        // launch-pool reservation, so release `port` first (holding it would
+        // leak a pool slot). Routing of a Lemonade model's requests through the
+        // proxy is handled separately (catalog-source-based; see
+        // `proxy::route`).
+        ctx.supervisors.release_reserved_port(port).await;
+        return start_delegated_lemonade(
+          ctx,
+          spec,
+          plan_port,
+          id,
+          identity,
+          log_path,
+          launch_params,
+        )
+        .await;
       }
     };
 
@@ -1586,7 +1630,7 @@ pub(crate) async fn start_model_inner(
 async fn start_delegated_lemonade(
   ctx: &MethodContext,
   spec: crate::backend::ManagerLaunchSpec,
-  reserved_port: u16,
+  umbrella_port: u16,
   id: ModelId,
   identity: ModelIdentity,
   log_path: PathBuf,
@@ -1596,7 +1640,7 @@ async fn start_delegated_lemonade(
 
   let umbrella = match ensure_umbrella(
     &ctx.supervisors,
-    reserved_port,
+    umbrella_port,
     spec.umbrella,
     log_path.clone(),
   )
@@ -1604,23 +1648,21 @@ async fn start_delegated_lemonade(
   {
     Ok(m) => m,
     Err(e) => {
-      ctx.supervisors.release_reserved_port(reserved_port).await;
       return Err(ErrorObject::new(
         ErrorCode::InternalError,
         format!("lemonade umbrella failed to start: {e}"),
       ));
     }
   };
-  // The umbrella owns its registry port now; drop the in-flight reservation
-  // (also frees `reserved_port` when an already-running umbrella was reused).
-  ctx.supervisors.release_reserved_port(reserved_port).await;
-  let umbrella_port = umbrella.port();
+  // An already-running umbrella keeps its own port; trust the handle over the
+  // requested `umbrella_port` so a reused umbrella routes to the right place.
+  let serving_port = umbrella.port();
 
   // Preload the model so an explicit launch makes it resident (chat would
   // autoload too). Best-effort: a load failure (e.g. a non-registry name
   // from a GGUF+override launch) is logged but does not fail the umbrella
   // start — the umbrella is up and real registry models autoload on chat.
-  match LemonadeClient::new(umbrella_port) {
+  match LemonadeClient::new(serving_port) {
     Ok(client) => {
       if let Err(e) = client.load(&spec.model.name).await {
         log::warn!(
@@ -1642,11 +1684,11 @@ async fn start_delegated_lemonade(
     .state
     .mutate(|s| {
       s.running
-        .retain(|r| !(r.id == identity && r.port == umbrella_port));
+        .retain(|r| !(r.id == identity && r.port == serving_port));
       s.running.push(RunningSnapshot {
         id: identity.clone(),
         pid,
-        port: umbrella_port,
+        port: serving_port,
         started_at,
         params: params.clone(),
       });
@@ -1656,7 +1698,7 @@ async fn start_delegated_lemonade(
   Ok(StartedLaunch {
     launch_id: umbrella_launch_id(),
     model_id: id,
-    port: umbrella_port,
+    port: serving_port,
     model: umbrella,
     log_path,
   })

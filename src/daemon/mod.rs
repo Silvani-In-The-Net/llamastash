@@ -339,7 +339,8 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     .with_sampler(sampler)
     .with_state(persisted)
     .with_external(external_combined)
-    .with_proxy_status(std::sync::Arc::clone(&proxy_status_cell));
+    .with_proxy_status(std::sync::Arc::clone(&proxy_status_cell))
+    .with_lemonade(opts.lemonade.clone());
   if let Some(binary) = opts.binary.clone() {
     if let Err(e) = std::fs::create_dir_all(&opts.log_dir) {
       log::warn!(
@@ -398,6 +399,49 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     log::info!(
       "daemon started without `llama-server` binary resolved; `start_model` will return an error until one is configured"
     );
+  }
+
+  // 8a. Lemonade umbrella supervision (opt-in). When the backend is enabled,
+  // bring up the one shared `lemond` umbrella on its configured loopback port
+  // so discovery (which probes that port) and proxy routing (which forwards to
+  // the registered umbrella) both work without the user first issuing an
+  // explicit `start`. Done in a background task: the supervisor blocks until
+  // `/live` is ready, which must not delay the daemon's listeners. A missing
+  // `lemond` binary is a clean warning, never a daemon-start failure —
+  // llamastash never installs it. The `start_model` path's `ensure_umbrella`
+  // is idempotent, so it reuses this umbrella rather than spawning a second.
+  if opts.lemonade.enabled {
+    match crate::backend::lemonade::resolve_lemond_binary(&opts.lemonade) {
+      Some(binary) => {
+        if let Err(e) = std::fs::create_dir_all(&opts.log_dir) {
+          log::warn!(
+            "could not create log dir {}: {e}; lemonade umbrella logs may fail to open",
+            opts.log_dir.display()
+          );
+        }
+        let port = opts.lemonade.port;
+        let probe = match opts.probe_timeout_secs {
+          Some(secs) => ProbeOptions {
+            timeout: std::time::Duration::from_secs(secs),
+            ..ProbeOptions::default()
+          },
+          None => ProbeOptions::default(),
+        };
+        let umbrella = crate::backend::lemonade::umbrella_process_spec(port, binary, probe);
+        let registry = ctx.supervisors.clone();
+        let log_path = opts.log_dir.join("lemonade-umbrella.log");
+        tokio::spawn(async move {
+          match crate::backend::lemonade::ensure_umbrella(&registry, port, umbrella, log_path).await
+          {
+            Ok(_) => log::info!("lemonade umbrella supervised on 127.0.0.1:{port}"),
+            Err(e) => log::warn!("lemonade umbrella failed to start at boot: {e}"),
+          }
+        });
+      }
+      None => log::warn!(
+        "lemonade enabled but no `lemond` binary found (set `lemonade.binary` or put `lemond` on PATH); skipping umbrella supervision"
+      ),
+    }
   }
 
   // 8b. OpenAI-compat proxy listener. Spawned between the

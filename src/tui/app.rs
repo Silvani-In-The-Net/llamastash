@@ -1299,6 +1299,15 @@ impl App {
       }
     }
     state.active_instances = active_count;
+    // Scope the backend chooser to the focused model's own backend (from its
+    // catalog source) so the picker can't force a cross-backend launch — e.g.
+    // a local GGUF onto Lemonade, which has no matching registry entry.
+    state.model_backend = path
+      .as_ref()
+      .and_then(|p| self.models.iter().find(|m| &m.path == p))
+      .filter(|m| m.source.backend_id() == crate::backend::lemonade::LEMONADE_BACKEND_ID)
+      .map(|_| crate::launch::params::BackendChoice::Lemonade)
+      .unwrap_or(crate::launch::params::BackendChoice::LlamaCpp);
     // Populate the Device row from the launch device catalog — the
     // exact `--device` selectors the daemon's configured binaries
     // accept (sourced from their `--list-devices`). The picker cycles
