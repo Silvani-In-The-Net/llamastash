@@ -126,12 +126,15 @@ pub(crate) fn display_size(row: &CatalogRow) -> String {
     .unwrap_or_else(|| "?".to_string())
 }
 
-/// Backend id that serves a catalog row, from its source label (R14).
-/// Every local-file source (user / huggingface / ollama / lm-studio) maps
-/// to `llamacpp`. A future managed-multiplexer backend registers its own
-/// discovery source and adds an arm here.
-pub(crate) fn backend_for_source(_source: &str) -> &'static str {
-  "llamacpp"
+/// Backend id that serves a catalog row, from its source label (R14):
+/// the Lemonade discovery source maps to `lemonade`; every local-file
+/// source (user / huggingface / ollama / lm-studio) to `llamacpp`.
+pub(crate) fn backend_for_source(source: &str) -> &'static str {
+  if source == "lemonade" {
+    "lemonade"
+  } else {
+    "llamacpp"
+  }
 }
 
 /// JSON projection of `list_models` rows. Stable shape — agents pin
@@ -152,8 +155,8 @@ pub fn list_json(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) -> 
         "parent": r.parent,
         "source": r.source,
         // Backend that serves this row (R14 badge): derived from the
-        // source label — every local-file source is served by the direct
-        // llama.cpp backend.
+        // source label — a Lemonade-registry row is served by lemonade,
+        // every local-file source by the direct llama.cpp backend.
         "backend": backend_for_source(&r.source),
         "arch": r.arch,
         "quant": r.quant,
@@ -279,17 +282,25 @@ fn backends_human(backends: &serde_json::Value, tty: bool) -> Option<String> {
     } else {
       accel.join(", ")
     };
+    // Managed-multiplexer backends carry an `umbrella` health string
+    // (running / starting / not running / disabled) that `installed` alone
+    // can't convey. Absent for process-per-model backends (llama.cpp).
+    let umbrella = b.get("umbrella").and_then(|v| v.as_str());
     if tty {
       let state = if installed {
         colors::success("installed")
       } else {
         colors::dim("not installed")
       };
+      let umbrella_str = umbrella
+        .map(|u| format!("  {}", colors::dim(&format!("umbrella: {u}"))))
+        .unwrap_or_default();
       out.push_str(&format!(
-        "  {} {}  {}\n",
+        "  {} {}  {}{}\n",
         console::style(id).bold(),
         state,
         colors::dim(&accel_str),
+        umbrella_str,
       ));
     } else {
       let state = if installed {
@@ -297,7 +308,12 @@ fn backends_human(backends: &serde_json::Value, tty: bool) -> Option<String> {
       } else {
         "not installed"
       };
-      out.push_str(&format!("backend {id}: {state} [{accel_str}]\n"));
+      let umbrella_str = umbrella
+        .map(|u| format!(" umbrella={u}"))
+        .unwrap_or_default();
+      out.push_str(&format!(
+        "backend {id}: {state} [{accel_str}]{umbrella_str}\n"
+      ));
     }
   }
   out.push('\n');

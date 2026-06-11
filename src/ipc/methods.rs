@@ -22,7 +22,7 @@ use tokio::sync::{Mutex, RwLock};
 use super::protocol::{ErrorCode, ErrorObject, Request, Response, JSONRPC_VERSION};
 use crate::backend::identity::ModelIdentity;
 use crate::backend::{Backend, LaunchPlan};
-use crate::config::loader::PortRange;
+use crate::config::loader::{LemonadeConfig, PortRange};
 use crate::daemon::host_metrics::{HostMetricsSnapshot, SamplerHandles};
 use crate::daemon::orphans::ExternalProcess;
 use crate::daemon::probe::ProbeOptions;
@@ -109,6 +109,12 @@ pub struct MethodContext {
   /// debugging port-collision scans). `None` in catalog-only tests
   /// that don't bring up the control plane.
   pub ipc_url: Option<String>,
+  /// Opt-in Lemonade backend config (enable flag + the user's `lemond`
+  /// binary path + loopback port). The `start_model` path reads
+  /// `binary`/`port` to spawn the umbrella with the right executable on
+  /// the right port, and `status` reads it for the `installed` signal.
+  /// Defaults to disabled, so catalog-only tests never touch `lemond`.
+  pub lemonade: LemonadeConfig,
 }
 
 /// Wrapper around the in-memory `DaemonState` plus the directory
@@ -214,6 +220,7 @@ impl MethodContext {
       external: Arc::new(RwLock::new(Vec::new())),
       proxy_status: None,
       ipc_url: None,
+      lemonade: LemonadeConfig::default(),
     }
   }
 
@@ -278,6 +285,13 @@ impl MethodContext {
   /// configured one when a scan landed on an offset).
   pub fn with_ipc_url(mut self, url: impl Into<String>) -> Self {
     self.ipc_url = Some(url.into());
+    self
+  }
+
+  /// Builder helper: attach the opt-in Lemonade backend config so the
+  /// `start_model` + `status` paths can resolve the `lemond` binary / port.
+  pub fn with_lemonade(mut self, lemonade: LemonadeConfig) -> Self {
+    self.lemonade = lemonade;
     self
   }
 }
@@ -442,6 +456,65 @@ async fn status_response(ctx: &MethodContext) -> Value {
     });
     models.push(row);
   }
+  // Delegated Lemonade models — the registry holds only the shared
+  // umbrella (one row whose path is the `lemond` binary), but every
+  // model made resident via `start_model` persisted a RunningSnapshot
+  // at the umbrella's port. Project each as a first-class row: the
+  // synthetic `lemonade://<name>` path matches the catalog entry, so
+  // the TUI list pane and `llamastash list` show the *model* as
+  // running, not just the umbrella. State comes from the preload
+  // task's recorded outcome (`Loading` / `Ready` / `Error{cause}`);
+  // a snapshot with no recorded outcome (re-adopted across a daemon
+  // restart) falls back to mirroring the umbrella. Rows are emitted
+  // only while the umbrella is registered; with it gone the
+  // snapshots are unreachable leftovers (the boot sweep reaps them).
+  if let Some(umbrella) = ctx
+    .supervisors
+    .get(&crate::backend::lemonade::umbrella_launch_id())
+    .await
+  {
+    let ustate_obj = flatten_state(&umbrella.state().await);
+    let upid = umbrella.pid().await;
+    for running_snap in ctx.state.snapshot().await.running.iter() {
+      let Some(backend_id) = lemonade_snapshot_id(running_snap) else {
+        continue;
+      };
+      let state_obj = match ctx.supervisors.delegated_state(&backend_id.name).await {
+        Some(s) => flatten_state(&s),
+        None => ustate_obj.clone(),
+      };
+      let synthetic_id = crate::gguf::identity::ModelId {
+        path: running_snap.params.model_path.clone(),
+        header_blake3: [0u8; 32],
+      };
+      let params_json = json!({
+        "model_path": running_snap.params.model_path,
+        "mode": running_snap.params.mode.label(),
+        "ctx": running_snap.params.ctx,
+        "port": running_snap.params.port,
+        "reasoning": running_snap.params.reasoning,
+        "knobs": &running_snap.params.knobs,
+        "extras": running_snap.params.extras
+          .iter()
+          .map(|s| s.to_string_lossy().into_owned())
+          .collect::<Vec<_>>(),
+      });
+      models.push(json!({
+        "launch_id": crate::backend::lemonade::delegated_launch_id(&backend_id.name),
+        "id": synthetic_id,
+        "port": running_snap.port,
+        "mode": running_snap.params.mode.label(),
+        "pid": upid,
+        "ready_at": running_snap.started_at,
+        "state": state_obj,
+        "params": params_json,
+        // Resource readings stay on the umbrella's own row — mirroring
+        // its RSS onto every resident model would double-count it.
+        "latest_rss_bytes": Value::Null,
+        "latest_cpu_pct": Value::Null,
+      }));
+    }
+  }
   // External — read-only rows for `llama-server` processes the
   // daemon doesn't own. Populated by the startup orphan sweep;
   // mirrors the plan's "External read-only" surface (plan: list-
@@ -554,9 +627,10 @@ async fn status_response(ctx: &MethodContext) -> Value {
 /// Build the `status.backends` array (R3/R16): one row per backend with
 /// whether its binary is installed on this host and which accelerators it
 /// can run on. llama.cpp's accelerator set unions its CPU floor with the
-/// GPU backends the live device catalog reveals. Additional backends append
-/// their own row.
+/// GPU backends the live device catalog reveals; Lemonade reports its
+/// static cpu+npu (a live `lemond` system-info probe is deferred).
 async fn backends_status(ctx: &MethodContext) -> Value {
+  use crate::backend::lemonade::LemonadeBackend;
   use crate::backend::llama_cpp::LlamaCppBackend;
   use crate::backend::Backend;
 
@@ -576,12 +650,69 @@ async fn backends_status(ctx: &MethodContext) -> Value {
     }
   }
 
-  json!([backend_row(
+  let lemonade = LemonadeBackend::new();
+  let mut lemonade_row = backend_row(
+    lemonade.id(),
+    lemonade.lifecycle().label(),
+    lemond_installed(&ctx.lemonade),
+    lemonade.accelerators().labels(),
+  );
+  // Managed-multiplexer health: surface whether the umbrella llamastash
+  // supervises is actually up, so `status` distinguishes "installed" (binary on
+  // disk) from "running" (umbrella Ready). When enabled but down — e.g. the
+  // configured port was already taken at boot — this reads `not running`, which
+  // is the only visible signal outside the daemon log.
+  if let Some(obj) = lemonade_row.as_object_mut() {
+    obj.insert("enabled".into(), json!(ctx.lemonade.enabled));
+    obj.insert("umbrella".into(), json!(lemonade_umbrella_state(ctx).await));
+  }
+  // Each row carries its resolved `binary` path when one exists, so
+  // clients (the TUI's Daemon panel server row) can list every enabled
+  // backend's executable generically — no per-backend client code.
+  let mut llama_row = backend_row(
     llama.id(),
     llama.lifecycle().label(),
     llama_installed,
-    llama_acc.labels()
-  )])
+    llama_acc.labels(),
+  );
+  let llama_binary = ctx.launch.as_ref().map(|e| e.binary.display().to_string());
+  set_backend_binary(&mut llama_row, llama_binary);
+  let lemonade_binary =
+    crate::backend::lemonade::resolve_lemond_binary(&ctx.lemonade).map(|b| b.display().to_string());
+  set_backend_binary(&mut lemonade_row, lemonade_binary);
+  json!([llama_row, lemonade_row])
+}
+
+/// Attach a backend row's resolved `binary` path; absent when no binary
+/// resolves so clients can tell "backend known" from "executable found".
+fn set_backend_binary(row: &mut Value, binary: Option<String>) {
+  if let (Some(obj), Some(bin)) = (row.as_object_mut(), binary) {
+    obj.insert("binary".into(), json!(bin));
+  }
+}
+
+/// The managed `lemond` umbrella's state for `status`, distinct from the
+/// `installed` (binary-resolvable) signal. `disabled` when the backend is off;
+/// otherwise reflects the supervised umbrella: `running` (Ready), `starting`
+/// (spawned, probing), or `not running` (never came up / exited — commonly a
+/// boot-time port conflict).
+async fn lemonade_umbrella_state(ctx: &MethodContext) -> &'static str {
+  use crate::daemon::supervisor::ManagedState;
+  if !ctx.lemonade.enabled {
+    return "disabled";
+  }
+  match ctx
+    .supervisors
+    .get(&crate::backend::lemonade::umbrella_launch_id())
+    .await
+  {
+    Some(m) => match m.state().await {
+      ManagedState::Ready => "running",
+      ManagedState::Launching | ManagedState::Loading => "starting",
+      ManagedState::Error { .. } | ManagedState::Stopping | ManagedState::Stopped => "not running",
+    },
+    None => "not running",
+  }
 }
 
 fn backend_row(id: &str, lifecycle: &str, installed: bool, accelerators: Vec<&str>) -> Value {
@@ -608,6 +739,14 @@ fn accelerator_from_selector(selector: &str) -> Option<crate::backend::Accelerat
   } else {
     None
   }
+}
+
+/// The "installed" signal for the Lemonade backend in `status`. Honors the
+/// full resolution order — explicit `lemonade.binary` first, then `lemond` /
+/// `lemonade` on PATH — so a user who points at an off-PATH `lemond` still
+/// reads as installed.
+fn lemond_installed(cfg: &LemonadeConfig) -> bool {
+  crate::backend::lemonade::resolve_lemond_binary(cfg).is_some()
 }
 
 /// Project the proxy listener's status cell into the wire shape
@@ -711,6 +850,11 @@ async fn stop_model_handler(
 ) -> Result<Value, ErrorObject> {
   let parsed: StopParams = parse_params(params)?;
   check_grace_secs(parsed.grace_secs)?;
+  // A delegated Lemonade model is not a supervised child — "stopping" it
+  // means unloading it from the shared umbrella, which keeps running.
+  if let Some(name) = crate::backend::lemonade::delegated_model_name(parsed.launch_id.as_str()) {
+    return stop_delegated_lemonade(ctx, &parsed.launch_id, name).await;
+  }
   let model = ctx
     .supervisors
     .get(&parsed.launch_id)
@@ -727,17 +871,88 @@ async fn stop_model_handler(
   // Drop the running snapshot keyed by `(id, port)` so a second
   // launch of the same GGUF on a different port keeps its row.
   let stopped_id: ModelIdentity = model.id().clone().into();
+  let stopped_umbrella = parsed.launch_id == crate::backend::lemonade::umbrella_launch_id();
   ctx
     .state
     .mutate(|s| {
       s.running
-        .retain(|r| !(r.id == stopped_id && r.port == stopped_port))
+        .retain(|r| !(r.id == stopped_id && r.port == stopped_port));
+      // Stopping the umbrella takes every delegated model down with it —
+      // their snapshots would otherwise linger as ghost rows the next
+      // `ensure_umbrella` (fresh process, nothing resident) can't honor.
+      if stopped_umbrella {
+        s.running.retain(|r| lemonade_snapshot_id(r).is_none());
+      }
     })
     .await;
+  if stopped_umbrella {
+    ctx.supervisors.clear_delegated().await;
+  }
   Ok(json!({
     "launch_id": parsed.launch_id,
     "state": flatten_state(&final_state),
   }))
+}
+
+/// Stop one delegated Lemonade model: best-effort unload from the shared
+/// umbrella, then drop its running snapshot so `status` stops emitting the
+/// row. The umbrella itself keeps running (stop it via its own
+/// `lemonade-umbrella` launch id). An unload refusal is logged but doesn't
+/// fail the stop — the snapshot is the daemon's own bookkeeping, and a
+/// model the umbrella already evicted should always be clearable.
+async fn stop_delegated_lemonade(
+  ctx: &MethodContext,
+  launch_id: &LaunchId,
+  name: &str,
+) -> Result<Value, ErrorObject> {
+  if let Some(umbrella) = ctx
+    .supervisors
+    .get(&crate::backend::lemonade::umbrella_launch_id())
+    .await
+  {
+    match crate::backend::lemonade::LemonadeClient::new(umbrella.port()) {
+      Ok(client) => {
+        if let Err(e) = client.unload(name).await {
+          log::warn!("lemonade: unload of `{name}` failed (dropping the row anyway): {e}");
+        }
+      }
+      Err(e) => log::warn!("lemonade: could not build client to unload `{name}`: {e}"),
+    }
+  }
+  ctx.supervisors.remove_delegated(name).await;
+  let removed = ctx
+    .state
+    .mutate(|s| {
+      let before = s.running.len();
+      s.running
+        .retain(|r| lemonade_snapshot_id(r).map(|b| b.name.as_str()) != Some(name));
+      before != s.running.len()
+    })
+    .await;
+  if !removed {
+    return Err(ErrorObject::new(
+      ErrorCode::InvalidParams,
+      format!("unknown launch_id: {}", launch_id.as_str()),
+    ));
+  }
+  Ok(json!({
+    "launch_id": launch_id,
+    "state": flatten_state(&ManagedState::Stopped),
+  }))
+}
+
+/// The lemonade [`BackendModelId`](crate::backend::identity::BackendModelId)
+/// behind a running snapshot, or `None` for any other identity (GGUF, other
+/// backends). The one predicate shared by the `status` projection and both
+/// `stop_model` snapshot sweeps, so "is this a delegated lemonade row" can't
+/// drift between them.
+pub(crate) fn lemonade_snapshot_id(
+  snap: &crate::daemon::state_store::RunningSnapshot,
+) -> Option<&crate::backend::identity::BackendModelId> {
+  snap
+    .id
+    .as_backend()
+    .filter(|b| b.backend == crate::backend::lemonade::LEMONADE_BACKEND_ID)
 }
 
 /// Flatten `ManagedState` to a JSON object whose `state` field is a
@@ -993,16 +1208,18 @@ async fn logs_tail_handler(
   params: Option<Value>,
 ) -> Result<Value, ErrorObject> {
   let parsed: LogsTailParams = parse_params(params)?;
-  let model = ctx
-    .supervisors
-    .get(&parsed.launch_id)
-    .await
-    .ok_or_else(|| {
-      ErrorObject::new(
-        ErrorCode::InvalidParams,
-        format!("unknown launch_id: {}", parsed.launch_id.as_str()),
-      )
-    })?;
+  // A delegated Lemonade model has no process of its own — its log *is*
+  // the shared umbrella's log, so tail that one.
+  let lookup_id = match crate::backend::lemonade::delegated_model_name(parsed.launch_id.as_str()) {
+    Some(_) => crate::backend::lemonade::umbrella_launch_id(),
+    None => parsed.launch_id.clone(),
+  };
+  let model = ctx.supervisors.get(&lookup_id).await.ok_or_else(|| {
+    ErrorObject::new(
+      ErrorCode::InvalidParams,
+      format!("unknown launch_id: {}", parsed.launch_id.as_str()),
+    )
+  })?;
   let tail = model.tail(parsed.lines).await;
   Ok(json!({
     "launch_id": parsed.launch_id,
@@ -1185,14 +1402,34 @@ pub(crate) async fn start_model_inner(
     )
   })?;
 
-  // Resolve canonical ModelId and architecture from the GGUF header
-  // in a single read so the layered-knob resolver below doesn't have
-  // to re-open the file.
-  let (id, arch) = resolve_model_id_and_arch(&parsed.model_path)?;
-  // Persisted-keyspace key (state_store / last_params). The GGUF launch
-  // path always produces a `Gguf` identity; a managed-multiplexer
-  // `DelegateToManager` path would produce a `Backend` identity instead.
-  let identity: ModelIdentity = id.clone().into();
+  // Resolve identity + (for GGUF) the architecture. A Lemonade synthetic path
+  // (`lemonade://<name>`) has no local file, so derive a backend identity from
+  // the registry name instead of reading a header — that is what makes the
+  // managed-multiplexer dispatch below select Lemonade rather than crashing on
+  // the missing GGUF. Every other path is a local GGUF: one header read yields
+  // both the canonical id and the arch.
+  let (id, arch, identity): (ModelId, Option<String>, ModelIdentity) =
+    match crate::backend::lemonade::registry_name_from_path(&parsed.model_path) {
+      Some(name) => {
+        let backend_id = crate::backend::identity::BackendModelId {
+          backend: crate::backend::lemonade::LEMONADE_BACKEND_ID.to_string(),
+          name: name.to_string(),
+        };
+        // A synthetic ModelId keeps the file-keyed plumbing (log path, running
+        // snapshot retention) working; the sentinel header hash marks it as
+        // not-a-GGUF. Arch is `None` — lemond owns the recipe, not us.
+        let synthetic = ModelId {
+          path: parsed.model_path.clone(),
+          header_blake3: [0u8; 32],
+        };
+        (synthetic, None, ModelIdentity::Backend(backend_id))
+      }
+      None => {
+        let (id, arch) = resolve_model_id_and_arch(&parsed.model_path)?;
+        let identity: ModelIdentity = id.clone().into();
+        (id, arch, identity)
+      }
+    };
 
   // Mode resolution: explicit override > catalog hint > default to chat.
   // The CLI surface refuses to default silently when discovery says
@@ -1359,7 +1596,7 @@ pub(crate) async fn start_model_inner(
   // host-metrics snapshot. `None` (header missing the attention
   // fields, snapshot not ready, budget too tight) leaves ctx unset
   // so `--fit` still gets the final word.
-  if launch_params.ctx.is_none() {
+  if launch_params.ctx.is_none() && identity.as_gguf().is_some() {
     if let Some(host_slot) = ctx.host_metrics.as_ref() {
       let snapshot = host_slot.read().await.clone();
       let model_path = launch_params.model_path.clone();
@@ -1455,21 +1692,55 @@ pub(crate) async fn start_model_inner(
   // Selection honors the per-model override then the R13 identity rule
   // (`Auto` → GGUF binds llama.cpp). The orchestrator owns the branch on
   // plan shape: the process-per-model arm feeds the supervisor; the
-  // managed-multiplexer arm is wired in Unit 3.
+  // managed-multiplexer arm ensures the shared umbrella + delegates.
   let inference_backend = crate::backend::resolve_backend(&identity, launch_params.backend);
+
+  // A managed-multiplexer backend (Lemonade) supervises its *own* umbrella
+  // executable on its *own* loopback port — not the per-model `llama-server`
+  // binary or the reserved launch-pool port. Resolve the `lemond` binary
+  // (config path → PATH) and use the configured umbrella port so the umbrella
+  // discovery probes and the routing target all agree. The reserved pool port
+  // is released by `start_delegated_lemonade` once the umbrella owns its port.
+  let (plan_binary, plan_port) =
+    if inference_backend.lifecycle() == crate::backend::Lifecycle::ManagedMultiplexer {
+      match crate::backend::lemonade::resolve_lemond_binary(&ctx.lemonade) {
+        Some(bin) => (bin, ctx.lemonade.port),
+        None => {
+          ctx.supervisors.release_reserved_port(port).await;
+          return Err(ErrorObject::new(
+            ErrorCode::InvalidParams,
+            "lemonade backend selected but no `lemond` binary found; set `lemonade.binary` \
+             or put `lemond` on PATH (see docs/lemonade-setup.md)"
+              .to_string(),
+          ));
+        }
+      }
+    } else {
+      (launch_binary, port)
+    };
+
   let launch_spec =
-    match inference_backend.prepare_launch(&launch_params, port, launch_binary, scaled_probe) {
+    match inference_backend.prepare_launch(&launch_params, plan_port, plan_binary, scaled_probe) {
       LaunchPlan::SpawnProcess(spec) => spec,
-      LaunchPlan::DelegateToManager(_) => {
-        // No managed-multiplexer backend is registered on this build, so
-        // selection never returns one. Release the reserved port and fail
-        // cleanly rather than silently dropping the launch. (A managed-
-        // multiplexer engine wires this arm to ensure its umbrella.)
+      LaunchPlan::DelegateToManager(spec) => {
+        // Managed-multiplexer (Lemonade): ensure the shared umbrella is up on
+        // `plan_port` and delegate the model to it, rather than spawning a
+        // per-model child. The umbrella binds its own configured port, not the
+        // launch-pool reservation, so release `port` first (holding it would
+        // leak a pool slot). Routing of a Lemonade model's requests through the
+        // proxy is handled separately (catalog-source-based; see
+        // `proxy::route`).
         ctx.supervisors.release_reserved_port(port).await;
-        return Err(ErrorObject::new(
-          ErrorCode::InternalError,
-          "managed-multiplexer backends are not yet supported".to_string(),
-        ));
+        return start_delegated_lemonade(
+          ctx,
+          spec,
+          plan_port,
+          id,
+          identity,
+          log_path,
+          launch_params,
+        )
+        .await;
       }
     };
 
@@ -1553,6 +1824,166 @@ pub(crate) async fn start_model_inner(
     model,
     log_path,
   })
+}
+
+/// Start a model on a managed-multiplexer backend (Lemonade): ensure the
+/// shared `lemond` umbrella is supervised + ready, then preload the model
+/// through its API. Returns a [`StartedLaunch`] anchored on the umbrella
+/// (the supervised process), so status + stop see one umbrella for all
+/// Lemonade models. Routing of inference is handled by the proxy
+/// (catalog-source-based; see [`crate::proxy::route`]).
+async fn start_delegated_lemonade(
+  ctx: &MethodContext,
+  spec: crate::backend::ManagerLaunchSpec,
+  umbrella_port: u16,
+  id: ModelId,
+  identity: ModelIdentity,
+  log_path: PathBuf,
+  params: LaunchParams,
+) -> Result<StartedLaunch, ErrorObject> {
+  use crate::backend::lemonade::{ensure_umbrella, umbrella_launch_id, LemonadeClient};
+
+  let umbrella = match ensure_umbrella(
+    &ctx.supervisors,
+    umbrella_port,
+    spec.umbrella,
+    log_path.clone(),
+  )
+  .await
+  {
+    Ok(m) => m,
+    Err(e) => {
+      return Err(ErrorObject::new(
+        ErrorCode::InternalError,
+        format!("lemonade umbrella failed to start: {e}"),
+      ));
+    }
+  };
+  // An already-running umbrella keeps its own port; trust the handle over the
+  // requested `umbrella_port` so a reused umbrella routes to the right place.
+  let serving_port = umbrella.port();
+
+  // Preload the model so an explicit launch makes it resident (chat would
+  // autoload too), forwarding the launch params lemond honors: `ctx_size`
+  // plus the free-form extras as the recipe-scoped `*_args` string.
+  //
+  // The load runs as a background task: a cold load can take lemond's
+  // full 120 s budget, which is far past the CLI's IPC reply timeout —
+  // awaiting it here meant the client hung up and hyper cancelled this
+  // handler mid-preload, silently dropping the launch. The task records
+  // its outcome in the registry's delegated-state map (`Loading` →
+  // `Ready` / `Error{cause}`), which is what `status` reports for the
+  // row — so a model lemond can't load shows `error` with lemond's
+  // message instead of a phantom `ready`.
+  ctx
+    .supervisors
+    .set_delegated_state(&spec.model.name, ManagedState::Loading)
+    .await;
+  {
+    let registry = ctx.supervisors.clone();
+    let name = spec.model.name.clone();
+    let params = params.clone();
+    tokio::spawn(async move {
+      let outcome = match LemonadeClient::new(serving_port) {
+        Ok(client) => {
+          let opts = lemonade_load_options(&client, &name, &params).await;
+          client.load_with(&name, &opts).await
+        }
+        Err(e) => Err(e),
+      };
+      match outcome {
+        Ok(()) => {
+          registry
+            .set_delegated_state(&name, ManagedState::Ready)
+            .await;
+        }
+        Err(e) => {
+          log::warn!("lemonade: preload of `{name}` failed: {e}");
+          registry
+            .set_delegated_state(
+              &name,
+              ManagedState::Error {
+                cause: e.to_string(),
+              },
+            )
+            .await;
+        }
+      }
+    });
+  }
+
+  // Persist a running snapshot at the umbrella port for status visibility.
+  let pid = umbrella.pid().await.unwrap_or(0) as i32;
+  let started_at = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|d| d.as_secs())
+    .unwrap_or_default();
+  ctx
+    .state
+    .mutate(|s| {
+      s.running
+        .retain(|r| !(r.id == identity && r.port == serving_port));
+      s.running.push(RunningSnapshot {
+        id: identity.clone(),
+        pid,
+        port: serving_port,
+        started_at,
+        params: params.clone(),
+      });
+    })
+    .await;
+
+  Ok(StartedLaunch {
+    launch_id: umbrella_launch_id(),
+    model_id: id,
+    port: serving_port,
+    model: umbrella,
+    log_path,
+  })
+}
+
+/// Project the launch params onto lemond's load-option surface: `ctx`
+/// (when the user set one) becomes `ctx_size`; non-empty extras become
+/// the recipe-scoped args string (`llamacpp_args` / `whispercpp_args` /
+/// `flm_args` — lemond names the field after the model's recipe, read
+/// from the umbrella's own model list). Extras are dropped with a
+/// warning when the recipe can't be resolved — guessing the field would
+/// silently feed flags to the wrong engine.
+async fn lemonade_load_options(
+  client: &crate::backend::lemonade::LemonadeClient,
+  name: &str,
+  params: &LaunchParams,
+) -> crate::backend::lemonade::LoadOptions {
+  let recipe_args = if params.extras.is_empty() {
+    None
+  } else {
+    let joined = params
+      .extras
+      .iter()
+      .map(|s| s.to_string_lossy())
+      .collect::<Vec<_>>()
+      .join(" ");
+    let recipe = client
+      .list_model_entries()
+      .await
+      .ok()
+      .and_then(|entries| entries.into_iter().find(|e| e.id == name))
+      .and_then(|e| e.recipe);
+    match recipe {
+      Some(recipe) => Some((format!("{recipe}_args"), joined)),
+      None => {
+        log::warn!(
+          "lemonade: dropping extras for `{name}` — could not resolve its recipe \
+           from the umbrella's model list"
+        );
+        None
+      }
+    }
+  };
+  crate::backend::lemonade::LoadOptions {
+    ctx_size: params.ctx,
+    recipe_args,
+  }
 }
 
 fn spawn_last_params_recorder(
@@ -2181,6 +2612,10 @@ mod tests {
       ids.contains(&"llamacpp"),
       "backends must list llamacpp: {ids:?}"
     );
+    assert!(
+      ids.contains(&"lemonade"),
+      "backends must list lemonade: {ids:?}"
+    );
     // Each row carries the R16 fields; llama.cpp always offers CPU.
     let llama = backends
       .iter()
@@ -2195,6 +2630,20 @@ mod tests {
       .filter_map(|v| v.as_str())
       .collect();
     assert!(accel.contains(&"cpu"), "llama.cpp floor is cpu: {accel:?}");
+    // The Lemonade row is a managed-multiplexer offering cpu+npu.
+    let lemon = backends
+      .iter()
+      .find(|b| b["id"] == "lemonade")
+      .expect("lemonade row");
+    assert!(lemon["installed"].is_boolean());
+    assert_eq!(lemon["lifecycle"], json!("managed_multiplexer"));
+    let lacc: Vec<&str> = lemon["accelerators"]
+      .as_array()
+      .unwrap()
+      .iter()
+      .filter_map(|v| v.as_str())
+      .collect();
+    assert!(lacc.contains(&"npu"), "lemonade offers npu: {lacc:?}");
   }
 
   #[tokio::test]
@@ -2251,6 +2700,95 @@ mod tests {
     let proxy = proxy.get("proxy").expect("proxy block present");
     assert_eq!(proxy["host"], json!("0.0.0.0"));
     assert_eq!(proxy["auth"], json!("enforced"));
+  }
+
+  /// A delegated-lemonade snapshot the way `start_delegated_lemonade`
+  /// persists one: Backend identity + the synthetic `lemonade://` path.
+  fn lemonade_running_snapshot(
+    name: &str,
+    port: u16,
+  ) -> crate::daemon::state_store::RunningSnapshot {
+    crate::daemon::state_store::RunningSnapshot {
+      id: crate::backend::identity::ModelIdentity::Backend(
+        crate::backend::identity::BackendModelId {
+          backend: crate::backend::lemonade::LEMONADE_BACKEND_ID.to_string(),
+          name: name.to_string(),
+        },
+      ),
+      pid: 0,
+      port,
+      started_at: 0,
+      params: LaunchParams::new(
+        PathBuf::from(format!("lemonade://{name}")),
+        LaunchMode::Chat,
+      ),
+    }
+  }
+
+  #[tokio::test]
+  async fn status_omits_delegated_lemonade_rows_without_umbrella() {
+    // A snapshot with no registered umbrella is an unreachable leftover
+    // (umbrella crashed / was stopped): emitting a row for it would
+    // offer a stop affordance against nothing. The happy path (umbrella
+    // up → rows emitted) is covered in `lemonade_umbrella_test.rs`.
+    let c = ctx();
+    c.state
+      .mutate(|s| s.running.push(lemonade_running_snapshot("Qwen-X", 13305)))
+      .await;
+    let resp = dispatch_request(&c, Request::new(1, "status", None)).await;
+    let body = resp.result.expect("status result");
+    let models = body["models"].as_array().expect("models array");
+    assert!(
+      !models.iter().any(|m| m["launch_id"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("lemonade:")),
+      "no delegated rows without a registered umbrella: {models:?}"
+    );
+  }
+
+  #[tokio::test]
+  async fn stop_delegated_lemonade_clears_snapshot_even_without_umbrella() {
+    // The umbrella is gone but the snapshot lingers (e.g. it crashed):
+    // the row must still be clearable — the unload is best-effort, the
+    // bookkeeping removal is the contract.
+    let c = ctx();
+    c.state
+      .mutate(|s| s.running.push(lemonade_running_snapshot("Qwen-X", 13305)))
+      .await;
+    let resp = dispatch_request(
+      &c,
+      Request::new(
+        1,
+        "stop_model",
+        Some(json!({"launch_id": "lemonade:Qwen-X"})),
+      ),
+    )
+    .await;
+    let body = resp.result.expect("delegated stop must succeed");
+    assert_eq!(body["state"]["state"], json!("stopped"));
+    let still_there = c
+      .state
+      .snapshot()
+      .await
+      .running
+      .iter()
+      .any(|r| lemonade_snapshot_id(r).is_some());
+    assert!(!still_there, "snapshot must be dropped");
+    // Second stop: the row is unknown now — same error a bogus
+    // supervised launch_id gets.
+    let second = dispatch_request(
+      &c,
+      Request::new(
+        2,
+        "stop_model",
+        Some(json!({"launch_id": "lemonade:Qwen-X"})),
+      ),
+    )
+    .await;
+    let err = second.error.expect("double-stop must error");
+    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+    assert!(err.message.contains("lemonade:Qwen-X"));
   }
 
   #[tokio::test]
@@ -2347,5 +2885,101 @@ mod tests {
       "got: {}",
       err.message
     );
+  }
+
+  #[tokio::test]
+  async fn lemonade_start_without_binary_releases_reserved_port() {
+    use crate::config::loader::PortRange;
+    use crate::gguf::test_fixtures::build_minimal_gguf;
+    use crate::launch::params::BackendChoice;
+
+    // A real (minimal) GGUF on disk so `start_model_inner` clears header
+    // resolution and reaches the backend-selection seam.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_path = dir.path().join("tiny.gguf");
+    std::fs::write(&model_path, build_minimal_gguf("llama")).expect("write gguf");
+
+    // A single-port range on a probe-clear port. Find one the allocator
+    // accepts (tolerates TIME_WAIT), then release it so the run under test
+    // starts from an empty reservation set.
+    let registry = SupervisorRegistry::new();
+    let mut found = None;
+    for _ in 0..16 {
+      let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("ephemeral port");
+      let p = l.local_addr().unwrap().port();
+      drop(l);
+      let range = PortRange { start: p, end: p };
+      if registry.reserve_port(None, &[], &range).await.is_ok() {
+        registry.release_reserved_port(p).await;
+        found = Some(p);
+        break;
+      }
+    }
+    let port = found.expect("at least one of 16 attempts lands on a probe-clear port");
+    let range = PortRange {
+      start: port,
+      end: port,
+    };
+
+    let env = LaunchEnv {
+      // Never spawned on this path — the managed-multiplexer arm errors out
+      // before any process launch.
+      binary: PathBuf::from("/nonexistent/llama-server"),
+      port_range: range,
+      log_dir: dir.path().to_path_buf(),
+      probe: ProbeOptions::default(),
+      arch_defaults: Default::default(),
+      device_catalog: Arc::new(RwLock::new(Vec::new())),
+    };
+
+    // Lemonade enabled but pointed at a binary that does not exist. The
+    // explicit-`binary` branch never falls back to PATH, so resolution is
+    // deterministically `None` even on a host that has a real `lemond`
+    // installed — the test can't be fooled by the dev machine's PATH.
+    let ctx = MethodContext::new(ShutdownToken::new())
+      .with_supervisors(registry)
+      .with_launch_env(env)
+      .with_lemonade(LemonadeConfig {
+        enabled: true,
+        binary: Some(PathBuf::from("/nonexistent/lemond-xyz")),
+        port: 13305,
+      });
+
+    let parsed = StartParams {
+      model_path,
+      // Force the managed-multiplexer seam: an explicit Lemonade override
+      // outranks the GGUF identity rule.
+      backend: Some(BackendChoice::Lemonade),
+      ..Default::default()
+    };
+
+    // `StartedLaunch` (the Ok variant) isn't `Debug`, so match rather than
+    // `expect_err`.
+    let err = match start_model_inner(
+      &ctx,
+      parsed,
+      crate::daemon::supervisor::LaunchOrigin::Manual,
+    )
+    .await
+    {
+      Ok(_) => panic!("unresolvable lemond binary must error"),
+      Err(e) => e,
+    };
+    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+    assert!(
+      err.message.contains("lemond"),
+      "error should name the missing lemond binary, got: {}",
+      err.message
+    );
+
+    // The reservation must have been released: the single-port range is
+    // allocatable again only if `start_model_inner` dropped its hold on the
+    // error path (otherwise the range is exhausted and this errors).
+    let reclaimed = ctx
+      .supervisors
+      .reserve_port(None, &[], &range)
+      .await
+      .expect("reserved port must be released on the lemonade-unavailable error path");
+    assert_eq!(reclaimed, port);
   }
 }

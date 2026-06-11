@@ -199,6 +199,14 @@ fn resolve_mode(
   if let Some(m) = override_mode {
     return Ok(m.as_label());
   }
+  // Backend-managed rows (Lemonade) are served by an umbrella that picks the
+  // recipe from the model name; llama.cpp launch modes don't apply, so don't
+  // force `--mode`. The daemon ignores the mode for these, so default to chat.
+  if crate::cli::output::backend_for_source(&row.source)
+    == crate::backend::lemonade::LEMONADE_BACKEND_ID
+  {
+    return Ok("chat");
+  }
   match row.mode_hint.as_deref() {
     Some("chat") => Ok("chat"),
     Some("embedding") => Ok("embedding"),

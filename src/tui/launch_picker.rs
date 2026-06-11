@@ -28,9 +28,6 @@ pub const CTX_PRESETS: &[u32] = &[2048, 4096, 8192, 16384, 32768, 65536, 131072]
 /// order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerField {
-  /// Per-model backend choice (R17). The first row — it's the launch-level
-  /// decision that gates which knobs below the active backend can honor.
-  Backend,
   Knob(KnobField),
   Extras,
 }
@@ -41,8 +38,7 @@ pub enum PickerField {
 /// by `Extras`. Built once on first access so per-keypress navigation
 /// does no allocation.
 static ALL_FIELDS: LazyLock<Box<[PickerField]>> = LazyLock::new(|| {
-  // Backend leads — it's the launch-level choice that gates the knobs below.
-  let mut v: Vec<PickerField> = vec![PickerField::Backend];
+  let mut v: Vec<PickerField> = Vec::new();
   for group in knob_display_groups() {
     for field in group.fields {
       v.push(PickerField::Knob(*field));
@@ -51,18 +47,6 @@ static ALL_FIELDS: LazyLock<Box<[PickerField]>> = LazyLock::new(|| {
   v.push(PickerField::Extras);
   v.into_boxed_slice()
 });
-
-/// Backend choices the picker cycles through, in ←/→ order. `Auto` plus one
-/// entry per concrete backend; a second backend adds a variant here and the
-/// chooser row becomes visible.
-const BACKEND_CHOICES: &[BackendChoice] = &[BackendChoice::Auto, BackendChoice::LlamaCpp];
-
-/// Whether the backend chooser row should appear — only when there's an
-/// actual choice (more than one concrete backend beyond `Auto`).
-fn backend_choice_available() -> bool {
-  // `Auto` + N concrete backends; a real choice needs N >= 2, i.e. > 2 total.
-  BACKEND_CHOICES.len() > 2
-}
 
 impl PickerField {
   /// All rows in render / navigation order. Returns a static slice so
@@ -84,8 +68,6 @@ impl PickerField {
   /// on those rows) so the chip and the handler stay in lockstep.
   pub fn is_editable(self) -> bool {
     match self {
-      // Backend is cycled with ←/→ (a closed set), never typed.
-      PickerField::Backend => false,
       PickerField::Extras => true,
       PickerField::Knob(k) => match k {
         KnobField::Reasoning | KnobField::FlashAttn | KnobField::Mlock | KnobField::NoMmap => false,
@@ -189,10 +171,12 @@ pub struct LaunchPickerState {
   /// string rendered under the row.
   pub inline_edit: InlineEdit,
   pub field: PickerField,
-  /// Per-model backend choice (R17). `Auto` runs the identity rule (GGUF →
-  /// llama.cpp); a managed-multiplexer backend greys the knob rows it can't
-  /// honor.
-  pub backend: BackendChoice,
+  /// The focused model's *own* concrete backend (the one its catalog source
+  /// binds to): `LlamaCpp` for a GGUF, `Lemonade` for a `lemonade://`
+  /// registry model. A model lives in exactly one backend's catalog, so
+  /// there is no user-facing chooser — this drives knob visibility (R6)
+  /// and is what the launch dispatches to. Never `Auto`.
+  pub model_backend: BackendChoice,
   pub active_instances: usize,
   pub prefer_port: Option<u16>,
   /// Launch device catalog from `status.device_catalog` — the exact
@@ -221,7 +205,7 @@ impl LaunchPickerState {
       extras_input: crate::tui::input_field::InputField::default(),
       inline_edit: InlineEdit::default(),
       field: PickerField::Knob(KnobField::Ctx),
-      backend: BackendChoice::Auto,
+      model_backend: BackendChoice::LlamaCpp,
       active_instances: 0,
       prefer_port: None,
       device_catalog: Vec::new(),
@@ -240,7 +224,6 @@ impl LaunchPickerState {
   /// Cycle the focused field's value forward (Right arrow).
   pub fn cycle_focused_value_next(&mut self) {
     match self.field {
-      PickerField::Backend => self.cycle_backend(true),
       PickerField::Knob(k) => self.cycle_knob(k, true),
       PickerField::Extras => {}
     }
@@ -249,51 +232,30 @@ impl LaunchPickerState {
   /// Cycle the focused field's value backward (Left arrow).
   pub fn cycle_focused_value_prev(&mut self) {
     match self.field {
-      PickerField::Backend => self.cycle_backend(false),
       PickerField::Knob(k) => self.cycle_knob(k, false),
       PickerField::Extras => {}
     }
   }
 
-  /// Cycle the per-model backend choice through the registered choices
-  /// (currently Auto → llama.cpp).
-  fn cycle_backend(&mut self, forward: bool) {
-    let i = BACKEND_CHOICES
-      .iter()
-      .position(|c| *c == self.backend)
-      .unwrap_or(0);
-    let n = BACKEND_CHOICES.len();
-    let next = if forward {
-      (i + 1) % n
-    } else {
-      (i + n - 1) % n
-    };
-    self.backend = BACKEND_CHOICES[next];
-  }
-
-  /// Display label for the backend row value (`auto` / `llamacpp`).
-  pub fn backend_label(&self) -> &'static str {
-    self.backend.label()
-  }
-
-  /// Whether the resolved active backend honors `field` (R6). The Settings
-  /// editor greys rows the active backend can't honor. The picker always
-  /// edits a GGUF model, so the choices here all resolve to llama.cpp (which
-  /// honors every typed knob); a backend that honors a subset adds its arm.
+  /// Whether the model's backend honors `field` (R6).
+  /// [`Self::field_visible`] hides rows the backend can't honor.
+  /// llama.cpp honors every typed knob; Lemonade honors `ctx` only
+  /// (lemond's `ctx_size` load option).
   pub fn knob_supported(&self, field: KnobField) -> bool {
+    use crate::backend::lemonade::LemonadeBackend;
     use crate::backend::llama_cpp::LlamaCppBackend;
     use crate::backend::Backend;
-    match self.backend {
-      BackendChoice::Auto | BackendChoice::LlamaCpp => {
-        LlamaCppBackend::new().capabilities().supports(field)
-      }
+    match self.model_backend {
+      BackendChoice::Lemonade => LemonadeBackend::new().capabilities().supports(field),
+      _ => LlamaCppBackend::new().capabilities().supports(field),
     }
   }
 
-  /// The active backend's id for the "not supported by `<id>`" label.
+  /// The model's backend id for log / label use.
   pub fn active_backend_id(&self) -> &'static str {
-    match self.backend {
-      BackendChoice::Auto | BackendChoice::LlamaCpp => "llamacpp",
+    match self.model_backend {
+      BackendChoice::Lemonade => "lemonade",
+      _ => "llamacpp",
     }
   }
 
@@ -415,8 +377,6 @@ impl LaunchPickerState {
   /// inherit from the resolver chain.
   pub fn reset_focused_row(&mut self) {
     match self.field {
-      // Backspace on the backend row resets the choice to Auto.
-      PickerField::Backend => self.backend = BackendChoice::Auto,
       PickerField::Knob(k) => self.clear_user(k),
       PickerField::Extras => {
         self.extras.clear();
@@ -434,16 +394,13 @@ impl LaunchPickerState {
 
   /// Whether a row is currently shown / navigable. The Multi-GPU
   /// placement knobs (`device`, `tensor_split`, `main_gpu`,
-  /// `split_mode`) are gated on [`Self::multi_device`]; everything
-  /// else is always shown. Delegates to the single-source group table.
+  /// `split_mode`) are gated on [`Self::multi_device`]; knobs the
+  /// model's backend can't honor are hidden outright (R6) — a Lemonade
+  /// model shows just ctx and extras rather than a column of dead
+  /// rows. Delegates to the single-source group table.
   pub fn field_visible(&self, field: PickerField) -> bool {
     match field {
-      // Backend chooser only when there's an actual choice — i.e. more than
-      // one concrete backend is registered (R17). With only llama.cpp
-      // (`[Auto, LlamaCpp]`) it's hidden + skipped in navigation; a second
-      // backend flips it on.
-      PickerField::Backend => backend_choice_available(),
-      PickerField::Knob(k) => knob_row_visible(k, self.multi_device()),
+      PickerField::Knob(k) => self.knob_supported(k) && knob_row_visible(k, self.multi_device()),
       PickerField::Extras => true,
     }
   }
@@ -800,6 +757,35 @@ mod tests {
     assert_eq!(s.user_knobs.reasoning, Some(false));
     s.cycle_focused_value_next();
     assert_eq!(s.user_knobs.reasoning, None);
+  }
+
+  #[test]
+  fn gguf_model_honors_every_llamacpp_knob() {
+    // Default model_backend is LlamaCpp (a GGUF row).
+    let s = LaunchPickerState::for_model("qwen");
+    assert!(s.knob_supported(KnobField::Ctx));
+    assert_eq!(s.active_backend_id(), "llamacpp");
+  }
+
+  #[test]
+  fn lemonade_model_shows_only_ctx_and_extras() {
+    let mut s = LaunchPickerState::for_model("Qwen2.5-7B");
+    s.model_backend = BackendChoice::Lemonade;
+    // Lemonade honors `ctx` (lemond's `ctx_size` load option) and the
+    // free-form extras (`*_args`) — every other llama.cpp knob row is
+    // hidden outright. There is no Backend row: a model lives in exactly
+    // one backend's catalog, so there is nothing to choose.
+    let visible: Vec<PickerField> = PickerField::all()
+      .iter()
+      .copied()
+      .filter(|f| s.field_visible(*f))
+      .collect();
+    assert_eq!(
+      visible,
+      vec![PickerField::Knob(KnobField::Ctx), PickerField::Extras],
+      "lemonade picker is ctx + extras, nothing else"
+    );
+    assert_eq!(s.active_backend_id(), "lemonade");
   }
 
   #[test]

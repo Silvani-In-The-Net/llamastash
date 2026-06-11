@@ -70,6 +70,12 @@ pub(crate) struct Target<'a> {
   /// a Ready→Stopping→port-reuse race can't silently route to a
   /// different model.
   pub served_model_key: &'a crate::gguf::identity::ModelId,
+  /// Upstream path prefix prepended to the inbound path before the
+  /// request is sent (`None` for direct llama.cpp, which serves OpenAI
+  /// at `/v1/...`; `Some("/api")` for the Lemonade umbrella, which
+  /// serves it at `/api/v1/...`). Lets one forward path target backends
+  /// whose OpenAI surface lives under different roots.
+  pub upstream_path_prefix: Option<&'a str>,
   pub fallback: bool,
   pub fallback_reason: Option<&'a str>,
 }
@@ -97,6 +103,7 @@ pub(crate) async fn forward_to_upstream(
     port,
     served_model_id,
     served_model_key,
+    upstream_path_prefix,
     fallback,
     fallback_reason,
   } = target;
@@ -123,7 +130,10 @@ pub(crate) async fn forward_to_upstream(
     .path_and_query()
     .map(|p| p.as_str())
     .unwrap_or("/");
-  let upstream_url = format!("http://127.0.0.1:{port}{path_and_query}");
+  // Lemonade serves OpenAI under `/api/v1/...`; llama.cpp under `/v1/...`.
+  // The prefix (if any) is prepended so the same forward path reaches both.
+  let prefix = upstream_path_prefix.unwrap_or("");
+  let upstream_url = format!("http://127.0.0.1:{port}{prefix}{path_and_query}");
 
   // Translate hyper::Method into reqwest::Method. Both crates share
   // the underlying `http` types so this is a structural conversion
@@ -170,8 +180,15 @@ pub(crate) async fn forward_to_upstream(
     outbound_headers.append(outbound_name, outbound_value);
   }
 
-  let request = state
-    .http_client
+  // Umbrella upstreams (prefixed path) use the unpooled client so no
+  // keep-alive connection ever idles against the umbrella port — see
+  // `ProxyState::umbrella_client` for the restart-wedge this avoids.
+  let client = if upstream_path_prefix.is_some() {
+    &state.umbrella_client
+  } else {
+    &state.http_client
+  };
+  let request = client
     .request(upstream_method, &upstream_url)
     .headers(outbound_headers)
     .body(body_bytes);

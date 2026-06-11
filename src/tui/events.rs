@@ -435,9 +435,6 @@ fn open_focused_inline_edit(app: &mut App) {
       picker.extras_input.set_text(joined);
       picker.extras_input.enter_edit();
     }
-    // Backend is cycled (←/→), not typed — unreachable past the
-    // `is_editable()` guard above; the arm satisfies exhaustiveness.
-    PickerField::Backend => {}
   }
 }
 
@@ -563,9 +560,6 @@ fn commit_inline_edit(app: &mut App) -> bool {
       }
     },
     PickerField::Extras => Ok(()),
-    // Backend is cycled, never inline-edited (no `inline_edit.field` is
-    // ever set to it); arm satisfies exhaustiveness.
-    PickerField::Backend => Ok(()),
   };
   match result {
     Ok(()) => {
@@ -1526,6 +1520,18 @@ fn require_events_tx(app: &App, op: &'static str) -> Option<mpsc::Sender<Event>>
   tx
 }
 
+/// The model name to put on an OpenAI request against a managed row's
+/// port. Lemonade rows carry the registry name in their synthetic path —
+/// `model_display_name`'s `file_stem` would mangle dotted names
+/// (`lemonade://qwen3.5-4b-FLM` → `qwen3`), and the umbrella resolves
+/// by exact registry name.
+fn served_model_name(path: &std::path::Path) -> String {
+  match crate::backend::lemonade::registry_name_from_path(path) {
+    Some(name) => name.to_string(),
+    None => crate::util::paths::model_display_name(path),
+  }
+}
+
 /// Trigger an OpenAI streaming chat completion against the focused
 /// Ready model. Stashes the receiver on `app.chat` so the render
 /// loop can drain it without blocking input.
@@ -1538,7 +1544,7 @@ fn apply_send_chat(app: &mut App) {
     return;
   }
   let prompt = app.chat.prompt.buffer().to_string();
-  let model_name = crate::util::paths::model_display_name(&managed.path);
+  let model_name = served_model_name(&managed.path);
   app.chat.reset_for_send();
   if let Some(tx) = require_events_tx(app, "chat submit") {
     spawn_chat_stream(managed.port, model_name, prompt, tx);
@@ -1557,7 +1563,7 @@ fn apply_embed_submit(app: &mut App) {
     return;
   }
   let input = app.embed.input.buffer().to_string();
-  let model_name = crate::util::paths::model_display_name(&managed.path);
+  let model_name = served_model_name(&managed.path);
   app.embed.busy = true;
   let port = managed.port;
   if let Some(events_tx) = require_events_tx(app, "embed submit") {
@@ -1618,7 +1624,7 @@ fn apply_rerank_submit(app: &mut App) {
   }
   let query = app.rerank.query.buffer().to_string();
   let candidates = app.rerank.candidates.clone();
-  let model_name = crate::util::paths::model_display_name(&managed.path);
+  let model_name = served_model_name(&managed.path);
   app.rerank.busy = true;
   let port = managed.port;
   if let Some(events_tx) = require_events_tx(app, "rerank submit") {
@@ -1740,7 +1746,7 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     extras,
     mode,
     prefer_port: picker.prefer_port,
-    backend: picker.backend,
+    backend: picker.model_backend,
   });
 
   if active_instances > 0 {
@@ -1801,7 +1807,7 @@ fn build_yank_text(app: &App, action: Action) -> Option<String> {
     Action::YankCurl => {
       let m = app.focused_managed()?;
       let url = format!("http://127.0.0.1:{}/v1", m.port);
-      let model_name = crate::util::paths::model_display_name(&m.path);
+      let model_name = served_model_name(&m.path);
       Some(format!(
         "curl -s -H 'Content-Type: application/json' -d '{{\"model\":\"{}\",\"messages\":[{{\"role\":\"user\",\"content\":\"hello\"}}]}}' {}/chat/completions",
         model_name,
@@ -2267,26 +2273,34 @@ fn handle_event(app: &mut App, evt: Event, writer_tx: &mpsc::Sender<WriterCmd>) 
   }
 }
 
+/// A daemon answered an RPC: flip the connected flag and drop any
+/// startup auto-spawn refusal — a live daemon supersedes the stale
+/// "couldn't start one" message in the Daemon panel.
+fn mark_daemon_connected(app: &mut App) {
+  app.daemon_connected = true;
+  app.daemon_start_error = None;
+}
+
 fn apply_refresh(app: &mut App, tick: RefreshTick) {
   match tick {
     RefreshTick::Catalog(body) => {
-      app.daemon_connected = true;
+      mark_daemon_connected(app);
       app.ingest_list_models(&body);
     }
     RefreshTick::Status(body) => {
-      app.daemon_connected = true;
+      mark_daemon_connected(app);
       app.ingest_status(&body);
     }
     RefreshTick::Favorites(body) => {
-      app.daemon_connected = true;
+      mark_daemon_connected(app);
       app.ingest_favorites(&body);
     }
     RefreshTick::LastParams(body) => {
-      app.daemon_connected = true;
+      mark_daemon_connected(app);
       app.ingest_last_params(&body);
     }
     RefreshTick::Logs { launch_id, lines } => {
-      app.daemon_connected = true;
+      mark_daemon_connected(app);
       // Replace the buffer only when the snapshot matches the
       // launch the user currently has focused. Otherwise the poll
       // raced a focus change; drop on the floor.
@@ -2400,6 +2414,7 @@ pub fn refresh_apply(app: &mut App, tick: RefreshTick) {
 /// loaded config and a connected (or-not-yet-connected) daemon
 /// socket. Splitting it out keeps the binary entry small and the
 /// call testable.
+#[allow(clippy::too_many_arguments)]
 pub async fn launch(
   theme: crate::theme::ThemeName,
   custom_palette: Option<crate::theme::Palette>,
@@ -2408,14 +2423,19 @@ pub async fn launch(
   mouse_focus: bool,
   socket: &Path,
   daemon_opts: Option<crate::daemon::DaemonOptions>,
+  daemon_start_error: Option<String>,
 ) -> Result<()> {
-  let app = App::new(crate::tui::app::AppOptions {
+  let mut app = App::new(crate::tui::app::AppOptions {
     theme,
     custom_palette,
     keymap,
     offline,
     mouse_focus,
   });
+  // Startup auto-spawn refused (backend fail-fast precheck) — the TUI
+  // runs daemon-less and the Daemon panel explains why. Cleared by
+  // `mark_daemon_connected` if a daemon comes up later.
+  app.daemon_start_error = daemon_start_error;
   run(app, socket.to_path_buf(), daemon_opts).await
 }
 
@@ -4677,7 +4697,9 @@ mod tests {
 
     pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::RightPane);
-    // Up from Ctx wraps to the last row (Extras).
+    // A plain GGUF row hides the Backend chooser (Auto == llama.cpp, no
+    // cross-backend choice), so Ctx is the first row and Up from it wraps to
+    // the last row (Extras).
     assert_eq!(
       app.launch_picker.as_ref().expect("picker").field,
       PickerField::Extras

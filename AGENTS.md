@@ -91,6 +91,26 @@ The v1 contract — these are deliberate omissions, not gaps:
 - **Single binary, three roles.** The TUI, CLI, and daemon are all `llamastash`. Daemon spawns on demand when TUI/CLI attach and find the socket missing.
 - **Catppuccin Macchiato is the default theme.** Five themes ship total (Macchiato, Latte, Gruvbox Dark, Solarized Dark, Monochrome). Themes are hard-coded palettes; no dynamic loading.
 
+## Dev commands: `make` / `cargo`, never global `llamastash`
+
+When handing the user (or another agent) commands to run **for a development
+task**, always give `make <target>` or `cargo …` forms, never a bare global
+`llamastash <args>`:
+
+- Prefer `cargo run -- <args>` (e.g. `cargo run -- daemon start --lemonade`) or a
+  `make` target (`make run`, `make test`, `make lint`, `make doc`, `make render`).
+- For a stable binary path across many client calls, use `cargo build` then
+  `./target/debug/llamastash <args>` (still the working-tree build, not the
+  installed one). Isolate side-by-side daemons with `LLAMASTASH_STATE_DIR` and a
+  non-default `--proxy-port` so you never touch the user's real daemon.
+- Never tell the user to run a bare `llamastash <args>`: that resolves to
+  whatever is installed on `PATH`, not their working tree, so it will not reflect
+  the change under test.
+
+Reserve a bare global `llamastash` only for genuine LLM-management work the user
+is actually doing with the tool (serving / managing real models), not for
+exercising or verifying code changes.
+
 ## Build, test, lint
 
 ```bash
@@ -136,6 +156,20 @@ target/debug/llamastash                                 # TUI: pan through every
 ```
 
 For TUI changes specifically, **launch the TUI and look at the panel you touched** — golden snapshots catch byte-exact regressions but not "the field is empty in real life because the running daemon doesn't surface it yet." A fresh daemon restart is part of the validation.
+
+Agents (no interactive terminal) can drive the TUI through
+`scripts/tui_drive.py`: it spawns the working-tree binary in a pty, feeds a
+scripted key sequence, and prints a plain-text screen capture after each step
+(needs `pip install pyte`; the child inherits `LLAMASTASH_*` env vars, so
+pair it with an isolated state dir). Example — stage the launch picker on a
+filtered row and read the staged form:
+
+```bash
+python3 scripts/tui_drive.py '[["", 4, "boot"], ["/gemma|<enter>", 2, "staged"]]'
+```
+
+One-frame renders without key input are cheaper via the built-in
+`llamastash --render --render-size 160x45` (`make render` renders all sizes).
 
 When E2E surfaces a regression the test suite missed (stale daemon, missing IPC field, wrong port, etc.), add a regression test before fixing — that's the gap the suite needs covered.
 

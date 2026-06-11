@@ -41,7 +41,7 @@ use self::{
   shutdown::{install_signal_handlers, ShutdownToken},
   state_store::{load as load_state, RunningSnapshot},
 };
-use crate::config::loader::{PortRange, ProxyConfig};
+use crate::config::loader::{LemonadeConfig, PortRange, ProxyConfig};
 use crate::daemon::probe::ProbeOptions;
 use crate::discovery::ModelCatalog;
 use crate::ipc::methods::{LaunchEnv, MethodContext, PersistedState};
@@ -107,6 +107,12 @@ pub struct DaemonOptions {
   /// unprivileged port and is best-effort (bind failure is
   /// non-fatal).
   pub proxy: ProxyConfig,
+  /// Lemonade backend config (opt-in enable + the user's `lemond` path +
+  /// port). Sourced from the `[lemonade]` section, OR-ed with the
+  /// `--lemonade` flag / `LLAMASTASH_LEMONADE` env. When `lemonade.enabled`
+  /// is false (the default) the daemon never runs Lemonade discovery,
+  /// supervises the umbrella, or routes to it.
+  pub lemonade: LemonadeConfig,
   /// Control-plane HTTP listener port. Phase A of the Windows+HTTP-IPC
   /// plan: the bearer-token-authed JSON-RPC server binds here. `0`
   /// means "let the kernel pick" (used by tests for collision
@@ -116,6 +122,12 @@ pub struct DaemonOptions {
   /// `runtime.json` at startup so attaching CLI / TUI clients can
   /// discover them.
   pub control_plane_port: u16,
+  /// `daemon start --force`: came up despite an *indicated* backend failing
+  /// its precheck (missing `llama-server`, missing/blocked Lemonade umbrella).
+  /// The CLI gate (`precheck_indicated_backends`) is what enforces fail-fast;
+  /// this only needs to ride through the detached re-exec so the foreground
+  /// child skips the same gate the parent already waived.
+  pub force: bool,
 }
 
 impl DaemonOptions {
@@ -140,11 +152,13 @@ impl DaemonOptions {
       // from the test's standpoint. Tests that *do* want the proxy
       // off can flip `enabled` after construction.
       proxy: ProxyConfig::default(),
+      lemonade: LemonadeConfig::default(),
       // Port `0` makes every test pick an ephemeral free slot — no
       // cross-test contention on the
       // [`control_plane::DEFAULT_CONTROL_PORT`] the production CLI
       // uses via `from_defaults`.
       control_plane_port: 0,
+      force: false,
     }
   }
 
@@ -170,7 +184,9 @@ impl DaemonOptions {
       arch_defaults: std::collections::BTreeMap::new(),
       propagated_cli_args: Vec::new(),
       proxy: ProxyConfig::default(),
+      lemonade: LemonadeConfig::default(),
       control_plane_port: control_plane::DEFAULT_CONTROL_PORT,
+      force: false,
     })
   }
 }
@@ -221,7 +237,13 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // produces a working daemon with an empty catalog — `list_models`
   // returns `{"models": []}`.
   let catalog = ModelCatalog::new();
-  let _discovery = discovery_task::spawn(catalog.clone(), opts.discovery.clone());
+  // Lemonade discovery is opt-in and off by default, so a standard install
+  // never contacts `lemond`. Only an enabled backend threads its port in.
+  let mut discovery_opts = opts.discovery.clone();
+  if opts.lemonade.enabled {
+    discovery_opts.lemonade_port = Some(opts.lemonade.port);
+  }
+  let _discovery = discovery_task::spawn(catalog.clone(), discovery_opts);
 
   // 5. Persisted state — favorites, presets, last_params, running.
   // A parse failure does NOT block daemon start: the file is moved
@@ -325,7 +347,8 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     .with_sampler(sampler)
     .with_state(persisted)
     .with_external(external_combined)
-    .with_proxy_status(std::sync::Arc::clone(&proxy_status_cell));
+    .with_proxy_status(std::sync::Arc::clone(&proxy_status_cell))
+    .with_lemonade(opts.lemonade.clone());
   if let Some(binary) = opts.binary.clone() {
     if let Err(e) = std::fs::create_dir_all(&opts.log_dir) {
       log::warn!(
@@ -384,6 +407,107 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     log::info!(
       "daemon started without `llama-server` binary resolved; `start_model` will return an error until one is configured"
     );
+  }
+
+  // 8a. Lemonade umbrella supervision (opt-in). When the backend is enabled,
+  // bring up the one shared `lemond` umbrella on its configured loopback port
+  // so discovery (which probes that port) and proxy routing (which forwards to
+  // the registered umbrella) both work without the user first issuing an
+  // explicit `start`. Done in a background task: the supervisor blocks until
+  // `/live` is ready, which must not delay the daemon's listeners. A missing
+  // `lemond` binary is a clean warning, never a daemon-start failure —
+  // llamastash never installs it. The `start_model` path's `ensure_umbrella`
+  // is idempotent, so it reuses this umbrella rather than spawning a second.
+  if opts.lemonade.enabled {
+    match crate::backend::lemonade::resolve_lemond_binary(&opts.lemonade) {
+      Some(binary) => {
+        let port = opts.lemonade.port;
+        if let Err(e) = std::fs::create_dir_all(&opts.log_dir) {
+          log::warn!(
+            "could not create log dir {}: {e}; lemonade umbrella logs may fail to open",
+            opts.log_dir.display()
+          );
+        }
+        let probe = match opts.probe_timeout_secs {
+          Some(secs) => ProbeOptions {
+            timeout: std::time::Duration::from_secs(secs),
+            ..ProbeOptions::default()
+          },
+          None => ProbeOptions::default(),
+        };
+        let umbrella = crate::backend::lemonade::umbrella_process_spec(port, binary, probe);
+        let registry = ctx.supervisors.clone();
+        let log_path = opts.log_dir.join("lemonade-umbrella.log");
+        // `ensure_umbrella` refuses to adopt a foreign process already holding
+        // the port (returns `PortInUse`) rather than logging a false "supervised"
+        // and 503-ing opaquely at routing time. Surface that case plainly. Not
+        // fatal: the daemon (and llama.cpp routing) stay up; only Lemonade
+        // routing is unavailable until the conflict is resolved.
+        //
+        // A port held only by teardown remnants (FIN-WAIT-2 / TIME-WAIT
+        // leftovers of a just-stopped daemon's `lemond`) is waited out
+        // first: the kernel clears them within its fin-timeout (~60 s),
+        // so a quick `daemon stop && daemon start --lemonade` brings the
+        // umbrella up as soon as the port frees instead of failing.
+        tokio::spawn(async move {
+          use crate::backend::lemonade::{umbrella_port_state, UmbrellaPortState};
+          let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+          let mut waiting_logged = false;
+          loop {
+            if umbrella_port_state(port) == UmbrellaPortState::Free {
+              match crate::backend::lemonade::ensure_umbrella(
+                &registry,
+                port,
+                umbrella.clone(),
+                log_path.clone(),
+              )
+              .await
+              {
+                Ok(_) => {
+                  log::info!("lemonade umbrella supervised on 127.0.0.1:{port}");
+                  return;
+                }
+                // Lost a probe-to-spawn race (e.g. the previous daemon's
+                // dying `lemond` flickering through teardown) — retry
+                // within the window like any other transient holder.
+                Err(crate::daemon::supervisor::SpawnError::PortInUse(_)) => {}
+                Err(e) => {
+                  log::warn!("lemonade umbrella failed to start at boot: {e}");
+                  return;
+                }
+              }
+            }
+            // Held — by a still-exiting previous umbrella (Listening, drops
+            // within its SIGTERM→SIGKILL grace) or by kernel teardown
+            // remnants (FIN-WAIT-2 / TIME-WAIT, clear within the
+            // fin-timeout). Both resolve on their own; a genuinely foreign
+            // holder is normally caught by `daemon start`'s precheck before
+            // this task ever runs, so only after the window do we call it
+            // foreign and give up.
+            if std::time::Instant::now() >= deadline {
+              log::error!(
+                "lemonade: 127.0.0.1:{port} is already in use — llamastash could not start its \
+                 own managed `lemond`. Stop whatever holds that port (e.g. a manually started \
+                 `lemond`) or set `lemonade.port`; Lemonade model routing will return 503 until \
+                 this is resolved."
+              );
+              return;
+            }
+            if !waiting_logged {
+              log::info!(
+                "lemonade: 127.0.0.1:{port} is still held (previous umbrella exiting, or its \
+                 sockets draining); retrying for up to 90 s…"
+              );
+              waiting_logged = true;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+          }
+        });
+      }
+      None => log::warn!(
+        "lemonade enabled but no `lemond` binary found (set `lemonade.binary` or put `lemond` on PATH); skipping umbrella supervision"
+      ),
+    }
   }
 
   // 8b. OpenAI-compat proxy listener. Spawned between the
@@ -714,6 +838,18 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   if opts.proxy.insecure_no_auth {
     cmd.arg("--insecure-no-auth");
   }
+  // Carry the opt-in Lemonade enable through the re-exec so a
+  // `daemon start --lemonade` (detached) keeps the backend on in the child.
+  // The env var alone isn't reliable across a detached re-exec.
+  if opts.lemonade.enabled {
+    cmd.arg("--lemonade");
+  }
+  // Carry `--force` through so the foreground child skips the same backend
+  // precheck the parent already waived; without it the child re-runs the gate
+  // and exits, defeating the whole point of `--force`.
+  if opts.force {
+    cmd.arg("--force");
+  }
   cmd
     .stdin(Stdio::null())
     .stdout(Stdio::null())
@@ -826,6 +962,17 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   }
   if opts.proxy.insecure_no_auth {
     cmd.arg("--insecure-no-auth");
+  }
+  // Carry the opt-in Lemonade enable through the re-exec so a
+  // `daemon start --lemonade` (detached) keeps the backend on in the child.
+  // The env var alone isn't reliable across a detached re-exec.
+  if opts.lemonade.enabled {
+    cmd.arg("--lemonade");
+  }
+  // Carry `--force` through so the foreground child skips the same backend
+  // precheck the parent already waived.
+  if opts.force {
+    cmd.arg("--force");
   }
   cmd
     .stdin(Stdio::null())

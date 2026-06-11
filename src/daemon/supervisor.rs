@@ -673,6 +673,10 @@ pub enum SpawnError {
   /// Log file could not be opened.
   #[error("could not open log file: {0}")]
   Log(String),
+  /// A managed-umbrella port is already held by another process, so
+  /// llamastash cannot bind it to supervise its own instance.
+  #[error("127.0.0.1:{0} is already in use; cannot supervise a managed umbrella on it")]
+  PortInUse(u16),
 }
 
 async fn pump_stream<R>(

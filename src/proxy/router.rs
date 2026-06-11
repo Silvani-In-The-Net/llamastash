@@ -170,6 +170,7 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
       port,
       served_model_id,
       served_model_key,
+      upstream_path_prefix,
       fallback,
       fallback_reason,
     } => {
@@ -186,6 +187,7 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
           port,
           served_model_id: &served_model_id,
           served_model_key: &served_model_key,
+          upstream_path_prefix: upstream_path_prefix.as_deref(),
           fallback,
           fallback_reason: fallback_reason.as_deref(),
         },
@@ -224,6 +226,18 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
       "the `model` field is required",
       "model_required",
       Some("model"),
+    ),
+    RouteDecision::BackendUnavailable {
+      backend,
+      requested_model,
+    } => error_response(
+      StatusCode::SERVICE_UNAVAILABLE,
+      "backend_unavailable",
+      &format!(
+        "`{requested_model}` is served by the {backend} backend, but the llamastash managed \
+         instance is not running; set up {backend} and start the daemon with `--lemonade` \
+         (see docs/lemonade-setup.md)"
+      ),
     ),
   }
 }
