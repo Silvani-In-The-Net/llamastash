@@ -138,6 +138,7 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 
 - [Auto-scans HuggingFace, Ollama, and LM Studio caches](FEATURES.md#auto-scans-huggingface-ollama-and-lm-studio-caches), plus user paths.
 - [Rich GGUF intelligence](FEATURES.md#rich-gguf-intelligence) — architecture, params, quant, native context, chat template, KV-cache-aware memory estimates.
+- [Multimodal projector detection](FEATURES.md#multimodal-projector-detection) — auto-pairs an mmproj GGUF beside a model, loads it with `--mmproj`, flags vision (`◉`) / audio (`♪`) in the TUI.
 - [Smart deduplication](FEATURES.md#smart-deduplication) — symlinks collapsed, split GGUFs unified, Ollama blobs named.
 - [Live filesystem watching](FEATURES.md#live-filesystem-watching) — new GGUFs appear without a restart.
 

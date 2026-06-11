@@ -141,7 +141,8 @@ Two release tracks:
 
 - [x] truncate Daemon -> server info (maybe in middle) when cant fit in view. If more than one backend, just show truncated versions of all with equal truncation or something.
 - [x] If an indicated backend couldn't be connected (as in lemonade port couldn't be acquired or llama-server binary was not found) while starting daemon. fail the daemon start and show an error when done via CLI. For start via TUI, fail the daemon start and show an error message in the Daemon => server info section. Better to fail fast than to fail silently
-- [ ] Update changelog with missing items
+- [x] Update changelog with missing items
+- [ ] Error toasts should be in fail/error color (red)
 - [x] MultiGPU support (pr #14)
 - [x] Find mmproj files for vision/audio etc (pr #15)
 - [x] n-cpu-moe flag support (pr #20)

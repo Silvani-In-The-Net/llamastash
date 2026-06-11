@@ -48,6 +48,10 @@ Models stream into the catalog incrementally; the TUI stays responsive while sca
 
 The header parser surfaces architecture, parameter count, quantization, native context length, embedded chat template, and reasoning hints — straight off the GGUF file, no external metadata required. Memory estimates are KV-cache-aware: they account for your chosen context length, not just weight bytes, so the VRAM-fit check stays honest when you crank `--ctx`.
 
+### Multimodal projector detection
+
+Vision and audio models ship a separate mmproj projector GGUF alongside the weights. LlamaStash auto-detects the projector sitting beside a model, pairs it by directory, reads its `clip.has_vision_encoder` / `clip.has_audio_encoder` flags, and passes `--mmproj` at launch so the model loads its encoder instead of falling back to text-only. The TUI right pane flags the modality after the model title — `◉` for vision, `♪` for audio — with a matching entry in the `?` help-overlay Legend.
+
 ### Smart deduplication
 
 Symlinks dedupe to their target. Split GGUFs (`*-00001-of-00003.gguf`) collapse into one logical entry. Ollama's content-addressed blobs surface under their human-readable name rather than as raw hashes. The catalog reflects what you'd reasonably call distinct models, not what the filesystem happens to have.
