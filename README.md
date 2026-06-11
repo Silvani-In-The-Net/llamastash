@@ -104,6 +104,12 @@ The CLI ships with an [Agent Skills](https://agentskills.io) manifest so support
 
 - Canonical skill bundle: [`skills/llamastash/`](https://github.com/llamastash/llamastash/tree/main/skills/llamastash)
 
+**Any supported agent (recommended):** install the bundled skill with the [Agent Skills](https://agentskills.io) CLI. It auto-detects your harness and writes the bundle to the right path:
+
+```bash
+npx skills add llamastash/llamastash
+```
+
 **Claude Code plugin marketplace:** install the repo as a plugin, then install the bundled skill:
 
 ```text
