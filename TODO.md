@@ -152,9 +152,14 @@ places.
 - [x] Error toasts should be in fail/error color (red). Audit for all error toasts today and any error toasts masquerading as success.
 - [x] split init into subcommands and compose
 - [ ] **Need brainstorm/plan**: Look for a better strategy for finding the best models for a hardware.
-- [ ] **Need brainstorm/plan**: Automatic gpu/cpu offload split — llamastash computes the optimal GPU/CPU layer split from VRAM budget + model size so oversized models load partially-offloaded instead of OOMing or silently going all-CPU (what Ollama/LM Studio do). Today `src/launch/defaults_table.rs` just sets `n_gpu_layers=99` and `src/launch/ctx_fit.rs` explicitly punts on partial offload ("treat 'any GPU layers' as 'all GPU layers'"). Needs per-layer GGUF sizing (today `src/gguf/memory.rs::estimate` only approximates a linear `weights × ngl/n_layers` fraction), a fitting solver that co-solves with `ctx_fit` for the shared VRAM budget, and MoE-awareness (prefer `n-cpu-moe` over dropping `ngl`). Split out from the manual-knobs item above.
-  - [ ] fix-vram/umem UI, logic, consistency with init/doctor etc, show more hardware info on doctor and init.
-  - [ ] Teach the agent skill to do this calculation?
+- [x] ~~**Automatic gpu/cpu offload split**~~ — done via [docs/plans/2026-06-13-001-feat-auto-fit-launch-mode-and-hardware-truth-plan.md](docs/plans/2026-06-13-001-feat-auto-fit-launch-mode-and-hardware-truth-plan.md), but by **delegation**, not a llamastash-side solver: the launcher stops pinning `n_gpu_layers=99`, hands GPU/CPU placement + ctx sizing to llama-server's `--fit` (Auto, default-on), and keeps memory-budget authority via pre-spawn admission control (`src/launch/admission.rs`) so oversized / concurrent launches refuse instead of OOMing. The hardware-info-on-doctor/init and MEM/MEM\* UI cleanup landed in the same plan (U1–U3). Follow-ups below.
+- [ ] **Auto-fit follow-ups** (deferred from the 2026-06-13 auto-fit plan, all explicitly out of its breaking-change scope):
+  - [ ] **Strict-fit enforcement** — `strict_fit` config exists but is a reserved no-op; wire the post-Ready degradation check + stop-and-withhold-Ready (admission already gives the hard OOM guarantee).
+  - [ ] **Actuals rendering** — `status --json` exposes `resolved_ctx`; surface it in the human `status` table, `show`, the TUI Running view, and a `start` one-line post-load summary.
+  - [ ] **All-Auto TUI keybinding** + reversible toggle with an "edits discarded" notice; the `Default`→`Inherited` source-chip label rename.
+  - [ ] **UMA `--fit-target` margin** — translate llamastash's sysfs pool-free into fit's conflated free reading so partial-offload placement on UMA is accurate (admission is the safety net today).
+  - [ ] **Propose an absolute per-device budget flag upstream** to llama.cpp (`--fit-target` is a margin over fit's own free reading, not an absolute budget) so the UMA conflation has a clean fix.
+  - [ ] **MoE `n_cpu_moe` in the admission estimator** — today the GPU/RAM demand split derives from `n_gpu_layers` only, so a MoE model fit keeps on CPU over-attributes expert weight to GPU (conservative: may wrongly refuse a placeable MoE, never OOMs).
 - [ ] **Need brainstorm/plan**: **Anthropic `/v1/messages` compatibility shim** on top of the OpenAI-compat proxy. Most agents do OpenAI; Claude Code prefers Anthropic shape.
 
 ## General Roadmap

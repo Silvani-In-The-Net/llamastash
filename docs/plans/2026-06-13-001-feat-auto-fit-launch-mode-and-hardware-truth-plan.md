@@ -557,7 +557,9 @@ sequenceDiagram
 
 ### Phase 4 — Validation & release gate (R10)
 
-- [ ] **Unit 11: benchmark, concurrent regression in CI, upgrade-qualification hooks, docs sweep**
+- [x] **Unit 11: docs sweep + regression coverage** *(scoped per amendment; per-platform release gate is process, not code)*
+
+> Done: CHANGELOG `[Unreleased]` entry for the breaking Auto default + the new options; `TODO.md` R4 "Automatic gpu/cpu offload split" struck (delivered by delegation + admission) with an explicit auto-fit follow-up list (strict enforcement, actuals rendering, all-Auto keybinding, UMA `--fit-target`, the upstream absolute-budget-flag proposal, MoE `n_cpu_moe` modeling); `docs/usage.md` gained an "Auto launch mode" section. The concurrent double-book regression is covered by `src/launch/admission.rs` ledger unit tests (the 44+37/60 GiB scenario, fixture-free, CI-stable). **Dropped per scope:** the upgrade-qualification fit-smoke rerun (tied to the deleted gate). The benchmark matrix + the per-platform UAT smoke are a release-process gate run live on real hardware (see the live UAT pass appended at the end of the plan), not code.
 
 **Goal:** Prove Auto is within margin, wire the regression and smoke reruns into durable paths, and complete the documentation/UAT release gate.
 

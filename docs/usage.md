@@ -273,6 +273,18 @@ Modes are strict: when the catalog reports `mode_hint = unknown` and no `--mode`
 
 `--ctx` above the model's native context length is allowed (the supervisor still tries, per R12); a warning prints to stderr. When `--preset` and inline knobs are combined, the inline knobs layer onto the preset — they override only the fields they set, leaving the rest of the preset intact.
 
+#### Auto launch mode (default)
+
+By default LlamaStash does **not** pin GPU layers or context size. It delegates GPU/CPU placement and context sizing to llama-server's `--fit`, so an oversized model loads partially offloaded instead of OOMing, and keeps memory-budget authority itself: a launch that would not fit the sampled free memory is refused before spawn (with the demand, the effective free, and what to do about it) rather than letting two concurrent models exhaust the pool. This requires a fit-capable `llama-server`.
+
+Every knob has three states:
+
+- a pinned value (`--n-gpu-layers 50`, `--ctx 16384`) — used verbatim;
+- `auto` (`--n-gpu-layers auto`, `start --ctx auto`, or the Auto stop in the TUI knob cycle) — delegated to `--fit`;
+- unset (Inherited) — falls through presets / arch defaults / the server default.
+
+`fit_ctx_floor` (default 16384) is the minimum context `--fit` is told to keep. Set `default_launch_mode: inherited` to opt the whole machine back to the pre-Auto behavior (knobs you never touch fall through to llama-server's own defaults instead of `--fit`). See the config schema and the environment-variable table above for `default_launch_mode`, `fit_ctx_floor`, and `strict_fit`.
+
 ### `llamastash stop <target>` / `llamastash stop --all`
 
 Stop a managed launch by `<launch_id>` (e.g. `L3`), by port, by a case-insensitive substring of the running model's file name or parent dir (e.g. `stop qwen`), or — for unmanaged processes the daemon surfaced — by `ext-<pid>` or bare PID. A name substring that matches more than one running launch exits `66` with the candidate launch ids.

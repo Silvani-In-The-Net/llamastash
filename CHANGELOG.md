@@ -4,6 +4,18 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: Auto launch mode is the new default.** Instead of pinning `n_gpu_layers=99` and a computed context size, LlamaStash delegates GPU/CPU placement and context sizing to llama-server's `--fit`, and keeps memory-budget authority itself with pre-spawn admission control: it refuses a launch that would not fit the sampled free memory rather than letting concurrent models OOM the machine. A fit-capable `llama-server` is now required.
+- Every launch knob accepts the literal `auto` (`--n-gpu-layers auto`, `start --ctx auto`, and an Auto stop in the TUI knob cycle); a value you pin still wins.
+- New config options with `LLAMASTASH_*` env overrides: `default_launch_mode` (`auto`|`inherited`), `fit_ctx_floor` (default 16384), `strict_fit`.
+- TUI host pane, init banner, and help legend rename `RAM`/`RAM*` to `MEM`/`MEM*` so unified-memory machines stop reading as roughly twice their physical memory.
+- `doctor` gained a hardware section (CPU, memory, GPU pool composition, classification source), a memory-drift finding, and a GTT-cap hint; `status --json` reports the fit-resolved context as `resolved_ctx` once a model is up.
+
+### Fixed
+
+- `--flash-attn auto` no longer leaves a dangling positional token in the argv tail.
+
 ## [0.0.3] — 2026-06-11
 
 ### Added
