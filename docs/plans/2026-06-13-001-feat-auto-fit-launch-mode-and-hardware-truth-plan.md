@@ -13,6 +13,17 @@ deepened: 2026-06-13
 
 Add a third knob value state, `Auto`, that delegates GPU/CPU placement and ctx sizing to llama-server's `--fit` machinery, make it the out-of-box default, and keep llamastash as the memory-budget authority via pre-spawn admission control plus an in-memory reservation ledger. In parallel, build a hardware truth layer: one live hardware snapshot rendered identically across `status`/`doctor`/init/TUI, a doctor hardware section with memory-drift detection, and the `MEM`/`MEM*` rename that stops UMA machines reading as 2× their physical memory.
 
+## Scope Amendment (2026-06-13) — breaking change, no backward compatibility
+
+This feature lands as **one PR** and is an explicit **breaking change**. The codebase has few users; we break cleanly rather than carry compatibility machinery. The following plan elements are **dropped** in favor of a simpler implementation:
+
+- **No legacy launch path / fit-capability gate (U7 deleted).** A fit-capable `llama-server` is required. `compose` always emits fit-shaped argv; there is no `ngl=99`+`ctx_fit` fallback branch, no version/`--help` probe, no per-digest capability cache, no `fake_llama_server` `--version`/`--help` fixture work, and no "Auto (unavailable)" inert picker stop.
+- **No state migration (U4 transform removed).** No schema v1→v2 transform, no reject-newer. Pre-existing `state.json` `last_params` pins self-heal after one launch (the recorder persists user-set knobs only, so the next launch re-resolves to Auto). `schema_version` stays at 1.
+- **No inter-unit compatibility.** Units may freely refactor each other's code; only the final PR state must be coherent.
+- **ctx_fit retired from the launch path entirely (U6).** Its estimators are kept only where U8 admission reuses them; the GPU launch branch is gone.
+
+Where unit specs below still describe a gate, a legacy branch, migration, or "Auto (unavailable)", treat this amendment as the authority.
+
 ## Problem Frame
 
 llamastash pins `n_gpu_layers=99` on every GPU launch and emits explicit `-c`, which disables llama-server's `--fit` (fit only adjusts unset params). Oversized models OOM at load instead of loading partially offloaded. The ctx_fit module was built on a mis-report claim that was true in May 2026 but fixed underneath llama.cpp by GPU-stack updates; live validation shows upstream fit is allocation-grade (granular ctx reduction, sub-layer MoE expert offload). One genuine upstream weakness remains, proven by a live OOM: on UMA, llama.cpp's "free memory" reading tracks system-available RAM, not the GTT pool — so llamastash must keep budget authority. Separately, hardware reporting is inconsistent across surfaces and the TUI's `RAM*`/`VRAM` pair displays ~249 G on a 128 G machine. Full context: the origin document.
@@ -361,7 +372,9 @@ sequenceDiagram
 
 **Verification:** Every spec-table knob accepts `auto` end to end; new keys appear in `config.example.yaml` + the usage env table; the flash-attn argv is clean.
 
-- [ ] **Unit 6: de-pin defaults, fit flag emission, ctx_fit retirement**
+- [x] **Unit 6: de-pin defaults, fit flag emission, ctx_fit retirement** *(simplified per scope amendment — no gate, no legacy branch)*
+
+> Done: `defaults_table` no longer pins `n_gpu_layers` on any (arch, backend) — a layer-less `ngl` is seeded `Auto` and emits no `-ngl`; per-arch `flash_attn` rows kept. `LaunchParams.fit_ctx_floor` carries the floor; `compose` emits `--fit-ctx <floor>` when `ctx` is unset (Auto/Inherited) and suppresses it when `ctx` is pinned (emits `-c`). `start_model_inner` sets `fit_ctx_floor` from `env.fit_ctx_floor` and the old `ctx_fit` GPU invocation is **removed** from the launch path. `ctx_fit.rs` keeps the weights/KV estimators (U8 admission reuses them) with the stale "fit mis-reports" module-doc claim deleted. AGENTS.md defaults-table note updated. **No gate / no legacy branch** (scope amendment): `compose` is unconditionally fit-shaped; pre-fit binaries are unsupported. The `--fit-target` UMA-margin hook is deferred to U8 (where the admission math that computes the margin lives).
 
 **Goal:** Stop pinning `ngl=99`, emit `--fit-ctx` (and the UMA margin hook) at composition, and retire ctx_fit from the GPU launch path while keeping the estimators and deleting the stale claim.
 
@@ -392,7 +405,9 @@ sequenceDiagram
 
 **Verification:** Launch argv on the reference machine matches expectations per state; stale claim gone from `ctx_fit.rs`; CPU-only ctx capping still demonstrably applied via the admission path.
 
-- [ ] **Unit 7: fit-capability gate + legacy path**
+- [x] **Unit 7: ~~fit-capability gate + legacy path~~ — DROPPED (scope amendment)**
+
+> Dropped: per the 2026-06-13 scope amendment this is a breaking change with no backward compatibility, so there is no legacy path to gate. A fit-capable `llama-server` is **required**; `compose` is unconditionally fit-shaped (U6). No version/`--help` probe, no per-digest capability cache, no `fake_llama_server` `--version`/`--help` fixtures, no degradation line, no doctor fit-unavailable finding, no "Auto (unavailable)" picker stop. R8 is intentionally not implemented. This removes the unit's entire surface.
 
 **Goal:** Auto activates only against fit-capable binaries; older builds get the retained legacy path (ngl=99 + ctx_fit) with visible degradation, and the gate is decided before argv/admission commit to fit.
 

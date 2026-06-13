@@ -1626,39 +1626,14 @@ pub(crate) async fn start_model_inner(
   // and `llama-server` keeps its default (auto-select / split across
   // every visible GPU) — the documented backwards-compatible behavior.
 
-  // VRAM-aware ctx auto-fit. When every resolver layer left ctx
-  // unset, the spawn would otherwise rely on llama.cpp's `--fit`,
-  // which mis-reports unified-memory free space on Linux 7+ iGPUs
-  // (Strix Halo) and collapses to the 4096 floor. Compute the right
-  // ctx from the GGUF attention geometry + the daemon's
-  // host-metrics snapshot. `None` (header missing the attention
-  // fields, snapshot not ready, budget too tight) leaves ctx unset
-  // so `--fit` still gets the final word.
-  if launch_params.ctx.is_none() && identity.as_gguf().is_some() {
-    if let Some(host_slot) = ctx.host_metrics.as_ref() {
-      let snapshot = host_slot.read().await.clone();
-      let model_path = launch_params.model_path.clone();
-      let knobs = launch_params.knobs.clone();
-      // GGUF header read is sync file I/O — push it onto the blocking
-      // pool so the tokio worker stays free (matches the proxy's
-      // `canonical_id_for_row` pattern).
-      let fitted = tokio::task::spawn_blocking(move || {
-        crate::launch::ctx_fit::compute_ctx(&model_path, &knobs, &snapshot)
-      })
-      .await
-      .ok()
-      .flatten();
-      if let Some(fitted) = fitted {
-        launch_params.ctx = Some(fitted);
-        launch_params.knobs.ctx = Some(KnobValue::Set(fitted));
-        log::info!(
-          target: "llamastash::ctx_fit",
-          "auto-fit ctx={fitted} for {}",
-          launch_params.model_path.display(),
-        );
-      }
-    }
-  }
+  // Context sizing is delegated to llama-server's `--fit`: when `ctx`
+  // is unset (Auto / Inherited), `compose` emits `--fit-ctx <floor>` so
+  // fit sizes the window for the available memory but never collapses
+  // below the floor. llamastash keeps budget *authority* via U8
+  // admission (the sysfs-backed pool reading), not by computing ctx
+  // here — the old `ctx_fit` GPU path is retired. A pinned `ctx`
+  // suppresses the floor (fit honors the pin).
+  launch_params.fit_ctx_floor = Some(env.fit_ctx_floor);
 
   // Reject loopback-breaking / auth-bypass extras flags before
   // spawn. `compose` strips defensively too, but failing fast here

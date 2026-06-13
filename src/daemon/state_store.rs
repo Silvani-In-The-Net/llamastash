@@ -44,11 +44,9 @@ pub struct DaemonState {
   pub presets: Vec<PresetsEntry>,
   #[serde(default)]
   pub running: Vec<RunningSnapshot>,
-  /// Schema version. Bumped on breaking changes so a future daemon
-  /// can refuse to load (or migrate from) an older shape. An *absent*
-  /// field (pre-versioning files) defaults to `1`, the oldest known
-  /// shape, so the v1→v2 transform still runs on it.
-  #[serde(default = "legacy_schema_version")]
+  /// Schema version. A coarse marker for future use; we do not carry
+  /// migration code (breaking changes ship cleanly pre-1.0).
+  #[serde(default = "current_schema_version")]
   pub schema_version: u32,
 }
 
@@ -142,65 +140,8 @@ impl RunningSnapshot {
   }
 }
 
-/// Current on-disk schema version.
-///
-/// - v1: the original shape (and all pre-versioning files).
-/// - v2: the Auto launch-knob tri-state. The recorder stopped
-///   persisting resolved top-level `ctx`/`reasoning`, the force-copied
-///   `knobs.device`, and the auto-injected `n_gpu_layers=99`. The v1→v2
-///   transform scrubs those stale fields from existing files so
-///   "remembered values win" holds going forward.
-const CURRENT_SCHEMA_VERSION: u32 = 2;
-
 fn current_schema_version() -> u32 {
-  CURRENT_SCHEMA_VERSION
-}
-
-/// Serde default for an absent `schema_version` — treat pre-versioning
-/// files as v1 so the migration runs, not as "current" (which would
-/// skip it and leave stale pins in place).
-fn legacy_schema_version() -> u32 {
   1
-}
-
-/// One-time v1→v2 transform over `last_params` **and** `running`
-/// snapshots. The old recorder persisted *resolved* knobs, so a
-/// user-set `ngl=50` is indistinguishable from the auto-injected `99`
-/// — both `n_gpu_layers` values are dropped. Resolved top-level
-/// `ctx`/`reasoning` and the force-copied `knobs.device` are dropped
-/// too. Presets and favorites are user-authored and kept verbatim (an
-/// explicit `ngl=99` preset re-pins the legacy regime when applied, by
-/// design). After the scrub, "remembered values win" holds going
-/// forward; the upgrade boundary itself is a one-time reset of
-/// `ngl`/resolved-ctx, which is acceptable pre-announcement.
-fn scrub_v1_launch_params(p: &mut LaunchParams) {
-  p.ctx = None;
-  p.reasoning = false;
-  p.knobs.device = None;
-  p.knobs.n_gpu_layers = None;
-}
-
-/// Bring a freshly-parsed state up to [`CURRENT_SCHEMA_VERSION`].
-/// Newer-than-current files are rejected (no transform attempted) so a
-/// downgrade quarantines rather than silently dropping fields it
-/// doesn't understand.
-fn migrate(mut state: DaemonState) -> Result<DaemonState, LoadError> {
-  if state.schema_version > CURRENT_SCHEMA_VERSION {
-    return Err(LoadError::SchemaTooNew {
-      found: state.schema_version,
-      supported: CURRENT_SCHEMA_VERSION,
-    });
-  }
-  if state.schema_version < 2 {
-    for entry in &mut state.last_params {
-      scrub_v1_launch_params(&mut entry.params);
-    }
-    for snap in &mut state.running {
-      scrub_v1_launch_params(&mut snap.params);
-    }
-    state.schema_version = CURRENT_SCHEMA_VERSION;
-  }
-  Ok(state)
 }
 
 /// Path to `state.json` under `state_dir`.
@@ -215,13 +156,10 @@ pub fn path(state_dir: &Path) -> PathBuf {
 pub fn load(state_dir: &Path) -> Result<DaemonState, LoadError> {
   let p = path(state_dir);
   match std::fs::read_to_string(&p) {
-    Ok(s) => {
-      let state: DaemonState = serde_json::from_str(&s).map_err(|e| LoadError::Parse {
-        path: p,
-        error: e.to_string(),
-      })?;
-      migrate(state)
-    }
+    Ok(s) => serde_json::from_str(&s).map_err(|e| LoadError::Parse {
+      path: p,
+      error: e.to_string(),
+    }),
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(DaemonState::default()),
     Err(e) => Err(LoadError::Io {
       path: p,
@@ -258,8 +196,6 @@ pub enum LoadError {
   Io { path: PathBuf, error: String },
   #[error("state-store parse at {}: {error}; the daemon is running with defaults — back up the file and remove it to clear", path.display())]
   Parse { path: PathBuf, error: String },
-  #[error("state-store schema {found} is newer than this binary supports ({supported}); the daemon is running with defaults — upgrade llamastash or remove state.json to clear")]
-  SchemaTooNew { found: u32, supported: u32 },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -277,7 +213,6 @@ mod tests {
   use std::fs;
   use std::time::{SystemTime, UNIX_EPOCH};
 
-  use crate::config::KnobValue;
   use crate::gguf::identity::ModelId;
   use crate::launch::mode::LaunchMode;
   use crate::launch::presets::{NamedPreset, Presets};
@@ -307,99 +242,6 @@ mod tests {
   }
 
   #[test]
-  fn v1_migration_scrubs_stale_pins_and_keeps_presets() {
-    let dir = temp_state_dir("migrate-v1");
-    let mut s = DaemonState {
-      schema_version: 1,
-      ..Default::default()
-    };
-
-    // last_params with the old recorder's resolved top-level ctx +
-    // reasoning, a force-copied device, an auto-injected ngl=99, and a
-    // genuine user `threads`.
-    let mut lp = fake_params("/m/a.gguf");
-    lp.ctx = Some(8192);
-    lp.reasoning = true;
-    lp.knobs.ctx = Some(KnobValue::Set(8192));
-    lp.knobs.n_gpu_layers = Some(KnobValue::Set(99));
-    lp.knobs.device = Some(KnobValue::Set("Vulkan0".into()));
-    lp.knobs.threads = Some(KnobValue::Set(8));
-    s.upsert_last_params(id("/m/a.gguf", 1), lp);
-
-    // running snapshot also carries a stale ngl=99 (re-adoption must
-    // not re-pin it).
-    let mut rp = fake_params("/m/a.gguf");
-    rp.knobs.n_gpu_layers = Some(KnobValue::Set(99));
-    s.running.push(RunningSnapshot {
-      id: id("/m/a.gguf", 1),
-      pid: 1,
-      port: 41100,
-      started_at: 1,
-      params: rp,
-    });
-
-    // preset pins ngl=99 — user-authored, kept verbatim.
-    let mut presets = Presets::new();
-    let mut preset_params = fake_params("/m/a.gguf");
-    preset_params.knobs.n_gpu_layers = Some(KnobValue::Set(99));
-    presets.upsert(NamedPreset {
-      name: "max".into(),
-      params: preset_params,
-    });
-    s.upsert_presets(id("/m/a.gguf", 1), presets);
-
-    save(&dir, &s).expect("save v1");
-    let back = load(&dir).expect("load + migrate");
-
-    assert_eq!(back.schema_version, CURRENT_SCHEMA_VERSION);
-    let got = &back.last_params[0].params;
-    assert_eq!(got.ctx, None, "resolved top-level ctx dropped");
-    assert!(!got.reasoning, "resolved reasoning dropped");
-    assert_eq!(got.knobs.n_gpu_layers, None, "auto-injected ngl scrubbed");
-    assert_eq!(got.knobs.device, None, "force-copied device dropped");
-    assert_eq!(
-      got.knobs.threads,
-      Some(KnobValue::Set(8)),
-      "a non-ngl user knob survives the transform"
-    );
-    assert_eq!(
-      back.running[0].params.knobs.n_gpu_layers, None,
-      "running snapshot ngl scrubbed too"
-    );
-    let preset_ngl = back.presets[0]
-      .presets
-      .iter()
-      .next()
-      .unwrap()
-      .params
-      .knobs
-      .n_gpu_layers;
-    assert_eq!(
-      preset_ngl,
-      Some(KnobValue::Set(99)),
-      "preset ngl is user-authored — kept verbatim"
-    );
-    fs::remove_dir_all(&dir).ok();
-  }
-
-  #[test]
-  fn newer_schema_is_rejected_without_transform() {
-    let dir = temp_state_dir("newer-schema");
-    let s = DaemonState {
-      schema_version: CURRENT_SCHEMA_VERSION + 1,
-      ..Default::default()
-    };
-    save(&dir, &s).expect("save");
-    let err = load(&dir).expect_err("a newer schema must be refused");
-    assert!(
-      matches!(err, LoadError::SchemaTooNew { found, supported }
-        if found == CURRENT_SCHEMA_VERSION + 1 && supported == CURRENT_SCHEMA_VERSION),
-      "got {err:?}"
-    );
-    fs::remove_dir_all(&dir).ok();
-  }
-
-  #[test]
   fn load_returns_default_when_file_absent() {
     let dir = temp_state_dir("missing");
     let s = load(&dir).expect("absent file = defaults");
@@ -407,7 +249,7 @@ mod tests {
     assert!(s.last_params.is_empty());
     assert!(s.presets.is_empty());
     assert!(s.running.is_empty());
-    assert_eq!(s.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(s.schema_version, 1);
     fs::remove_dir_all(&dir).ok();
   }
 

@@ -181,6 +181,14 @@ pub struct LaunchParams {
   pub ctx: Option<u32>,
   /// Listening port. `None` leaves port allocation to the supervisor.
   pub port: Option<u16>,
+  /// `--fit-ctx` floor, emitted **only when `ctx` is unset** (Auto /
+  /// Inherited) so `--fit` never collapses the window below this size.
+  /// A pinned `ctx` wins and suppresses `--fit-ctx` (fit honors the
+  /// pin). `None` emits no floor. Sourced from `LaunchEnv.fit_ctx_floor`
+  /// by `start_model`. `#[serde(default)]` keeps older `state.json` rows
+  /// loading.
+  #[serde(default)]
+  pub fit_ctx_floor: Option<u32>,
   /// Reasoning bundle on/off. When `true`, supervisor appends
   /// `--jinja --reasoning-format deepseek` to the argv.
   ///
@@ -223,6 +231,7 @@ impl LaunchParams {
       mode,
       ctx: None,
       port: None,
+      fit_ctx_floor: None,
       reasoning: false,
       knobs: TypedKnobs::default(),
       extras: Vec::new(),
@@ -652,9 +661,16 @@ pub fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsString> {
     argv.push("--reasoning-format".into());
     argv.push("deepseek".into());
   }
+  // Context window: a pinned `ctx` emits `-c <N>` and suppresses
+  // `--fit-ctx` (fit honors the pin). An unset `ctx` (Auto / Inherited)
+  // emits `--fit-ctx <floor>` so `--fit` sizes the window for the
+  // available memory but never collapses below the floor.
   if let Some(ctx) = params.ctx {
     argv.push("-c".into());
     argv.push(ctx.to_string().into());
+  } else if let Some(floor) = params.fit_ctx_floor {
+    argv.push("--fit-ctx".into());
+    argv.push(floor.to_string().into());
   }
   // Emit the device selector verbatim — exactly once. Empty / unset
   // means "let llama-server auto-select" (no flag).
@@ -769,6 +785,46 @@ mod tests {
     assert!(!argv
       .iter()
       .any(|a| a == "--embeddings" || a == "--reranking"));
+  }
+
+  #[test]
+  fn unset_ctx_emits_fit_ctx_floor_and_no_ngl() {
+    // Auto / Inherited ctx (None) + a configured floor → `--fit-ctx`,
+    // no `-c`, and (after de-pin) no `-ngl`.
+    let mut p = base_params();
+    p.ctx = None;
+    p.fit_ctx_floor = Some(16384);
+    let argv = strs(&compose(&p, 41100));
+    let pos = argv
+      .iter()
+      .position(|a| a == "--fit-ctx")
+      .expect("--fit-ctx");
+    assert_eq!(argv[pos + 1], "16384");
+    assert!(!argv.iter().any(|a| a == "-c"), "no -c when ctx unset");
+    assert!(!argv.iter().any(|a| a == "-ngl"), "ngl is de-pinned");
+  }
+
+  #[test]
+  fn pinned_ctx_emits_dash_c_and_suppresses_fit_ctx() {
+    // A user-pinned ctx wins: `-c <N>`, no `--fit-ctx` (fit honors it).
+    let mut p = base_params();
+    p.ctx = Some(32768);
+    p.fit_ctx_floor = Some(16384);
+    let argv = strs(&compose(&p, 41100));
+    let pos = argv.iter().position(|a| a == "-c").expect("-c");
+    assert_eq!(argv[pos + 1], "32768");
+    assert!(
+      !argv.iter().any(|a| a == "--fit-ctx"),
+      "a pinned ctx suppresses the fit floor"
+    );
+  }
+
+  #[test]
+  fn unset_ctx_without_floor_emits_neither() {
+    // No floor configured (e.g. a bare LaunchParams) → no ctx flags.
+    let p = base_params();
+    let argv = strs(&compose(&p, 41100));
+    assert!(!argv.iter().any(|a| a == "-c" || a == "--fit-ctx"));
   }
 
   #[test]

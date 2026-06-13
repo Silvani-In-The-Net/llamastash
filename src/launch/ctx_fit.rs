@@ -1,12 +1,17 @@
-//! VRAM-aware context-length fit.
+//! Memory-budget estimators (weights + per-token KV) reused by U8
+//! admission control.
 //!
-//! When the caller (and every resolver layer above it) leaves `ctx`
-//! unset, llamastash picks the largest context length that fits inside
-//! the current free VRAM budget. The aim is to replace llama.cpp's
-//! built-in `--fit` (which mis-reports unified-memory free space on
-//! Linux 7+ iGPUs like AMD Strix Halo, collapsing to the 4096 floor).
+//! **Note:** this module no longer drives launch-time ctx sizing — that
+//! is delegated to llama-server's `--fit` (with `--fit-ctx` as a floor),
+//! and llamastash keeps budget *authority* through admission, not by
+//! computing a ctx here. The original "fit mis-reports unified-memory
+//! free space" claim was a May-2026 condition fixed underneath
+//! llama.cpp by GPU-stack updates; the one remaining UMA weakness is
+//! handled by the sysfs-backed admission reading (U8), not this module.
+//! The estimator functions below survive because admission reuses the
+//! same weights/KV math.
 //!
-//! Computation:
+//! Computation (as used by the admission estimator):
 //! * Pick the budget pool. Any GPU off-load (`n_gpu_layers > 0`) → free
 //!   VRAM from the daemon's host-metrics sampler. CPU-only run → RAM
 //!   headroom. We treat "any GPU layers" as "all GPU layers"; partial

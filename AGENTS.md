@@ -288,9 +288,11 @@ The static `(architecture, gpu_backend) → TypedKnobs` defaults table
 lives in `src/launch/defaults_table.rs`. When `data/benchmark-snapshot.json`
 adds a new recommender pick, audit the table coverage:
 
-- Architectures listed in the snapshot but missing from `COVERED_ARCHS`
-  fall through to the conservative `*` row (which only seeds
-  `n_gpu_layers: 99` on GPU backends).
+- The table no longer pins `n_gpu_layers` on any (arch, backend):
+  offload placement is delegated to llama-server's `--fit` (a layer-less
+  `n_gpu_layers` is seeded `Auto` by the resolver and emits no `-ngl`).
+  Architectures missing from `COVERED_ARCHS` fall through to the empty
+  `*` row.
 - `FLASH_ATTN_ELIGIBLE` is opt-in only — extend it once measurement
   confirms a new architecture supports flash-attn cleanly on NVIDIA
   / Apple Metal. AMD/HIP flash-attn coverage stays uneven; leave to
