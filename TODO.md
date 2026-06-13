@@ -6,14 +6,6 @@ plan, a `todo:` frontmatter field on a spike), also add a one-line entry here
 with a link back to the source. When you complete one, strike it from both
 places.
 
-Two release tracks:
-
-- **R1 (v0.0.1)** — first public release. Bar: software is usable for its
-  core purpose (init → daemon → TUI), distributed via the release pipeline,
-  with docs and audit clean. Bug fixes and small UX polish only.
-- **R2 (post-v0.0.1)** — everything queued behind R1: feature work, platform
-  expansion, recommendation-quality parity, and longer-horizon brainstorms.
-
 ## R1 (v0.0.1) — first release
 
 ### Blockers
@@ -142,7 +134,6 @@ Two release tracks:
 - [x] truncate Daemon -> server info (maybe in middle) when cant fit in view. If more than one backend, just show truncated versions of all with equal truncation or something.
 - [x] If an indicated backend couldn't be connected (as in lemonade port couldn't be acquired or llama-server binary was not found) while starting daemon. fail the daemon start and show an error when done via CLI. For start via TUI, fail the daemon start and show an error message in the Daemon => server info section. Better to fail fast than to fail silently
 - [x] Update changelog with missing items
-- [ ] Error toasts should be in fail/error color (red)
 - [x] MultiGPU support (pr #14)
 - [x] Find mmproj files for vision/audio etc (pr #15)
 - [x] n-cpu-moe flag support (pr #20)
@@ -152,14 +143,19 @@ Two release tracks:
   - [x] **NPU support via Lemonade Server/FLM (Strix Halo / XDNA)** (PR #28). llama.cpp has no XDNA backend; AMD's path is Lemonade Server (OpenAI-compatible, ONNX Runtime + VitisAI EP). Built as Tier 2 (Lemonade is a first-class managed-multiplexer backend: llamastash supervises one `lemond` umbrella, delegates per-model load/unload, routes inference through the proxy, evicts by API unload). **Pivot from the original plan: no auto-install.** llamastash does **not** download `lemond` — the user installs Lemonade + its engines (and AMD's NPU system stack: XRT / firmware / `flm`) manually; llamastash _finds_ `lemond` (PATH or `lemonade.binary`) and supervises it. Opt-in (`[lemonade]` config / `--lemonade` / `LLAMASTASH_LEMONADE`). Setup guide: [`docs/lemonade-setup.md`](docs/lemonade-setup.md). Brainstorm: [`docs/brainstorms/2026-05-31-npu-backend-via-lemonade-requirements.md`](docs/brainstorms/2026-05-31-npu-backend-via-lemonade-requirements.md).
   - [x] vLLM via the Lemonade backend (Lemonade fans out to it; no extra llamastash work).
   - [x] whispercpp/etc via the Lemonade backend.
-  - [ ] MLX as a native peer backend (the generic `ModelIdentity` seam already supports it; would drop in alongside llama.cpp/Lemonade).
-  - [ ] **Follow-ups (deferred from PR #28):** explicit per-row backend badge column in the TUI list (currently Lemonade rows separate under the `lemonade://` group header); `status` "installed" check honoring `lemonade.binary` (not just PATH); single-flight hardening of the umbrella spawn.
-  - [ ] **Follow-ups (from the 2026-06-10 live e2e):** lemonade preload errors carry only `lemond returned HTTP 500` — include the response body's `detail` (e.g. the FLM memlock message) in `LemonadeError` so the status row's cause is actionable; llama.cpp supervisor `Error` rows can carry an empty cause when `llama-server` exits during Loading (status `state_cause` plumbing exists, the watcher just doesn't fill it on that path); optional upfront guard for cross-backend `--backend` misuse (today a GGUF forced onto lemonade fails at load time, a registry row forced onto llamacpp fails at spawn — could reject with "model not in <backend>'s catalog" before launching); delegated rows re-adopted across a daemon restart fall back to mirroring the umbrella state until something reloads them (could reconcile against `lemond`'s loaded list at boot).
 - [x] `start` should support advanced params like TUI.
-- [ ] **Need brainstorm/plan**: Automatic gpu/cpu offload split — llamastash computes the optimal GPU/CPU layer split from VRAM budget + model size so oversized models load partially-offloaded instead of OOMing or silently going all-CPU (what Ollama/LM Studio do). Today `src/launch/defaults_table.rs` just sets `n_gpu_layers=99` and `src/launch/ctx_fit.rs` explicitly punts on partial offload ("treat 'any GPU layers' as 'all GPU layers'"). Needs per-layer GGUF sizing (today `src/gguf/memory.rs::estimate` only approximates a linear `weights × ngl/n_layers` fraction), a fitting solver that co-solves with `ctx_fit` for the shared VRAM budget, and MoE-awareness (prefer `n-cpu-moe` over dropping `ngl`). Split out from the manual-knobs item above.
-- [ ] **Need brainstorm/plan**: **Anthropic `/v1/messages` compatibility shim** on top of the OpenAI-compat proxy. Most agents do OpenAI; Claude Code prefers Anthropic shape.
 - [x] ~~**Surface mmproj/vision in the UI.**~~ — discovery now reads the auto-detected projector's `clip.has_vision_encoder` / `clip.has_audio_encoder` flags (`scanner::detect_multimodal`) and rides them through `DiscoveredModel.multimodal` → `list_models` JSON → TUI. The right-pane header renders `◉` (vision) / `♪` (audio) glyphs after the model title in the accent tone, with a help-overlay Legend entry. CLI `list`/`show` surfacing left for a follow-up (the wire field is in place).
 - [x] **LAN-exposed proxy — bind host + bearer auth (TLS deferred).** Shipped (#25): `--proxy-host` / `proxy.host` binds the proxy data plane to a routable address behind an auto-provisioned `proxy.api_key`; fail-closed with `--insecure-no-auth` escape; control plane + `llama-server` stay loopback. Brainstorm [`docs/brainstorms/2026-06-09-lan-exposed-proxy-auth-requirements.md`](docs/brainstorms/2026-06-09-lan-exposed-proxy-auth-requirements.md), plan [`docs/plans/2026-06-09-001-feat-lan-exposed-proxy-auth-plan.md`](docs/plans/2026-06-09-001-feat-lan-exposed-proxy-auth-plan.md). **Remaining: TLS** for the LAN-exposed proxy (phase 2 — self-signed gen + cert paths); plaintext for now.
+
+## R4 (v0.0.4 checklist)
+
+- [x] Error toasts should be in fail/error color (red). Audit for all error toasts today and any error toasts masquerading as success.
+- [x] split init into subcommands and compose
+- [ ] **Need brainstorm/plan**: Look for a better strategy for finding the best models for a hardware.
+- [ ] **Need brainstorm/plan**: Automatic gpu/cpu offload split — llamastash computes the optimal GPU/CPU layer split from VRAM budget + model size so oversized models load partially-offloaded instead of OOMing or silently going all-CPU (what Ollama/LM Studio do). Today `src/launch/defaults_table.rs` just sets `n_gpu_layers=99` and `src/launch/ctx_fit.rs` explicitly punts on partial offload ("treat 'any GPU layers' as 'all GPU layers'"). Needs per-layer GGUF sizing (today `src/gguf/memory.rs::estimate` only approximates a linear `weights × ngl/n_layers` fraction), a fitting solver that co-solves with `ctx_fit` for the shared VRAM budget, and MoE-awareness (prefer `n-cpu-moe` over dropping `ngl`). Split out from the manual-knobs item above.
+  - [ ] fix-vram/umem UI, logic, consistency with init/doctor etc, show more hardware info on doctor and init.
+  - [ ] Teach the agent skill to do this calculation?
+- [ ] **Need brainstorm/plan**: **Anthropic `/v1/messages` compatibility shim** on top of the OpenAI-compat proxy. Most agents do OpenAI; Claude Code prefers Anthropic shape.
 
 ## General Roadmap
 
@@ -180,6 +176,13 @@ Two release tracks:
 - [ ] **TLS** for the LAN-exposed proxy (phase 2 — self-signed gen + cert paths); plaintext for now.
 - [ ] **Need brainstorm/plan**: **SSE for `logs_tail` streaming.** Today the CLI polls `logs_tail` every 250 ms over HTTP and de-dupes (works correctly; not a regression). SSE would collapse N polls/sec into one long-lived connection. Unit 3 of the 0.0.2 plan was explicitly deferred — needs its own brainstorm + plan.
 - [ ] **Build CUDA llama.cpp prebuilts in CD** — ggml-org ships CUDA only for Windows (`cudart-llama-bin-win-cuda-{12.4,13.3}-x64.zip`); Linux+NVIDIA users get routed to the Vulkan prebuilt today, which is ~10–30% slower than native CUDA for LLM inference. Building CUDA doesn't need a GPU runner (only `nvcc`), so a standard `ubuntu-latest` runner + `Jimver/cuda-toolkit` action + `cmake -DGGML_CUDA=1 -DCMAKE_CUDA_ARCHITECTURES="70;75;80;86;89;90"` produces a fat binary covering Volta→Hopper. Publish to `llamastash/llamastash` releases tagged with the same `bNNNN` as the upstream llama.cpp tag so `pick_release_with_asset` keeps working. Then extend `pick_asset_suffix` in `src/init/install/gh_releases.rs:70` with a CUDA branch for Linux+NVIDIA (parameterise `RELEASES_URL` per-asset), and add a wizard prompt to choose CUDA vs Vulkan. Static-link libcudart (Ollama precedent) so users don't need the CUDA toolkit installed — adds ~100MB but zero user-side prereqs. Scope: ~1–2 days for workflow + routing + tests. Folds into the broader [version-drift brainstorm](#) above since both questions share the "do we own a llama.cpp build pipeline?" decision.
+- [ ] MLX as a native peer backend (the generic `ModelIdentity` seam already supports it; would drop in alongside llama.cpp/Lemonade).
+- [ ] **Follow-ups (deferred from PR #28):**
+  - [ ] explicit per-row backend badge column in the TUI list (currently Lemonade rows separate under the `lemonade://` group header);
+  - [ ] `status` "installed" check honoring `lemonade.binary` (not just PATH); single-flight hardening of the umbrella spawn.
+  - [ ] lemonade preload errors carry only `lemond returned HTTP 500` — include the response body's `detail` (e.g. the FLM memlock message) in `LemonadeError` so the status row's cause is actionable; llama.cpp supervisor `Error` rows can carry an empty cause when `llama-server` exits during Loading (status `state_cause` plumbing exists, the watcher just doesn't fill it on that path);
+  - [ ] **DOCUMENT**: optional upfront guard for cross-backend `--backend` misuse (today a GGUF forced onto lemonade fails at load time, a registry row forced onto llamacpp fails at spawn — could reject with "model not in <backend>'s catalog" before launching);
+  - [ ] delegated rows re-adopted across a daemon restart fall back to mirroring the umbrella state until something reloads them (could reconcile against `lemond`'s loaded list at boot).
 
 ### Low priority
 
