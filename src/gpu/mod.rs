@@ -31,12 +31,63 @@ pub mod amd;
 pub mod dxgi;
 pub mod metal;
 pub mod nvidia;
+#[cfg(target_os = "linux")]
+pub mod sysfs;
 pub mod vulkan;
+
+/// Dedicated-VRAM ceiling below which an AMD card is classified as an
+/// integrated UMA APU by carve-out signature (R18). No discrete GPU
+/// ships with under 1 GiB of dedicated VRAM, so a tiny `vram_total`
+/// paired with a large system-RAM-backed GTT pool is the APU marker
+/// (Strix Halo's BIOS carve-out is 512 MiB on the reference box).
+///
+/// This is the *constrained* fallback heuristic: Linux amdgpu exposes
+/// no driver-level "integrated" flag (unlike the Windows D3D12 `UMA`
+/// flag or Apple's constitutional unified memory), so size is the only
+/// signal. A large BIOS carve-out (e.g. 4 GiB) on an APU is genuinely
+/// ambiguous from memory sizes alone and would misclassify as discrete;
+/// the classification source is surfaced in `doctor` so the verdict is
+/// inspectable rather than silent.
+pub const CARVE_VRAM_CEILING_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Decide whether a card's dedicated-VRAM size matches the integrated
+/// UMA carve-out signature. `true` → treat as unified (sum VRAM + GTT,
+/// mark the GTT portion as the shared system-RAM pool).
+pub fn is_carve_signature(vram_total: u64) -> bool {
+  vram_total < CARVE_VRAM_CEILING_BYTES
+}
+
+/// Classify an AMD card from its VRAM / GTT sizes (R18) — the single
+/// source of truth shared by the sysfs probe and the rocm-smi fallback.
+/// Returns `(total_memory_bytes, used_memory_bytes, uma_shared_total,
+/// uma_shared_used, source)`. A carve-signature APU sums VRAM + GTT and
+/// marks the GTT portion as the shared system-RAM pool; a discrete card
+/// reports VRAM only.
+pub fn classify_amd_memory(
+  vram_total: u64,
+  vram_used: u64,
+  gtt_total: Option<u64>,
+  gtt_used: Option<u64>,
+) -> (u64, u64, Option<u64>, Option<u64>, ClassSource) {
+  if is_carve_signature(vram_total) {
+    let gt = gtt_total.unwrap_or(0);
+    let gu = gtt_used.unwrap_or(0);
+    (
+      vram_total.saturating_add(gt),
+      vram_used.saturating_add(gu),
+      Some(gt),
+      Some(gu),
+      ClassSource::CarveSignature,
+    )
+  } else {
+    (vram_total, vram_used, None, None, ClassSource::Discrete)
+  }
+}
 
 use std::process::{Command, Output};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Wall-clock budget for a single vendor probe. A wedged GPU driver
 /// (nvidia-smi hang, ROCm reset, locked Vulkan loader) would otherwise
@@ -127,6 +178,23 @@ pub enum GpuInfo {
   Multi { devices: Vec<GpuDevice> },
 }
 
+/// How a device's unified-vs-discrete verdict was reached (R18).
+/// Surfaced in the `doctor` hardware section so a misclassification is
+/// inspectable rather than silent. Only set on the AMD / DXGI paths;
+/// Apple Metal's source is implicit in the `AppleMetal` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassSource {
+  /// Windows D3D12 `UMA` architecture flag — authoritative.
+  ExplicitDxgiUma,
+  /// Linux amdgpu: no driver flag exists; classified unified by the
+  /// VRAM carve-out signature (tiny dedicated VRAM + large GTT pool).
+  CarveSignature,
+  /// Classified as a discrete card (dedicated VRAM at or above the
+  /// carve ceiling, or the explicit flag reported non-UMA).
+  Discrete,
+}
+
 /// One discrete GPU device (NVIDIA / AMD path).
 ///
 /// `utilization_pct` and `temperature_c` are best-effort: the per-tick
@@ -170,6 +238,10 @@ pub struct GpuDevice {
   /// Currently-allocated portion of `uma_shared_total_bytes`.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub uma_shared_used_bytes: Option<u64>,
+  /// How this device's unified-vs-discrete verdict was reached (R18).
+  /// `None` on backends that don't classify (NVIDIA, Vulkan/unknown).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub classification_source: Option<ClassSource>,
 }
 
 impl GpuInfo {
@@ -209,6 +281,31 @@ impl GpuInfo {
         devices.iter().any(|d| d.uma_shared_total_bytes.is_some())
       }
       Self::CpuOnly => false,
+    }
+  }
+
+  /// The classification verdict + method for this host's GPU memory,
+  /// for the `doctor` hardware section (R18). Apple Metal is unified by
+  /// construction (no `ClassSource` needed — the variant itself says
+  /// so); AMD / DXGI devices carry an explicit [`ClassSource`]; NVIDIA /
+  /// Vulkan / CPU-only have no UMA classification (`None`).
+  pub fn uma_class_source(&self) -> Option<ClassSource> {
+    match self {
+      Self::AppleMetal { .. } => None,
+      Self::CpuOnly => None,
+      Self::Multi { devices }
+      | Self::Nvidia { devices }
+      | Self::Amd { devices }
+      | Self::Unknown { devices } => {
+        // Prefer a unified verdict when any device reports one (a UMA
+        // APU paired with a discrete card budgets as unified), else the
+        // first recorded source (typically Discrete).
+        devices
+          .iter()
+          .filter_map(|d| d.classification_source)
+          .find(|s| !matches!(s, ClassSource::Discrete))
+          .or_else(|| devices.iter().find_map(|d| d.classification_source))
+      }
     }
   }
 }

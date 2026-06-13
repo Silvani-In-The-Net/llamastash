@@ -199,7 +199,7 @@ sequenceDiagram
 
 ### Phase 1 — Hardware truth foundations (feeds admission; R11–R16, R18)
 
-- [ ] **Unit 1: sysfs memory sampling, explicit UMA classification, centralized headroom policy**
+- [x] **Unit 1: sysfs memory sampling, explicit UMA classification, centralized headroom policy**
 
 **Goal:** Give the budget authority a trustworthy substrate: sysfs-based AMD memory reads, an explicit integrated-GPU classification replacing the `gtt > vram` heuristic, and one per-pool-type headroom rule consumed by admission instead of baked into display.
 

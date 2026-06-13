@@ -12,6 +12,7 @@ pub mod ctx_fit;
 pub mod defaults_table;
 pub mod favorites;
 pub mod flag_aliases;
+pub mod headroom;
 pub mod list_devices;
 pub mod mode;
 pub mod params;

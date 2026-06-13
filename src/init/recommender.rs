@@ -752,7 +752,9 @@ mod tests {
       gpu: GpuInfo::AppleMetal {
         total_memory_bytes: bytes,
       },
-      vram_bytes: Some((bytes as f64 * 0.75) as u64),
+      // Raw unified total — matches `aggregate_vram_bytes` after the
+      // 0.75 OS/app headroom moved to `launch::headroom` (R16).
+      vram_bytes: Some(bytes),
       gpu_device_count: 1,
       ram_total_bytes: bytes,
       disk_free_bytes: 0,

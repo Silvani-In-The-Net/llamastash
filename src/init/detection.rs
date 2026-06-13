@@ -25,8 +25,12 @@ use crate::launch::binary::{locate, LocateInputs};
 /// - Nvidia / AMD / Multi: `min(device.total_memory_bytes)` over the
 ///   devices that report a non-zero size, because the recommender's
 ///   single-GPU placement is the limiting case.
-/// - AppleMetal: `total_memory_bytes × 0.75` (Metal uses unified
-///   memory; the ratio leaves headroom for the OS + apps).
+/// - AppleMetal: the **raw** unified total. The historical `× 0.75`
+///   OS/app headroom moved to [`crate::launch::headroom`] (R16) — the
+///   one place the budget authority and refusal messages consult, so
+///   every display + sizing surface sees raw totals and headroom is
+///   applied once, by admission. The recommender keeps its own
+///   `SAFETY_MARGIN` on top of the raw value.
 /// - CpuOnly / Unknown: `None`.
 ///
 /// Zero-byte devices are excluded from the `min()`. A multi-GPU host
@@ -42,7 +46,9 @@ pub fn aggregate_vram_bytes(info: &GpuInfo) -> Option<u64> {
     GpuInfo::CpuOnly | GpuInfo::Unknown { .. } => return None,
     GpuInfo::Nvidia { devices } | GpuInfo::Amd { devices } => devices,
     GpuInfo::AppleMetal { total_memory_bytes } => {
-      return Some((*total_memory_bytes as f64 * 0.75) as u64);
+      // Raw unified total — the 0.75 OS/app headroom now lives in
+      // `launch::headroom` and is applied by admission (R16).
+      return Some(*total_memory_bytes);
     }
     GpuInfo::Multi { devices } => devices,
   };
@@ -418,12 +424,15 @@ mod tests {
   }
 
   #[test]
-  fn aggregate_vram_for_apple_metal_applies_75_percent_ratio() {
+  fn aggregate_vram_for_apple_metal_returns_raw_total() {
+    // The 0.75 OS/app headroom moved to `launch::headroom` (R16); the
+    // aggregate now reports the raw unified total like every other
+    // display + sizing surface.
+    let total = 64 * 1_024 * 1_024 * 1_024;
     let info = GpuInfo::AppleMetal {
-      total_memory_bytes: 64 * 1_024 * 1_024 * 1_024,
+      total_memory_bytes: total,
     };
-    let expected = (64.0_f64 * 1_024.0 * 1_024.0 * 1_024.0 * 0.75) as u64;
-    assert_eq!(aggregate_vram_bytes(&info), Some(expected));
+    assert_eq!(aggregate_vram_bytes(&info), Some(total));
   }
 
   #[test]
