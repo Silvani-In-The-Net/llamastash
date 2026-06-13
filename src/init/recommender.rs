@@ -602,12 +602,8 @@ fn render_on_disk_one_line(disk: &OnDiskModel, peak_bytes: u64, hw: &HardwareSna
 }
 
 fn format_gib(bytes: u64) -> String {
-  let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-  if gib >= 10.0 {
-    format!("{gib:.0} GB")
-  } else {
-    format!("{gib:.1} GB")
-  }
+  // One canonical formatter shared across every hardware surface.
+  crate::init::detection::fmt_gib(bytes)
 }
 
 fn format_params(params: u64) -> &'static str {

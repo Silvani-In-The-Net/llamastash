@@ -18,8 +18,54 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sysinfo::{Disks, System};
 
-use crate::gpu::{self, GpuDevice, GpuInfo};
+use crate::gpu::{self, ClassSource, GpuDevice, GpuInfo};
 use crate::launch::binary::{locate, LocateInputs};
+
+/// Canonical gibibyte formatter — bytes ÷ 1024³, one decimal, `GiB`.
+/// One implementation so every hardware surface (`init` banner,
+/// `doctor`, the recommender, `status`, the TUI) prints memory with the
+/// same unit and precision. (Earlier copies disagreed: some printed
+/// `GB`, some `GiB`, with different decimal rules.)
+pub fn fmt_gib(bytes: u64) -> String {
+  format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+}
+
+/// Canonical display name for a GPU backend label (the `gpu_backend`
+/// wire string / [`GpuInfo::label`]). Used wherever a GPU vendor is
+/// named so `status` / `doctor` / `init` / the TUI agree on the word.
+pub fn gpu_vendor_display(backend: &str) -> &'static str {
+  match backend {
+    "nvidia" => "NVIDIA",
+    "amd" => "AMD",
+    "apple_metal" => "Apple",
+    "multi" => "Multi-GPU",
+    "unknown" => "GPU (Vulkan)",
+    // The daemon's pre-first-sample placeholder — not a CPU-only verdict.
+    "unsampled" => "detecting",
+    // cpu_only and anything unrecognised.
+    _ => "CPU only",
+  }
+}
+
+/// Canonical one-line GPU summary shared by `status` and `doctor`:
+/// `<vendor> · <pool total> (<classification source>)`, e.g.
+/// `AMD · 124.5 GiB (carve signature)`. CPU-only and not-yet-sampled
+/// hosts render the bare vendor word so the line never claims memory it
+/// doesn't have.
+pub fn gpu_summary_line(
+  backend: &str,
+  pool_total_bytes: Option<u64>,
+  class_source: Option<ClassSource>,
+) -> String {
+  let vendor = gpu_vendor_display(backend);
+  match (backend, pool_total_bytes) {
+    ("cpu_only" | "unsampled", _) | (_, None) => vendor.to_string(),
+    (_, Some(total)) => match class_source {
+      Some(src) => format!("{vendor} · {} ({})", fmt_gib(total), src.label()),
+      None => format!("{vendor} · {}", fmt_gib(total)),
+    },
+  }
+}
 
 /// VRAM aggregation rule pinned in Key Decisions:
 /// - Nvidia / AMD / Multi: `min(device.total_memory_bytes)` over the

@@ -4,7 +4,7 @@
 │MEM  ██░░░░░ 11/32G    ││server  /usr/local/bin/llama-server (cuda)                                       ││  █▃██▃█  │
 │GPU  ██████░ 84% 68°C  ││proxy   —                                                                        ││ █ ●  ● █ │
 │VRAM ████░░░ 14/24G    ││models  3 found · 1 ready · 2 ★                                                  ││ ██ ◡◡ ██ │
-│backend  NVML · 1 GPU  ││running 1 (qwen-7b :41100)                                                       ││  ▀████▀  │
+│backend  NVIDIA · 1 GPU││running 1 (qwen-7b :41100)                                                       ││  ▀████▀  │
 └───────────────────────┘└─────────────────────────────────────────────────────────────────────────────────┘└──────────┘
 ┌ Models [3] · /:filter · ⏎:launch · Ctrl+s:stop · f:fav · p:path · u:url ───┐┌ Settings │ Logs │ Chat ────────────────┐
 │   Name                                      Arch     Quant   Ctx     Size  ││                                        │

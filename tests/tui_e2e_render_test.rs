@@ -230,7 +230,7 @@ fn dashboard_render_carries_key_landmarks() {
   assert!(frame.contains("RAM"));
   assert!(frame.contains("GPU"));
   assert!(frame.contains("VRAM"));
-  assert!(frame.contains("NVML"));
+  assert!(frame.contains("NVIDIA"));
   // Daemon pane: server path + always-on proxy row. The build
   // version surfaces on the title bar (`render_title_left`) and is
   // no longer repeated on the info pane.

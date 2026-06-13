@@ -300,7 +300,15 @@ fn format_gpu_segment(hw: &HardwareSnapshot) -> String {
       };
       let name_segment = format_device_name(devices, vendor);
       let mem = format_gib(hw.vram_bytes.unwrap_or(0));
-      format!("{name_segment} · {mem} VRAM")
+      // A unified APU (AMD UMA) draws from the shared pool — calling it
+      // "VRAM" would re-introduce the 2x-memory confusion the MEM*
+      // rename fixed. Label it "unified" like the Apple branch.
+      let mem_kind = if hw.gpu.is_unified() {
+        "unified"
+      } else {
+        "VRAM"
+      };
+      format!("{name_segment} · {mem} {mem_kind}")
     }
     GpuInfo::AppleMetal {
       total_memory_bytes: _,
@@ -421,15 +429,12 @@ fn format_system_segment(hw: &HardwareSnapshot) -> String {
 }
 
 fn format_gib(bytes: u64) -> String {
-  let gib = bytes as f64 / 1_073_741_824.0;
-  if gib >= 10.0 {
-    format!("{gib:.0} GB")
-  } else {
-    format!("{gib:.1} GB")
-  }
+  // Delegate to the one canonical formatter so the init banner, doctor,
+  // the recommender, status, and the TUI all print the same unit.
+  crate::init::detection::fmt_gib(bytes)
 }
 
-fn os_short(os: OsFamily) -> &'static str {
+pub fn os_short(os: OsFamily) -> &'static str {
   match os {
     OsFamily::Linux => "linux",
     OsFamily::MacOs => "macos",
@@ -438,7 +443,7 @@ fn os_short(os: OsFamily) -> &'static str {
   }
 }
 
-fn arch_short(arch: CpuArch) -> &'static str {
+pub fn arch_short(arch: CpuArch) -> &'static str {
   match arch {
     CpuArch::X86_64 => "x86_64",
     CpuArch::Arm64 => "arm64",
@@ -932,7 +937,7 @@ mod tests {
       line.contains("NVIDIA GeForce RTX 4090"),
       "expected NVIDIA + device name, got {line:?}"
     );
-    assert!(line.contains("24 GB VRAM"));
+    assert!(line.contains("24.0 GiB VRAM"));
   }
 
   #[test]
@@ -989,7 +994,7 @@ mod tests {
     assert!(!without_disk.contains("disk free"));
     hw.disk_free_bytes = 100 * 1024 * 1024 * 1024;
     let with_disk = hardware_line(&hw);
-    assert!(with_disk.contains("100 GB disk free"));
+    assert!(with_disk.contains("100.0 GiB disk free"));
   }
 
   #[test]

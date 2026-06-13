@@ -140,6 +140,15 @@ pub struct Baseline {
 pub struct HardwareSection {
   pub cpu_brand: String,
   pub cpu_cores: u32,
+  /// Inference-relevant CPU instruction sets (AVX2, AVX-512, FMA, …).
+  /// Shown so `doctor` is the superset of what `init` reports. Empty on
+  /// archs without a meaningful surface.
+  #[serde(default)]
+  pub cpu_features: Vec<String>,
+  /// OS family + CPU arch (`linux/x86_64`), mirroring the init banner's
+  /// `sys:` line so the two surfaces agree.
+  #[serde(default)]
+  pub os: String,
   /// System RAM total in bytes — rendered `MEM` (discrete) or `MEM*`
   /// (unified, where the GPU draws from this same pool).
   pub mem_total_bytes: u64,
@@ -172,6 +181,12 @@ impl HardwareSection {
     Self {
       cpu_brand: hw.cpu_brand.clone(),
       cpu_cores: hw.cpu_cores,
+      cpu_features: hw.cpu_features.clone(),
+      os: format!(
+        "{}/{}",
+        crate::init::prompts::os_short(hw.os),
+        crate::init::prompts::arch_short(hw.cpu_arch)
+      ),
       mem_total_bytes: hw.ram_total_bytes,
       disk_free_bytes: hw.disk_free_bytes,
       gpu_backend: hw.gpu.label().to_string(),
@@ -387,10 +402,7 @@ fn check_gtt_hint(hardware: &HardwareSnapshot) -> Option<Finding> {
   ))
 }
 
-fn fmt_gib(bytes: u64) -> String {
-  let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-  format!("{gib:.1} GiB")
-}
+use crate::init::detection::fmt_gib;
 
 fn check_snapshot_stale(snapshot: &InitSnapshot) -> Option<Finding> {
   let bundle_date = snapshot.snapshot_bundle_date.as_deref()?;
@@ -472,14 +484,6 @@ fn is_readable(path: &Path) -> bool {
   std::fs::File::open(path).is_ok()
 }
 
-fn class_source_label(src: ClassSource) -> &'static str {
-  match src {
-    ClassSource::ExplicitDxgiUma => "D3D12 UMA flag",
-    ClassSource::CarveSignature => "carve signature",
-    ClassSource::Discrete => "discrete",
-  }
-}
-
 /// Render the live hardware section (R12) with the R15 label
 /// conventions. `MEM`/`MEM*` mark discrete vs unified memory; the
 /// `GPU (shared)` row is the UMA pool's system-RAM portion, indented as
@@ -494,25 +498,34 @@ fn format_hardware_section(hw: &HardwareSection) -> String {
   } else {
     hw.cpu_brand.as_str()
   };
-  let _ = writeln!(out, "  {:<5} {cpu} · {} cores", "CPU", hw.cpu_cores);
+  let cpu_features = if hw.cpu_features.is_empty() {
+    String::new()
+  } else {
+    format!(" · {}", hw.cpu_features.join(" "))
+  };
+  let _ = writeln!(
+    out,
+    "  {:<5} {cpu} · {} cores{cpu_features}",
+    "CPU", hw.cpu_cores
+  );
   let mem_label = if hw.unified { "MEM*" } else { "MEM" };
   let _ = writeln!(out, "  {:<5} {}", mem_label, fmt_gib(hw.mem_total_bytes));
-  let gpu_detail = match (hw.gpu_pool_total_bytes, hw.uma_class_source) {
-    (Some(total), Some(src)) => format!(
-      "{} · {} ({})",
-      hw.gpu_backend,
-      fmt_gib(total),
-      class_source_label(src)
-    ),
-    (Some(total), None) => format!("{} · {}", hw.gpu_backend, fmt_gib(total)),
-    (None, _) => hw.gpu_backend.clone(),
-  };
+  // Shared one-line GPU summary so `doctor`, `status`, and `init` name
+  // the vendor + pool + classification identically.
+  let gpu_detail = crate::init::detection::gpu_summary_line(
+    &hw.gpu_backend,
+    hw.gpu_pool_total_bytes,
+    hw.uma_class_source,
+  );
   let _ = writeln!(out, "  {:<5} {gpu_detail}", "GPU");
   if let Some(shared) = hw.uma_shared_bytes {
     let _ = writeln!(out, "    GPU (shared)  {}", fmt_gib(shared));
   }
   if hw.disk_free_bytes > 0 {
     let _ = writeln!(out, "  {:<5} {} free", "DISK", fmt_gib(hw.disk_free_bytes));
+  }
+  if !hw.os.is_empty() {
+    let _ = writeln!(out, "  {:<5} {}", "OS", hw.os);
   }
   out
 }
@@ -954,7 +967,7 @@ mod tests {
     let out = format_human(&report);
     assert_eq!(
       out,
-      "hardware\n  CPU   unknown CPU · 0 cores\n  MEM   16.0 GiB\n  GPU   cpu_only\n\
+      "hardware\n  CPU   unknown CPU · 0 cores\n  MEM   16.0 GiB\n  GPU   CPU only\n  OS    linux/x86_64\n\
        llamastash doctor (0 findings)\n✓ everything looks healthy\n"
     );
     console::set_colors_enabled(prior_colors);

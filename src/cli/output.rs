@@ -446,8 +446,13 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
     }
   }
 
-  // GPU footer.
-  if let Some(label) = gpu_label(&snap.gpu) {
+  // GPU footer — sourced from the live `host` snapshot (the same source
+  // the TUI host pane reads) and formatted with the shared
+  // `gpu_summary_line`, so `status`, `doctor`, and the TUI name the GPU
+  // identically. The separate `snap.gpu` GpuInfo field is no longer used
+  // here (it diverged: it showed "CPU only" during the pre-first-sample
+  // window while the TUI already saw the card).
+  if let Some(label) = host_gpu_label(&snap.host) {
     out.push('\n');
     if tty {
       out.push_str(&colors::dim(&format!("GPU: {label}")));
@@ -459,103 +464,20 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
   out
 }
 
-fn gpu_label(gpu: &Value) -> Option<String> {
-  // GpuInfo serialises as `{"backend": "<name>", ...}` — see
-  // `gpu::GpuInfo`'s `#[serde(tag = "backend", rename_all = "snake_case")]`
-  // attribute. Earlier versions of this function pattern-matched on
-  // PascalCase variant keys (`Nvidia`, `Amd`, `Metal`, `Vulkan`)
-  // which the current wire shape never emits, so every non-CpuOnly
-  // backend silently fell through to the JSON-blob branch. Match on
-  // the tagged-enum shape instead.
-  use crate::daemon::host_metrics::GpuFlavor;
-  if gpu.is_null() {
-    return None;
-  }
-  let obj = gpu.as_object()?;
-  let raw = obj.get("backend").and_then(Value::as_str)?;
-  let count = || {
-    obj
-      .get("devices")
-      .and_then(Value::as_array)
-      .map(|a| a.len())
-      .unwrap_or(0)
-  };
-  match GpuFlavor::from_label(raw) {
-    GpuFlavor::CpuOnly => Some("CPU only".to_string()),
-    GpuFlavor::Nvidia => Some(format!("NVIDIA GPU(s): {}", count())),
-    GpuFlavor::Amd => Some(format!("AMD GPU(s): {}", count())),
-    GpuFlavor::AppleMetal => {
-      let total = obj
-        .get("total_memory_bytes")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-      let gib = total as f64 / (1024.0 * 1024.0 * 1024.0);
-      Some(format!("Apple Silicon: {gib:.0}G unified"))
-    }
-    GpuFlavor::Unknown => Some(format!(
-      "Unknown GPU vendor (Vulkan-only): {} device(s)",
-      count()
-    )),
-    GpuFlavor::Multi => {
-      let devs = obj
-        .get("gpu_devices")
-        .and_then(Value::as_array)
-        .map(|a| a.len())
-        .unwrap_or(count());
-      // Count per-backend by examining selector prefixes
-      let nvidia = obj
-        .get("gpu_devices")
-        .and_then(Value::as_array)
-        .map(|a| {
-          a.iter()
-            .filter(|v| {
-              v.get("selector")
-                .and_then(Value::as_str)
-                .map(|s| s.starts_with('N'))
-                .unwrap_or(false)
-            })
-            .count()
-        })
-        .unwrap_or(0);
-      let amd = obj
-        .get("gpu_devices")
-        .and_then(Value::as_array)
-        .map(|a| {
-          a.iter()
-            .filter(|v| {
-              v.get("selector")
-                .and_then(Value::as_str)
-                .map(|s| s.starts_with('A'))
-                .unwrap_or(false)
-            })
-            .count()
-        })
-        .unwrap_or(0);
-      let other = devs.saturating_sub(nvidia).saturating_sub(amd);
-      let parts: Vec<String> = vec![
-        if nvidia > 0 {
-          Some(format!("NVIDIA GPU(s): {}", nvidia))
-        } else {
-          None
-        },
-        if amd > 0 {
-          Some(format!("AMD GPU(s): {}", amd))
-        } else {
-          None
-        },
-        if other > 0 {
-          Some(format!("Unknown GPU(s): {}", other))
-        } else {
-          None
-        },
-      ]
-      .into_iter()
-      .flatten()
-      .collect();
-      Some(parts.join(" + "))
-    }
-    GpuFlavor::Unsampled => Some(serde_json::to_string(gpu).unwrap_or_else(|_| "?".to_string())),
-  }
+/// One-line GPU summary for the `status` footer, sourced from the live
+/// `host` snapshot (the same source the TUI host pane reads) and
+/// formatted with the shared [`crate::init::detection::gpu_summary_line`]
+/// so `status`, `doctor`, and the TUI name the GPU identically. `None`
+/// only when `host` carries no backend at all.
+fn host_gpu_label(host: &Value) -> Option<String> {
+  let backend = host.get("gpu_backend").and_then(Value::as_str)?;
+  let pool = host.get("gpu_mem_total_bytes").and_then(Value::as_u64);
+  let class = host
+    .get("uma_class_source")
+    .and_then(|v| serde_json::from_value::<crate::gpu::ClassSource>(v.clone()).ok());
+  Some(crate::init::detection::gpu_summary_line(
+    backend, pool, class,
+  ))
 }
 
 /// Format the proxy block for the human-readable status table.
@@ -873,66 +795,51 @@ mod tests {
   }
 
   #[test]
-  fn status_human_includes_gpu_label_when_present() {
-    // The live wire shape is `{"backend": "cpu_only"}` (snake_case
-    // tagged enum); the test feeds the same shape the daemon emits,
-    // not the legacy PascalCase variant key the function used to
-    // match against. The label content is the same in both modes;
-    // only the surrounding color styling differs.
+  fn status_human_gpu_footer_from_host_snapshot() {
+    // The footer reads the live `host` snapshot (same source as the TUI
+    // + doctor), not the separate `gpu` GpuInfo field. A genuinely
+    // CPU-only host shows "CPU only".
     for enabled in [true, false] {
       let _g = ColorGuard::set(enabled);
       let snap = StatusSnapshot {
         models: vec![],
         external: vec![],
-        gpu: serde_json::json!({"backend": "cpu_only"}),
-        host: Value::Null,
+        gpu: Value::Null,
+        host: serde_json::json!({"gpu_backend": "cpu_only"}),
         daemon: None,
         proxy: Value::Null,
         backends: Value::Null,
       };
       let s = status_human(&snap);
       let plain = console::strip_ansi_codes(&s);
-      assert!(plain.contains("CPU only"), "got: {plain}");
+      assert!(plain.contains("GPU: CPU only"), "got: {plain}");
     }
   }
 
   #[test]
-  fn gpu_label_matches_tagged_enum_shape_for_each_backend() {
-    // The daemon serialises GpuInfo with `tag = "backend",
-    // rename_all = "snake_case"`. Each backend must produce a
-    // human-readable label rather than falling through to the JSON
-    // blob branch.
-    let nv = serde_json::json!({
-      "backend": "nvidia",
-      "devices": [
-        {"name": "RTX 4090", "total_memory_bytes": 24, "used_memory_bytes": 0},
-      ],
-    });
-    assert_eq!(gpu_label(&nv).as_deref(), Some("NVIDIA GPU(s): 1"));
+  fn host_gpu_label_matches_shared_summary_per_backend() {
+    // Sourced from the host snapshot's `gpu_backend` + pool total +
+    // classification, formatted by the shared `gpu_summary_line` so
+    // `status` reads identically to `doctor`.
     let amd = serde_json::json!({
-      "backend": "amd",
-      "devices": [
-        {"name": "RX 7900", "total_memory_bytes": 24, "used_memory_bytes": 0},
-        {"name": "RX 7800", "total_memory_bytes": 16, "used_memory_bytes": 0},
-      ],
-    });
-    assert_eq!(gpu_label(&amd).as_deref(), Some("AMD GPU(s): 2"));
-    let metal = serde_json::json!({
-      "backend": "apple_metal",
-      "total_memory_bytes": 64u64 * 1024 * 1024 * 1024,
+      "gpu_backend": "amd",
+      "gpu_mem_total_bytes": 133_680_857_088_u64,
+      "uma_class_source": "carve_signature",
     });
     assert_eq!(
-      gpu_label(&metal).as_deref(),
-      Some("Apple Silicon: 64G unified")
+      host_gpu_label(&amd).as_deref(),
+      Some("AMD · 124.5 GiB (carve signature)")
     );
-    let unknown = serde_json::json!({
-      "backend": "unknown",
-      "devices": [{"name": "Vulkan device", "total_memory_bytes": 0, "used_memory_bytes": 0}],
+    let nv = serde_json::json!({
+      "gpu_backend": "nvidia",
+      "gpu_mem_total_bytes": 24u64 * 1024 * 1024 * 1024,
     });
-    assert_eq!(
-      gpu_label(&unknown).as_deref(),
-      Some("Unknown GPU vendor (Vulkan-only): 1 device(s)")
-    );
+    assert_eq!(host_gpu_label(&nv).as_deref(), Some("NVIDIA · 24.0 GiB"));
+    // Pre-first-sample window reads "detecting", not "CPU only".
+    let unsampled = serde_json::json!({"gpu_backend": "unsampled"});
+    assert_eq!(host_gpu_label(&unsampled).as_deref(), Some("detecting"));
+    let cpu = serde_json::json!({"gpu_backend": "cpu_only"});
+    assert_eq!(host_gpu_label(&cpu).as_deref(), Some("CPU only"));
   }
 
   #[test]

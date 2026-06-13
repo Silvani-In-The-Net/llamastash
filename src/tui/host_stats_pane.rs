@@ -8,7 +8,7 @@
 //! MEM  █████░░░░░ 11.4/32 G
 //! GPU  ██████████ 84% 68°C
 //! VRAM ███████░░░ 14.2/24 G
-//! backend  NVML · 1 GPU
+//! backend  NVIDIA · 1 GPU
 //! ```
 //!
 //! `MEM` is system RAM; `MEM*` marks unified memory (Apple Silicon,
@@ -218,12 +218,19 @@ fn vram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palet
 
 fn backend_row<'a>(host: &HostMetricsSnapshot, palette: &'a Palette) -> Line<'a> {
   use crate::daemon::host_metrics::GpuFlavor;
+  use crate::init::detection::gpu_vendor_display;
   let label = match host.flavor() {
-    GpuFlavor::Nvidia => format!("NVML · {}", pluralize_gpu(host.gpu_device_count)),
-    GpuFlavor::Amd => format!("ROCm · {}", pluralize_gpu(host.gpu_device_count)),
-    GpuFlavor::AppleMetal => "apple metal".into(),
-    GpuFlavor::CpuOnly => "cpu only".into(),
-    GpuFlavor::Unsampled => "unsampled".into(),
+    // Name the vendor (AMD / NVIDIA / Apple) consistently with
+    // `status`, `doctor`, and `init` — not the metrics tool (NVML /
+    // ROCm), which conflated the vendor with the llama.cpp runtime.
+    GpuFlavor::Nvidia | GpuFlavor::Amd => format!(
+      "{} · {}",
+      gpu_vendor_display(&host.gpu_backend),
+      pluralize_gpu(host.gpu_device_count)
+    ),
+    GpuFlavor::AppleMetal => "Apple · 1 GPU".into(),
+    GpuFlavor::CpuOnly => "CPU only".into(),
+    GpuFlavor::Unsampled => "detecting".into(),
     GpuFlavor::Multi => {
       // Two+ backends found GPUs — show combined count.
       let mut nvidia_count = 0u32;
@@ -243,22 +250,22 @@ fn backend_row<'a>(host: &HostMetricsSnapshot, palette: &'a Palette) -> Line<'a>
       }
       let parts: Vec<String> = vec![
         if nvidia_count > 0 {
-          Some(format!("NVML · {}", pluralize_gpu(nvidia_count)))
+          Some(format!("NVIDIA · {}", pluralize_gpu(nvidia_count)))
         } else {
           None
         },
         if amd_count > 0 {
-          Some(format!("ROCm · {}", pluralize_gpu(amd_count)))
+          Some(format!("AMD · {}", pluralize_gpu(amd_count)))
         } else {
           None
         },
         if metal_count > 0 {
-          Some("metal · 1 GPU".into())
+          Some("Apple · 1 GPU".into())
         } else {
           None
         },
         if unknown_count > 0 {
-          Some(format!("unknown · {}", pluralize_gpu(unknown_count)))
+          Some(format!("GPU (Vulkan) · {}", pluralize_gpu(unknown_count)))
         } else {
           None
         },
@@ -487,7 +494,7 @@ mod tests {
     assert!(
       rows
         .iter()
-        .any(|r| r.contains("backend") && r.contains("cpu only")),
+        .any(|r| r.contains("backend") && r.contains("CPU only")),
       "expected `backend  cpu only` row, got: {rows:#?}"
     );
   }
@@ -513,7 +520,7 @@ mod tests {
       "GPU row should read `GPU  unified`, got: {rows:#?}"
     );
     assert!(!body.contains("VRAM"));
-    assert!(rows.iter().any(|r| r.contains("apple metal")));
+    assert!(rows.iter().any(|r| r.contains("Apple")));
   }
 
   #[test]
@@ -537,7 +544,7 @@ mod tests {
     assert!(body.contains("MEM"));
     assert!(body.contains("GPU"));
     assert!(body.contains("VRAM"));
-    assert!(body.contains("NVML"));
+    assert!(body.contains("NVIDIA"));
     assert!(body.contains("1 GPU"));
   }
 
@@ -706,7 +713,7 @@ mod tests {
     assert!(!body.contains("GPU"));
     assert!(!body.contains("VRAM"));
     assert!(
-      rows.iter().any(|r| r.contains("unsampled")),
+      rows.iter().any(|r| r.contains("detecting")),
       "expected `backend  unsampled`, got: {rows:#?}"
     );
   }

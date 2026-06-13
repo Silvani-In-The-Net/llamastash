@@ -195,6 +195,18 @@ pub enum ClassSource {
   Discrete,
 }
 
+impl ClassSource {
+  /// Human label for the classification source, shown in the `doctor`
+  /// hardware section and the shared GPU summary line.
+  pub fn label(self) -> &'static str {
+    match self {
+      ClassSource::ExplicitDxgiUma => "D3D12 UMA flag",
+      ClassSource::CarveSignature => "carve signature",
+      ClassSource::Discrete => "discrete",
+    }
+  }
+}
+
 /// One discrete GPU device (NVIDIA / AMD path).
 ///
 /// `utilization_pct` and `temperature_c` are best-effort: the per-tick
