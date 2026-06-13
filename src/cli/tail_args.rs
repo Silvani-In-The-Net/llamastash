@@ -8,7 +8,7 @@
 use std::ffi::OsString;
 
 use crate::cli::exit_codes::{CliExit, USAGE};
-use crate::config::TypedKnobs;
+use crate::config::{KnobValue, TypedKnobs};
 use crate::launch::flag_aliases::KnobField;
 use crate::launch::flag_aliases::{recognise, ValueKind, KV_CACHE_TYPES, SPLIT_MODES};
 
@@ -104,36 +104,61 @@ fn apply_knob(
   flag: &str,
 ) -> Result<(), CliExit> {
   match (field, kind) {
-    (KnobField::Ctx, ValueKind::U32) => knobs.ctx = Some(parse_u32(flag, value)?),
-    (KnobField::Reasoning, ValueKind::Bool) => knobs.reasoning = Some(parse_bool(flag, value)?),
-    (KnobField::NGpuLayers, ValueKind::U32) => knobs.n_gpu_layers = Some(parse_u32(flag, value)?),
-    (KnobField::NCpuMoe, ValueKind::U32) => knobs.n_cpu_moe = Some(parse_u32(flag, value)?),
-    (KnobField::Threads, ValueKind::U32) => knobs.threads = Some(parse_u32(flag, value)?),
-    (KnobField::Parallel, ValueKind::U32) => knobs.parallel = Some(parse_u32(flag, value)?),
-    (KnobField::BatchSize, ValueKind::U32) => knobs.batch_size = Some(parse_u32(flag, value)?),
-    (KnobField::UbatchSize, ValueKind::U32) => knobs.ubatch_size = Some(parse_u32(flag, value)?),
-    (KnobField::Keep, ValueKind::U32) => knobs.keep = Some(parse_u32(flag, value)?),
+    // U4 wraps each parsed value as `KnobValue::Set`; the `auto`
+    // literal (→ `KnobValue::Auto`) lands in U5 alongside the
+    // flash-attn fix.
+    (KnobField::Ctx, ValueKind::U32) => knobs.ctx = Some(KnobValue::Set(parse_u32(flag, value)?)),
+    (KnobField::Reasoning, ValueKind::Bool) => {
+      knobs.reasoning = Some(KnobValue::Set(parse_bool(flag, value)?))
+    }
+    (KnobField::NGpuLayers, ValueKind::U32) => {
+      knobs.n_gpu_layers = Some(KnobValue::Set(parse_u32(flag, value)?))
+    }
+    (KnobField::NCpuMoe, ValueKind::U32) => {
+      knobs.n_cpu_moe = Some(KnobValue::Set(parse_u32(flag, value)?))
+    }
+    (KnobField::Threads, ValueKind::U32) => {
+      knobs.threads = Some(KnobValue::Set(parse_u32(flag, value)?))
+    }
+    (KnobField::Parallel, ValueKind::U32) => {
+      knobs.parallel = Some(KnobValue::Set(parse_u32(flag, value)?))
+    }
+    (KnobField::BatchSize, ValueKind::U32) => {
+      knobs.batch_size = Some(KnobValue::Set(parse_u32(flag, value)?))
+    }
+    (KnobField::UbatchSize, ValueKind::U32) => {
+      knobs.ubatch_size = Some(KnobValue::Set(parse_u32(flag, value)?))
+    }
+    (KnobField::Keep, ValueKind::U32) => knobs.keep = Some(KnobValue::Set(parse_u32(flag, value)?)),
     (KnobField::RopeFreqScale, ValueKind::F32) => {
-      knobs.rope_freq_scale = Some(parse_f32(flag, value)?)
+      knobs.rope_freq_scale = Some(KnobValue::Set(parse_f32(flag, value)?))
     }
     (KnobField::CacheTypeK, ValueKind::KvCacheType) => {
-      knobs.cache_type_k = Some(parse_kv_cache(flag, value)?)
+      knobs.cache_type_k = Some(KnobValue::Set(parse_kv_cache(flag, value)?))
     }
     (KnobField::CacheTypeV, ValueKind::KvCacheType) => {
-      knobs.cache_type_v = Some(parse_kv_cache(flag, value)?)
+      knobs.cache_type_v = Some(KnobValue::Set(parse_kv_cache(flag, value)?))
     }
-    (KnobField::FlashAttn, ValueKind::Bool) => knobs.flash_attn = Some(parse_bool(flag, value)?),
-    (KnobField::Mlock, ValueKind::Bool) => knobs.mlock = Some(parse_bool(flag, value)?),
-    (KnobField::NoMmap, ValueKind::Bool) => knobs.no_mmap = Some(parse_bool(flag, value)?),
+    (KnobField::FlashAttn, ValueKind::Bool) => {
+      knobs.flash_attn = Some(KnobValue::Set(parse_bool(flag, value)?))
+    }
+    (KnobField::Mlock, ValueKind::Bool) => {
+      knobs.mlock = Some(KnobValue::Set(parse_bool(flag, value)?))
+    }
+    (KnobField::NoMmap, ValueKind::Bool) => {
+      knobs.no_mmap = Some(KnobValue::Set(parse_bool(flag, value)?))
+    }
     (KnobField::Device, ValueKind::Str) => {
-      knobs.device = value.map(str::to_string);
+      knobs.device = value.map(|s| KnobValue::Set(s.to_string()));
     }
     (KnobField::TensorSplit, ValueKind::Str) => {
-      knobs.tensor_split = Some(parse_tensor_split(flag, value)?)
+      knobs.tensor_split = Some(KnobValue::Set(parse_tensor_split(flag, value)?))
     }
-    (KnobField::MainGpu, ValueKind::U32) => knobs.main_gpu = Some(parse_u32(flag, value)?),
+    (KnobField::MainGpu, ValueKind::U32) => {
+      knobs.main_gpu = Some(KnobValue::Set(parse_u32(flag, value)?))
+    }
     (KnobField::SplitMode, ValueKind::SplitMode) => {
-      knobs.split_mode = Some(parse_split_mode(flag, value)?)
+      knobs.split_mode = Some(KnobValue::Set(parse_split_mode(flag, value)?))
     }
     _ => {
       // Drift guard: the spec/field tables disagreed. The
@@ -254,6 +279,7 @@ fn parse_kv_cache(flag: &str, value: Option<&str>) -> Result<String, CliExit> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::config::KnobValueOpt;
 
   fn osvec(args: &[&str]) -> Vec<OsString> {
     args.iter().map(|s| OsString::from(*s)).collect()
@@ -262,25 +288,25 @@ mod tests {
   #[test]
   fn happy_path_threads_and_flash_attn() {
     let (knobs, extras) = parse_tail_args(&osvec(&["--threads", "8", "--flash-attn"])).unwrap();
-    assert_eq!(knobs.threads, Some(8));
-    assert_eq!(knobs.flash_attn, Some(true));
+    assert_eq!(knobs.threads, Some(KnobValue::Set(8)));
+    assert_eq!(knobs.flash_attn, Some(KnobValue::Set(true)));
     assert!(extras.is_empty());
   }
 
   #[test]
   fn short_alias_ngl() {
     let (knobs, extras) = parse_tail_args(&osvec(&["-ngl", "99"])).unwrap();
-    assert_eq!(knobs.n_gpu_layers, Some(99));
+    assert_eq!(knobs.n_gpu_layers, Some(KnobValue::Set(99)));
     assert!(extras.is_empty());
   }
 
   #[test]
   fn n_cpu_moe_parses_canonical_and_alias() {
     let (knobs, extras) = parse_tail_args(&osvec(&["--n-cpu-moe", "12"])).unwrap();
-    assert_eq!(knobs.n_cpu_moe, Some(12));
+    assert_eq!(knobs.n_cpu_moe, Some(KnobValue::Set(12)));
     assert!(extras.is_empty());
     let (alias, _) = parse_tail_args(&osvec(&["-ncmoe", "8"])).unwrap();
-    assert_eq!(alias.n_cpu_moe, Some(8));
+    assert_eq!(alias.n_cpu_moe, Some(KnobValue::Set(8)));
   }
 
   #[test]
@@ -294,15 +320,21 @@ mod tests {
       "row",
     ]))
     .unwrap();
-    assert_eq!(k.tensor_split.as_deref(), Some("3,1"));
-    assert_eq!(k.main_gpu, Some(0));
-    assert_eq!(k.split_mode.as_deref(), Some("row"));
+    assert_eq!(k.tensor_split.set_value().map(String::as_str), Some("3,1"));
+    assert_eq!(k.main_gpu, Some(KnobValue::Set(0)));
+    assert_eq!(k.split_mode.set_value().map(String::as_str), Some("row"));
     assert!(extras.is_empty());
     let (alias, _) =
       parse_tail_args(&osvec(&["-ts", "2,1,1", "-mg", "1", "-sm", "layer"])).unwrap();
-    assert_eq!(alias.tensor_split.as_deref(), Some("2,1,1"));
-    assert_eq!(alias.main_gpu, Some(1));
-    assert_eq!(alias.split_mode.as_deref(), Some("layer"));
+    assert_eq!(
+      alias.tensor_split.set_value().map(String::as_str),
+      Some("2,1,1")
+    );
+    assert_eq!(alias.main_gpu, Some(KnobValue::Set(1)));
+    assert_eq!(
+      alias.split_mode.set_value().map(String::as_str),
+      Some("layer")
+    );
   }
 
   #[test]
@@ -321,13 +353,16 @@ mod tests {
     assert!(msg.contains("--tensor-split"), "{msg}");
     // A valid ratio round-trips verbatim.
     let (k, _) = parse_tail_args(&osvec(&["--tensor-split", "0.6,0.4"])).unwrap();
-    assert_eq!(k.tensor_split.as_deref(), Some("0.6,0.4"));
+    assert_eq!(
+      k.tensor_split.set_value().map(String::as_str),
+      Some("0.6,0.4")
+    );
   }
 
   #[test]
   fn equals_form_parses_identically() {
     let (knobs, _) = parse_tail_args(&osvec(&["--threads=8"])).unwrap();
-    assert_eq!(knobs.threads, Some(8));
+    assert_eq!(knobs.threads, Some(KnobValue::Set(8)));
   }
 
   #[test]
@@ -360,14 +395,14 @@ mod tests {
   #[test]
   fn last_occurrence_wins() {
     let (knobs, _) = parse_tail_args(&osvec(&["--threads", "4", "--threads", "16"])).unwrap();
-    assert_eq!(knobs.threads, Some(16));
+    assert_eq!(knobs.threads, Some(KnobValue::Set(16)));
   }
 
   #[test]
   fn boolean_does_not_consume_next_flag() {
     let (knobs, _) = parse_tail_args(&osvec(&["--flash-attn", "--threads", "8"])).unwrap();
-    assert_eq!(knobs.flash_attn, Some(true));
-    assert_eq!(knobs.threads, Some(8));
+    assert_eq!(knobs.flash_attn, Some(KnobValue::Set(true)));
+    assert_eq!(knobs.threads, Some(KnobValue::Set(8)));
   }
 
   #[test]
@@ -376,14 +411,14 @@ mod tests {
     // bench harness emits the space form, so the parser must absorb
     // the value rather than leaving it as an orphan positional.
     let (knobs_on, extras_on) = parse_tail_args(&osvec(&["--flash-attn", "on"])).unwrap();
-    assert_eq!(knobs_on.flash_attn, Some(true));
+    assert_eq!(knobs_on.flash_attn, Some(KnobValue::Set(true)));
     assert!(
       extras_on.is_empty(),
       "`on` must be consumed, not routed to extras: {extras_on:?}"
     );
 
     let (knobs_off, extras_off) = parse_tail_args(&osvec(&["--flash-attn", "off"])).unwrap();
-    assert_eq!(knobs_off.flash_attn, Some(false));
+    assert_eq!(knobs_off.flash_attn, Some(KnobValue::Set(false)));
     assert!(extras_off.is_empty());
   }
 
@@ -392,7 +427,7 @@ mod tests {
     // `auto` isn't a parse_bool spelling — pass it through to the
     // child via extras so llama-server can interpret it natively.
     let (knobs, extras) = parse_tail_args(&osvec(&["--flash-attn", "auto"])).unwrap();
-    assert_eq!(knobs.flash_attn, Some(true));
+    assert_eq!(knobs.flash_attn, Some(KnobValue::Set(true)));
     assert_eq!(extras, vec![OsString::from("auto")]);
   }
 
@@ -401,14 +436,14 @@ mod tests {
     // Lets users override a built-in `Some(true)` from the CLI
     // without having to round-trip through YAML or the TUI.
     let (knobs, extras) = parse_tail_args(&osvec(&["--flash-attn=false"])).unwrap();
-    assert_eq!(knobs.flash_attn, Some(false));
+    assert_eq!(knobs.flash_attn, Some(KnobValue::Set(false)));
     assert!(extras.is_empty());
   }
 
   #[test]
   fn bool_equals_true_sets_explicit_on() {
     let (knobs, _) = parse_tail_args(&osvec(&["--flash-attn=true"])).unwrap();
-    assert_eq!(knobs.flash_attn, Some(true));
+    assert_eq!(knobs.flash_attn, Some(KnobValue::Set(true)));
   }
 
   #[test]
@@ -417,7 +452,7 @@ mod tests {
       let (knobs, _) = parse_tail_args(&osvec(&[&format!("--mlock={spelling}")])).unwrap();
       assert_eq!(
         knobs.mlock,
-        Some(true),
+        Some(KnobValue::Set(true)),
         "{spelling:?} should parse to Some(true)"
       );
     }
@@ -425,7 +460,7 @@ mod tests {
       let (knobs, _) = parse_tail_args(&osvec(&[&format!("--mlock={spelling}")])).unwrap();
       assert_eq!(
         knobs.mlock,
-        Some(false),
+        Some(KnobValue::Set(false)),
         "{spelling:?} should parse to Some(false)"
       );
     }
@@ -443,7 +478,10 @@ mod tests {
   #[test]
   fn cache_type_k_validates_set() {
     let (knobs, _) = parse_tail_args(&osvec(&["--cache-type-k", "q8_0"])).unwrap();
-    assert_eq!(knobs.cache_type_k.as_deref(), Some("q8_0"));
+    assert_eq!(
+      knobs.cache_type_k.set_value().map(String::as_str),
+      Some("q8_0")
+    );
     let err = parse_tail_args(&osvec(&["--cache-type-k", "q9_0"])).unwrap_err();
     assert_eq!(err.code, USAGE);
     let msg = err.to_string();
@@ -453,7 +491,7 @@ mod tests {
   #[test]
   fn rope_freq_scale_accepts_float() {
     let (knobs, _) = parse_tail_args(&osvec(&["--rope-freq-scale", "0.5"])).unwrap();
-    assert_eq!(knobs.rope_freq_scale, Some(0.5));
+    assert_eq!(knobs.rope_freq_scale, Some(KnobValue::Set(0.5)));
   }
 
   /// Drift guard: every spec in [`crate::launch::flag_aliases::knob_specs`]
@@ -501,8 +539,8 @@ mod tests {
       "99",
     ]))
     .unwrap();
-    assert_eq!(knobs.threads, Some(8));
-    assert_eq!(knobs.n_gpu_layers, Some(99));
+    assert_eq!(knobs.threads, Some(KnobValue::Set(8)));
+    assert_eq!(knobs.n_gpu_layers, Some(KnobValue::Set(99)));
     assert_eq!(
       extras,
       vec![OsString::from("--rope-freq-base"), OsString::from("10000")]

@@ -11,7 +11,7 @@
 //! the table coverage. Anything not explicitly listed falls through
 //! to the `*` row.
 
-use crate::config::TypedKnobs;
+use crate::config::{KnobValue, TypedKnobs};
 use crate::daemon::host_metrics::GpuFlavor;
 
 /// Look up the built-in defaults row for `(arch, backend)`. The
@@ -40,7 +40,7 @@ fn lookup_wildcard(backend: GpuFlavor) -> TypedKnobs {
     // support flash-attn at all). CPU / unknown / unsampled get
     // nothing.
     GpuFlavor::Nvidia | GpuFlavor::Amd | GpuFlavor::AppleMetal | GpuFlavor::Multi => TypedKnobs {
-      n_gpu_layers: Some(99),
+      n_gpu_layers: Some(KnobValue::Set(99)),
       ..TypedKnobs::default()
     },
     GpuFlavor::CpuOnly | GpuFlavor::Unknown | GpuFlavor::Unsampled => TypedKnobs::default(),
@@ -61,7 +61,7 @@ fn lookup_explicit(arch: &str, backend: GpuFlavor) -> Option<TypedKnobs> {
     backend,
     GpuFlavor::Nvidia | GpuFlavor::Amd | GpuFlavor::AppleMetal
   ) {
-    k.n_gpu_layers = Some(99);
+    k.n_gpu_layers = Some(KnobValue::Set(99));
   }
   // flash-attn: only the flash-attn-eligible architectures on
   // nvidia / apple_metal. AMD/HIP coverage is uneven — leave to user
@@ -70,7 +70,7 @@ fn lookup_explicit(arch: &str, backend: GpuFlavor) -> Option<TypedKnobs> {
   if FLASH_ATTN_ELIGIBLE.contains(&arch)
     && matches!(backend, GpuFlavor::Nvidia | GpuFlavor::AppleMetal)
   {
-    k.flash_attn = Some(true);
+    k.flash_attn = Some(KnobValue::Set(true));
   }
   Some(k)
 }
@@ -152,8 +152,8 @@ mod tests {
   #[test]
   fn qwen2_on_nvidia_sets_ngl_and_flash_attn() {
     let k = lookup("qwen2", GpuFlavor::Nvidia);
-    assert_eq!(k.n_gpu_layers, Some(99));
-    assert_eq!(k.flash_attn, Some(true));
+    assert_eq!(k.n_gpu_layers, Some(KnobValue::Set(99)));
+    assert_eq!(k.flash_attn, Some(KnobValue::Set(true)));
   }
 
   #[test]
@@ -166,7 +166,11 @@ mod tests {
   #[test]
   fn unknown_arch_on_nvidia_falls_back_to_wildcard() {
     let k = lookup("entirely-unknown-arch", GpuFlavor::Nvidia);
-    assert_eq!(k.n_gpu_layers, Some(99), "wildcard row covers ngl");
+    assert_eq!(
+      k.n_gpu_layers,
+      Some(KnobValue::Set(99)),
+      "wildcard row covers ngl"
+    );
     assert_eq!(k.flash_attn, None, "wildcard does not opt into flash_attn");
   }
 
@@ -189,7 +193,7 @@ mod tests {
   #[test]
   fn qwen2_on_amd_has_ngl_but_no_flash_attn() {
     let k = lookup("qwen2", GpuFlavor::Amd);
-    assert_eq!(k.n_gpu_layers, Some(99));
+    assert_eq!(k.n_gpu_layers, Some(KnobValue::Set(99)));
     assert_eq!(
       k.flash_attn, None,
       "HIP flash-attn coverage is uneven — leave it to user override"
@@ -199,7 +203,7 @@ mod tests {
   #[test]
   fn gemma_on_nvidia_has_ngl_but_no_flash_attn() {
     let k = lookup("gemma", GpuFlavor::Nvidia);
-    assert_eq!(k.n_gpu_layers, Some(99));
+    assert_eq!(k.n_gpu_layers, Some(KnobValue::Set(99)));
     assert_eq!(
       k.flash_attn, None,
       "gemma not on the flash-attn opt-in list at v1"
@@ -209,14 +213,14 @@ mod tests {
   #[test]
   fn arch_lookup_is_case_insensitive() {
     let k = lookup("QWEN2", GpuFlavor::Nvidia);
-    assert_eq!(k.n_gpu_layers, Some(99));
-    assert_eq!(k.flash_attn, Some(true));
+    assert_eq!(k.n_gpu_layers, Some(KnobValue::Set(99)));
+    assert_eq!(k.flash_attn, Some(KnobValue::Set(true)));
   }
 
   #[test]
   fn apple_metal_qwen3_gets_flash_attn() {
     let k = lookup("qwen3", GpuFlavor::AppleMetal);
-    assert_eq!(k.flash_attn, Some(true));
-    assert_eq!(k.n_gpu_layers, Some(99));
+    assert_eq!(k.flash_attn, Some(KnobValue::Set(true)));
+    assert_eq!(k.n_gpu_layers, Some(KnobValue::Set(99)));
   }
 }

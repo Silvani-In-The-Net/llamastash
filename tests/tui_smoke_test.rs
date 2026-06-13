@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use llamastash::config::KnobValue;
 use llamastash::discovery::{DiscoveredModel, ModelSource};
 use llamastash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
 use llamastash::theme::ThemeName;
@@ -211,7 +212,7 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
   pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
   assert_eq!(
     app.launch_picker.as_ref().unwrap().user_knobs.ctx,
-    Some(CTX_PRESETS[0])
+    Some(KnobValue::Set(CTX_PRESETS[0]))
   );
   // ← walks it back to native.
   pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
@@ -226,7 +227,7 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
   pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
   assert_eq!(
     app.launch_picker.as_ref().unwrap().user_knobs.reasoning,
-    Some(true)
+    Some(KnobValue::Set(true))
   );
 }
 
@@ -421,10 +422,10 @@ fn launch_picker_seeds_from_persisted_last_params() {
   app.go_top();
   app.open_launch_picker();
   let picker = app.launch_picker.as_ref().expect("picker open");
-  assert_eq!(picker.user_knobs.ctx, Some(8192));
+  assert_eq!(picker.user_knobs.ctx, Some(KnobValue::Set(8192)));
   assert_eq!(
     picker.user_knobs.reasoning,
-    Some(true),
+    Some(KnobValue::Set(true)),
     "reasoning toggle must seed from last_params via user_knobs"
   );
   let extras: Vec<String> = picker

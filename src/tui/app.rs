@@ -1907,6 +1907,7 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::config::KnobValue;
   use crate::discovery::ModelSource;
   use crate::gguf::metadata::{ModeHint, ModelMetadata, Quant};
   use crate::launch::list_devices::LaunchDevice;
@@ -2498,8 +2499,8 @@ mod tests {
         ctx: Some(16384),
         reasoning: true,
         knobs: crate::config::TypedKnobs {
-          ctx: Some(16384),
-          reasoning: Some(true),
+          ctx: Some(KnobValue::Set(16384)),
+          reasoning: Some(KnobValue::Set(true)),
           ..Default::default()
         },
         extras: vec!["--rope-freq-base".into(), "10000".into()],
@@ -2510,12 +2511,12 @@ mod tests {
     let picker = app.launch_picker.as_ref().expect("picker state");
     assert_eq!(
       picker.user_knobs.ctx,
-      Some(16384),
+      Some(KnobValue::Set(16384)),
       "ctx must seed from last_params via user_knobs"
     );
     assert_eq!(
       picker.user_knobs.reasoning,
-      Some(true),
+      Some(KnobValue::Set(true)),
       "reasoning must seed from last_params via user_knobs"
     );
     assert_eq!(picker.prefer_port, Some(41105), "port must seed too");

@@ -13,7 +13,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
-use crate::config::TypedKnobs;
+use crate::config::{KnobValue, KnobValueOpt, TypedKnobs};
 use crate::launch::flag_aliases::{
   knob_display_groups, knob_row_visible, KnobField, KV_CACHE_TYPES, SPLIT_MODES,
 };
@@ -506,91 +506,95 @@ impl LaunchPickerState {
 
   fn user_value_u32(&self, field: KnobField) -> Option<u32> {
     match field {
-      KnobField::Ctx => self.user_knobs.ctx,
-      KnobField::NGpuLayers => self.user_knobs.n_gpu_layers,
-      KnobField::NCpuMoe => self.user_knobs.n_cpu_moe,
-      KnobField::Threads => self.user_knobs.threads,
-      KnobField::Parallel => self.user_knobs.parallel,
-      KnobField::BatchSize => self.user_knobs.batch_size,
-      KnobField::UbatchSize => self.user_knobs.ubatch_size,
-      KnobField::Keep => self.user_knobs.keep,
-      KnobField::MainGpu => self.user_knobs.main_gpu,
+      KnobField::Ctx => self.user_knobs.ctx.set_value().copied(),
+      KnobField::NGpuLayers => self.user_knobs.n_gpu_layers.set_value().copied(),
+      KnobField::NCpuMoe => self.user_knobs.n_cpu_moe.set_value().copied(),
+      KnobField::Threads => self.user_knobs.threads.set_value().copied(),
+      KnobField::Parallel => self.user_knobs.parallel.set_value().copied(),
+      KnobField::BatchSize => self.user_knobs.batch_size.set_value().copied(),
+      KnobField::UbatchSize => self.user_knobs.ubatch_size.set_value().copied(),
+      KnobField::Keep => self.user_knobs.keep.set_value().copied(),
+      KnobField::MainGpu => self.user_knobs.main_gpu.set_value().copied(),
       _ => None,
     }
   }
 
   fn user_value_f32(&self, field: KnobField) -> Option<f32> {
     match field {
-      KnobField::RopeFreqScale => self.user_knobs.rope_freq_scale,
+      KnobField::RopeFreqScale => self.user_knobs.rope_freq_scale.set_value().copied(),
       _ => None,
     }
   }
 
   fn user_value_str(&self, field: KnobField) -> Option<&str> {
     match field {
-      KnobField::CacheTypeK => self.user_knobs.cache_type_k.as_deref(),
-      KnobField::CacheTypeV => self.user_knobs.cache_type_v.as_deref(),
-      KnobField::Device => self.user_knobs.device.as_deref(),
-      KnobField::TensorSplit => self.user_knobs.tensor_split.as_deref(),
-      KnobField::SplitMode => self.user_knobs.split_mode.as_deref(),
+      KnobField::CacheTypeK => self.user_knobs.cache_type_k.set_value().map(String::as_str),
+      KnobField::CacheTypeV => self.user_knobs.cache_type_v.set_value().map(String::as_str),
+      KnobField::Device => self.user_knobs.device.set_value().map(String::as_str),
+      KnobField::TensorSplit => self.user_knobs.tensor_split.set_value().map(String::as_str),
+      KnobField::SplitMode => self.user_knobs.split_mode.set_value().map(String::as_str),
       _ => None,
     }
   }
 
   fn user_value_bool(&self, field: KnobField) -> Option<bool> {
     match field {
-      KnobField::Reasoning => self.user_knobs.reasoning,
-      KnobField::FlashAttn => self.user_knobs.flash_attn,
-      KnobField::Mlock => self.user_knobs.mlock,
-      KnobField::NoMmap => self.user_knobs.no_mmap,
+      KnobField::Reasoning => self.user_knobs.reasoning.set_value().copied(),
+      KnobField::FlashAttn => self.user_knobs.flash_attn.set_value().copied(),
+      KnobField::Mlock => self.user_knobs.mlock.set_value().copied(),
+      KnobField::NoMmap => self.user_knobs.no_mmap.set_value().copied(),
       _ => None,
     }
   }
 
   fn resolved_u32(&self, field: KnobField) -> Option<u32> {
     match field {
-      KnobField::Ctx => self.resolved.ctx,
-      KnobField::NGpuLayers => self.resolved.n_gpu_layers,
-      KnobField::NCpuMoe => self.resolved.n_cpu_moe,
-      KnobField::Threads => self.resolved.threads,
-      KnobField::Parallel => self.resolved.parallel,
-      KnobField::BatchSize => self.resolved.batch_size,
-      KnobField::UbatchSize => self.resolved.ubatch_size,
-      KnobField::Keep => self.resolved.keep,
-      KnobField::MainGpu => self.resolved.main_gpu,
+      KnobField::Ctx => self.resolved.ctx.set_value().copied(),
+      KnobField::NGpuLayers => self.resolved.n_gpu_layers.set_value().copied(),
+      KnobField::NCpuMoe => self.resolved.n_cpu_moe.set_value().copied(),
+      KnobField::Threads => self.resolved.threads.set_value().copied(),
+      KnobField::Parallel => self.resolved.parallel.set_value().copied(),
+      KnobField::BatchSize => self.resolved.batch_size.set_value().copied(),
+      KnobField::UbatchSize => self.resolved.ubatch_size.set_value().copied(),
+      KnobField::Keep => self.resolved.keep.set_value().copied(),
+      KnobField::MainGpu => self.resolved.main_gpu.set_value().copied(),
       _ => None,
     }
   }
 
   fn resolved_f32(&self, field: KnobField) -> Option<f32> {
     match field {
-      KnobField::RopeFreqScale => self.resolved.rope_freq_scale,
+      KnobField::RopeFreqScale => self.resolved.rope_freq_scale.set_value().copied(),
       _ => None,
     }
   }
 
   fn resolved_str(&self, field: KnobField) -> Option<&str> {
     match field {
-      KnobField::CacheTypeK => self.resolved.cache_type_k.as_deref(),
-      KnobField::CacheTypeV => self.resolved.cache_type_v.as_deref(),
-      KnobField::Device => self.resolved.device.as_deref(),
-      KnobField::TensorSplit => self.resolved.tensor_split.as_deref(),
-      KnobField::SplitMode => self.resolved.split_mode.as_deref(),
+      KnobField::CacheTypeK => self.resolved.cache_type_k.set_value().map(String::as_str),
+      KnobField::CacheTypeV => self.resolved.cache_type_v.set_value().map(String::as_str),
+      KnobField::Device => self.resolved.device.set_value().map(String::as_str),
+      KnobField::TensorSplit => self.resolved.tensor_split.set_value().map(String::as_str),
+      KnobField::SplitMode => self.resolved.split_mode.set_value().map(String::as_str),
       _ => None,
     }
   }
 
   fn resolved_bool(&self, field: KnobField) -> Option<bool> {
     match field {
-      KnobField::Reasoning => self.resolved.reasoning,
-      KnobField::FlashAttn => self.resolved.flash_attn,
-      KnobField::Mlock => self.resolved.mlock,
-      KnobField::NoMmap => self.resolved.no_mmap,
+      KnobField::Reasoning => self.resolved.reasoning.set_value().copied(),
+      KnobField::FlashAttn => self.resolved.flash_attn.set_value().copied(),
+      KnobField::Mlock => self.resolved.mlock.set_value().copied(),
+      KnobField::NoMmap => self.resolved.no_mmap.set_value().copied(),
       _ => None,
     }
   }
 
   pub fn set_user_u32(&mut self, field: KnobField, value: Option<u32>) {
+    // An explicit value sets `Set(v)`; clearing (`None`) drops the slot
+    // back to Inherited. The Auto state is set via the cycle helpers,
+    // not this typed-value setter.
+    let value = value.map(KnobValue::Set);
     match field {
       KnobField::Ctx => self.user_knobs.ctx = value,
       KnobField::NGpuLayers => self.user_knobs.n_gpu_layers = value,
@@ -607,11 +611,12 @@ impl LaunchPickerState {
 
   pub fn set_user_f32(&mut self, field: KnobField, value: Option<f32>) {
     if matches!(field, KnobField::RopeFreqScale) {
-      self.user_knobs.rope_freq_scale = value;
+      self.user_knobs.rope_freq_scale = value.map(KnobValue::Set);
     }
   }
 
   pub fn set_user_str(&mut self, field: KnobField, value: Option<String>) {
+    let value = value.map(KnobValue::Set);
     match field {
       KnobField::CacheTypeK => self.user_knobs.cache_type_k = value,
       KnobField::CacheTypeV => self.user_knobs.cache_type_v = value,
@@ -623,6 +628,7 @@ impl LaunchPickerState {
   }
 
   pub fn set_user_bool(&mut self, field: KnobField, value: Option<bool>) {
+    let value = value.map(KnobValue::Set);
     match field {
       KnobField::Reasoning => self.user_knobs.reasoning = value,
       KnobField::FlashAttn => self.user_knobs.flash_attn = value,
@@ -738,10 +744,10 @@ mod tests {
     s.field = PickerField::Knob(KnobField::Ctx);
     assert_eq!(s.user_knobs.ctx, None);
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.ctx, Some(CTX_PRESETS[0]));
+    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(CTX_PRESETS[0])));
     for preset in CTX_PRESETS.iter().skip(1) {
       s.cycle_focused_value_next();
-      assert_eq!(s.user_knobs.ctx, Some(*preset));
+      assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(*preset)));
     }
     s.cycle_focused_value_next();
     assert_eq!(s.user_knobs.ctx, None, "wraps back to native");
@@ -752,9 +758,9 @@ mod tests {
     let mut s = LaunchPickerState::for_model("qwen");
     s.field = PickerField::Knob(KnobField::Reasoning);
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.reasoning, Some(true));
+    assert_eq!(s.user_knobs.reasoning, Some(KnobValue::Set(true)));
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.reasoning, Some(false));
+    assert_eq!(s.user_knobs.reasoning, Some(KnobValue::Set(false)));
     s.cycle_focused_value_next();
     assert_eq!(s.user_knobs.reasoning, None);
   }
@@ -851,9 +857,9 @@ mod tests {
     let mut s = LaunchPickerState::for_model("qwen");
     s.field = PickerField::Knob(KnobField::NGpuLayers);
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.n_gpu_layers, Some(0));
+    assert_eq!(s.user_knobs.n_gpu_layers, Some(KnobValue::Set(0)));
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.n_gpu_layers, Some(16));
+    assert_eq!(s.user_knobs.n_gpu_layers, Some(KnobValue::Set(16)));
   }
 
   #[test]
@@ -861,9 +867,9 @@ mod tests {
     let mut s = LaunchPickerState::for_model("qwen");
     s.field = PickerField::Knob(KnobField::FlashAttn);
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.flash_attn, Some(true));
+    assert_eq!(s.user_knobs.flash_attn, Some(KnobValue::Set(true)));
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.flash_attn, Some(false));
+    assert_eq!(s.user_knobs.flash_attn, Some(KnobValue::Set(false)));
     s.cycle_focused_value_next();
     assert_eq!(s.user_knobs.flash_attn, None);
   }
@@ -885,14 +891,14 @@ mod tests {
     sources.insert(KnobField::NGpuLayers, LayerLabel::ArchDefault);
     s.set_resolved(
       TypedKnobs {
-        n_gpu_layers: Some(99),
+        n_gpu_layers: Some(KnobValue::Set(99)),
         ..TypedKnobs::default()
       },
       sources,
     );
     assert_eq!(s.source_for(KnobField::NGpuLayers), LayerLabel::ArchDefault);
     // User override flips the source to User.
-    s.user_knobs.n_gpu_layers = Some(32);
+    s.user_knobs.n_gpu_layers = Some(KnobValue::Set(32));
     assert_eq!(s.source_for(KnobField::NGpuLayers), LayerLabel::User);
   }
 

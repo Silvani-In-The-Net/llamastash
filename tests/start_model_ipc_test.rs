@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use llamastash::config::loader::PortRange;
+use llamastash::config::KnobValue;
 use llamastash::daemon::state_store;
 use llamastash::daemon::{run_foreground, DaemonOptions};
 use llamastash::gguf::test_fixtures::build_minimal_gguf;
@@ -553,7 +554,8 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   loop {
     let s = state_store::load(&state_dir).expect("load state");
-    if !s.last_params.is_empty() && s.last_params[0].params.knobs.threads == Some(4) {
+    if !s.last_params.is_empty() && s.last_params[0].params.knobs.threads == Some(KnobValue::Set(4))
+    {
       break;
     }
     if std::time::Instant::now() > deadline {
@@ -595,7 +597,7 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   let knobs = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(entry) = s.last_params.first() {
-      if entry.params.knobs.mlock == Some(true) {
+      if entry.params.knobs.mlock == Some(KnobValue::Set(true)) {
         break entry.params.knobs.clone();
       }
     }
@@ -608,7 +610,7 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   // The contract: only the call-2 delta survives on disk.
   assert_eq!(
     knobs.mlock,
-    Some(true),
+    Some(KnobValue::Set(true)),
     "user-supplied mlock must persist verbatim"
   );
   assert_eq!(

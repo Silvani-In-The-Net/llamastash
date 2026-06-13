@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
+use crate::config::{KnobValue, KnobValueOpt};
 use crate::launch::flag_aliases::{knob_display_groups, KnobField};
 use crate::theme::Palette;
 use crate::tui::app::App;
@@ -38,7 +39,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       // user-knobs slot. Falling back to `persisted_knobs.ctx` would
       // miss all three and render `default` for a running launch that
       // is actually pinned to a real number.
-      let resolved_ctx = last.and_then(|p| p.ctx).or(persisted_knobs.ctx);
+      let resolved_ctx = last
+        .and_then(|p| p.ctx)
+        .or(persisted_knobs.ctx.set_value().copied());
       for group in knob_display_groups() {
         // Match the editable form: the whole Multi-GPU placement group
         // is hidden on single-GPU / CPU-only hosts.
@@ -340,83 +343,54 @@ fn knob_label(field: KnobField) -> &'static str {
 /// reads straight from a persisted `TypedKnobs` instead of a picker
 /// state. Untouched fields render `default` — the user can open the
 /// editor (`e`) to see the resolved chip.
-fn format_persisted_knob_value(knobs: &crate::config::TypedKnobs, field: KnobField) -> String {
-  match field {
-    KnobField::Ctx => knobs
-      .ctx
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::NGpuLayers => knobs
-      .n_gpu_layers
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::NCpuMoe => knobs
-      .n_cpu_moe
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::Threads => knobs
-      .threads
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::Parallel => knobs
-      .parallel
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::BatchSize => knobs
-      .batch_size
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::UbatchSize => knobs
-      .ubatch_size
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::Keep => knobs
-      .keep
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::RopeFreqScale => knobs
-      .rope_freq_scale
-      .map(|v| format!("{v}"))
-      .unwrap_or_else(|| "default".into()),
-    KnobField::CacheTypeK => knobs
-      .cache_type_k
-      .clone()
-      .unwrap_or_else(|| "default".into()),
-    KnobField::CacheTypeV => knobs
-      .cache_type_v
-      .clone()
-      .unwrap_or_else(|| "default".into()),
-    KnobField::Reasoning => bool_label(knobs.reasoning),
-    KnobField::FlashAttn => bool_label(knobs.flash_attn),
-    KnobField::Mlock => bool_label(knobs.mlock),
-    KnobField::NoMmap => bool_label(knobs.no_mmap),
-    KnobField::Device => knobs
-      .device
-      .as_deref()
-      .filter(|v| !v.is_empty())
-      .map(str::to_string)
-      .unwrap_or_else(|| "default".into()),
-    KnobField::MainGpu => knobs
-      .main_gpu
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::TensorSplit => knobs
-      .tensor_split
-      .clone()
-      .filter(|v| !v.is_empty())
-      .unwrap_or_else(|| "default".into()),
-    KnobField::SplitMode => knobs
-      .split_mode
-      .clone()
-      .filter(|v| !v.is_empty())
-      .unwrap_or_else(|| "default".into()),
+/// Render a persisted knob slot: a pinned value verbatim, the literal
+/// `auto` for the Auto state, and `default` for an unset (Inherited)
+/// slot. Empty strings (cleared `device` / `tensor_split` / `split_mode`)
+/// read as `default` too.
+fn knob_value_label<T: std::fmt::Display>(slot: &Option<KnobValue<T>>) -> String {
+  match slot {
+    Some(KnobValue::Set(v)) => {
+      let s = v.to_string();
+      if s.is_empty() {
+        "default".into()
+      } else {
+        s
+      }
+    }
+    Some(KnobValue::Auto) => "auto".into(),
+    None => "default".into(),
   }
 }
 
-fn bool_label(v: Option<bool>) -> String {
-  match v {
+fn format_persisted_knob_value(knobs: &crate::config::TypedKnobs, field: KnobField) -> String {
+  match field {
+    KnobField::Ctx => knob_value_label(&knobs.ctx),
+    KnobField::NGpuLayers => knob_value_label(&knobs.n_gpu_layers),
+    KnobField::NCpuMoe => knob_value_label(&knobs.n_cpu_moe),
+    KnobField::Threads => knob_value_label(&knobs.threads),
+    KnobField::Parallel => knob_value_label(&knobs.parallel),
+    KnobField::BatchSize => knob_value_label(&knobs.batch_size),
+    KnobField::UbatchSize => knob_value_label(&knobs.ubatch_size),
+    KnobField::Keep => knob_value_label(&knobs.keep),
+    KnobField::RopeFreqScale => knob_value_label(&knobs.rope_freq_scale),
+    KnobField::CacheTypeK => knob_value_label(&knobs.cache_type_k),
+    KnobField::CacheTypeV => knob_value_label(&knobs.cache_type_v),
+    KnobField::Reasoning => bool_label(&knobs.reasoning),
+    KnobField::FlashAttn => bool_label(&knobs.flash_attn),
+    KnobField::Mlock => bool_label(&knobs.mlock),
+    KnobField::NoMmap => bool_label(&knobs.no_mmap),
+    KnobField::Device => knob_value_label(&knobs.device),
+    KnobField::MainGpu => knob_value_label(&knobs.main_gpu),
+    KnobField::TensorSplit => knob_value_label(&knobs.tensor_split),
+    KnobField::SplitMode => knob_value_label(&knobs.split_mode),
+  }
+}
+
+fn bool_label(v: &Option<KnobValue<bool>>) -> String {
+  match v.set_value().copied() {
     Some(true) => "on".into(),
     Some(false) => "off".into(),
+    None if v.is_auto() => "auto".into(),
     None => "default".into(),
   }
 }
@@ -632,8 +606,8 @@ mod tests {
         // `user_knobs` straight from `knobs` so a returning user
         // sees their last-shipped values with `(user)` chips.
         knobs: crate::config::TypedKnobs {
-          ctx: Some(16384),
-          reasoning: Some(true),
+          ctx: Some(KnobValue::Set(16384)),
+          reasoning: Some(KnobValue::Set(true)),
           ..Default::default()
         },
         extras: vec!["--rope-freq-base".into(), "10000".into()],

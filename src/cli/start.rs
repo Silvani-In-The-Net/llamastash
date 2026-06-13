@@ -403,6 +403,7 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
 mod tests {
   use super::*;
   use crate::cli::resolve::CatalogRow;
+  use crate::config::{KnobValue, KnobValueOpt};
 
   fn row(mode_hint: Option<&str>) -> CatalogRow {
     CatalogRow {
@@ -453,7 +454,7 @@ mod tests {
   #[test]
   fn build_payload_includes_only_set_fields() {
     let knobs = TypedKnobs {
-      threads: Some(8),
+      threads: Some(KnobValue::Set(8)),
       ..TypedKnobs::default()
     };
     let p = PartialParams {
@@ -514,8 +515,11 @@ mod tests {
       &osvec(&["--threads", "16", "--rope-freq-base", "10000"]),
     )
     .unwrap();
-    assert_eq!(knobs.threads, Some(16));
-    assert_eq!(knobs.device.as_deref(), Some("Vulkan0"));
+    assert_eq!(knobs.threads, Some(KnobValue::Set(16)));
+    assert_eq!(
+      knobs.device.set_value().map(String::as_str),
+      Some("Vulkan0")
+    );
     assert_eq!(
       extras,
       vec!["--rope-freq-base".to_string(), "10000".to_string()]
@@ -527,14 +531,18 @@ mod tests {
     // Preset baseline sets threads + mlock; the invocation only
     // overrides threads. mlock must survive.
     let mut preset = TypedKnobs {
-      threads: Some(8),
-      mlock: Some(true),
+      threads: Some(KnobValue::Set(8)),
+      mlock: Some(KnobValue::Set(true)),
       ..TypedKnobs::default()
     };
     let (cli_knobs, _) = parse_cli_knobs(&osvec(&["--threads", "2"]), &[]).unwrap();
     preset.overlay(cli_knobs);
-    assert_eq!(preset.threads, Some(2), "CLI override wins");
-    assert_eq!(preset.mlock, Some(true), "untouched preset knob survives");
+    assert_eq!(preset.threads, Some(KnobValue::Set(2)), "CLI override wins");
+    assert_eq!(
+      preset.mlock,
+      Some(KnobValue::Set(true)),
+      "untouched preset knob survives"
+    );
   }
 
   #[test]

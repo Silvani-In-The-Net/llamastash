@@ -23,6 +23,7 @@ use super::protocol::{ErrorCode, ErrorObject, Request, Response, JSONRPC_VERSION
 use crate::backend::identity::ModelIdentity;
 use crate::backend::{Backend, LaunchPlan};
 use crate::config::loader::{LemonadeConfig, PortRange};
+use crate::config::{KnobValue, KnobValueOpt};
 use crate::daemon::host_metrics::{HostMetricsSnapshot, SamplerHandles};
 use crate::daemon::orphans::ExternalProcess;
 use crate::daemon::probe::ProbeOptions;
@@ -1536,10 +1537,10 @@ pub(crate) async fn start_model_inner(
   // `knobs.{ctx,reasoning}` overrides winning if the caller set both.
   let mut user_knobs = parsed.knobs.clone();
   if user_knobs.ctx.is_none() {
-    user_knobs.ctx = parsed.ctx;
+    user_knobs.ctx = parsed.ctx.map(KnobValue::Set);
   }
   if user_knobs.reasoning.is_none() {
-    user_knobs.reasoning = parsed.reasoning;
+    user_knobs.reasoning = parsed.reasoning.map(KnobValue::Set);
   }
 
   // Pull the model's last_params from persisted state so a returning
@@ -1564,7 +1565,7 @@ pub(crate) async fn start_model_inner(
   };
   // yaml + built-in share the `ArchDefault` chip — yaml wins per
   // field via precedence order.
-  let resolved = crate::launch::params::resolve_layered(&[
+  let mut resolved = crate::launch::params::resolve_layered(&[
     (crate::launch::params::LayerLabel::User, &user_knobs),
     (
       crate::launch::params::LayerLabel::LastUsed,
@@ -1576,13 +1577,40 @@ pub(crate) async fn start_model_inner(
       &builtin_knobs,
     ),
   ]);
+  // Seed knobs no layer filled per the default launch mode (R1): under
+  // the factory `Auto` mode a layer-less knob delegates to `--fit`.
+  // Argv-neutral in this unit (an Auto knob emits nothing, exactly like
+  // the unset slot it replaces) — the fit-flag emission lands in U6 and
+  // the picker rendering in U10. U5 wires the config/env/flag that
+  // selects the mode; until then it is the factory default.
+  crate::launch::params::seed_layerless(&mut resolved, crate::config::DefaultLaunchMode::default());
   // Project resolved ctx/reasoning back onto the top-level
   // `LaunchParams` fields — `compose` emits them inline (ctx as
   // `-c <N>`, reasoning as the `--jinja --reasoning-format deepseek`
   // bundle).
-  launch_params.ctx = resolved.knobs.ctx;
-  launch_params.reasoning = resolved.knobs.reasoning.unwrap_or(false);
+  // An `Auto` ctx/reasoning collapses to "no inline flag" here
+  // (`set_value()` → `None`): `compose` emits nothing and `--fit`
+  // governs ctx, the chat template governs reasoning.
+  launch_params.ctx = resolved.knobs.ctx.set_value().copied();
+  launch_params.reasoning = resolved
+    .knobs
+    .reasoning
+    .set_value()
+    .copied()
+    .unwrap_or(false);
   launch_params.knobs = resolved.knobs;
+  // Close the `knobs.ctx` bypass of `MAX_CTX_TOKENS` (the early check
+  // only saw the top-level `parsed.ctx`): validate the *resolved* ctx,
+  // which folds in both `parsed.ctx` and a typed `knobs.ctx` set via the
+  // editor or last-params.
+  if let Some(c) = launch_params.ctx {
+    if c > MAX_CTX_TOKENS {
+      return Err(ErrorObject::new(
+        ErrorCode::InvalidParams,
+        format!("ctx {c} exceeds maximum {MAX_CTX_TOKENS}"),
+      ));
+    }
+  }
   // Leave `device` exactly as the resolver chain set it. When no layer
   // selected one it stays `None`, so `compose()` emits no `--device`
   // and `llama-server` keeps its default (auto-select / split across
@@ -1612,7 +1640,7 @@ pub(crate) async fn start_model_inner(
       .flatten();
       if let Some(fitted) = fitted {
         launch_params.ctx = Some(fitted);
-        launch_params.knobs.ctx = Some(fitted);
+        launch_params.knobs.ctx = Some(KnobValue::Set(fitted));
         log::info!(
           target: "llamastash::ctx_fit",
           "auto-fit ctx={fitted} for {}",
@@ -1660,7 +1688,8 @@ pub(crate) async fn start_model_inner(
   let selector = launch_params
     .knobs
     .device
-    .as_deref()
+    .set_value()
+    .map(String::as_str)
     .filter(|s| !s.is_empty())
     .map(str::to_string);
   let launch_binary = match selector {
@@ -1805,15 +1834,28 @@ pub(crate) async fn start_model_inner(
   // Persist the *user-supplied* knob deltas, not the full resolved set
   // — so source chips in the picker stay meaningful (a knob the user
   // never touched keeps re-resolving from yaml / built-in / model
-  // default instead of being frozen as `(last used)`).
+  // default instead of being frozen as `(last used)`). "Remembered
+  // values win" depends on this: only what the user actually set
+  // (including an explicit `Auto` sentinel) is remembered, so the
+  // resolver re-derives the rest next launch. The resolved top-level
+  // `ctx`/`reasoning` and the force-copied `device` are dropped too —
+  // they were resolver output, not user intent, and re-pinning them
+  // would freeze a value the user never chose.
   let mut persist_params = launch_params.clone();
   persist_params.knobs = user_knobs;
-  persist_params.knobs.device = launch_params.knobs.device.clone();
+  persist_params.ctx = None;
+  persist_params.reasoning = false;
   spawn_last_params_recorder(
     ctx.state.clone(),
     model.clone(),
     identity.clone(),
     persist_params,
+    // Slow HIP/Metal loads routinely exceed the old fixed 180 s wall
+    // clock; key the recorder's deadline off the same size-scaled probe
+    // budget the supervisor uses (base +2 h cap) so a slow load still
+    // reaches Ready *and* gets its params recorded — otherwise the next
+    // launch finds no remembered value and wrongly seeds Auto.
+    scaled_probe.timeout,
     ctx.shutdown.clone(),
   );
 
@@ -1991,16 +2033,16 @@ fn spawn_last_params_recorder(
   model: ManagedModel,
   id: ModelIdentity,
   params: LaunchParams,
+  probe_budget: Duration,
   shutdown: ShutdownToken,
 ) {
   tokio::spawn(async move {
-    // The supervisor's probe runs with at most a 120s timeout in
-    // production. Cap our wait at the same horizon so we don't
-    // leak tasks for models that never come up. The poll also
-    // observes the daemon's shutdown token so SIGTERM during a
-    // pending Loading state doesn't block clean process exit on
-    // this task's 180s wall clock.
-    let deadline = Instant::now() + Duration::from_secs(180);
+    // Wait out the same size-scaled probe budget the supervisor uses
+    // (base 120 s + up to 2 h for very large weights) so a slow load
+    // still gets its params recorded on the Loading → Ready transition.
+    // The poll also observes the daemon's shutdown token so SIGTERM
+    // during a pending Loading state doesn't block clean process exit.
+    let deadline = Instant::now() + probe_budget;
     loop {
       match model.state().await {
         ManagedState::Ready => {

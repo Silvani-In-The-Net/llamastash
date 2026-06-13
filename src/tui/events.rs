@@ -19,6 +19,7 @@ use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+use crate::config::KnobValueOpt;
 use crate::ipc::Client;
 use crate::tui::app::{App, ConfirmAction};
 use crate::tui::keybindings::{Action, Focus};
@@ -1739,8 +1740,8 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
   let name = app.display_name_for(&path);
   let active_instances = app.managed.iter().filter(|m| m.path == path).count();
   let args = Box::new(crate::tui::app::StartModelArgs {
-    ctx: knobs.ctx,
-    reasoning: knobs.reasoning,
+    ctx: knobs.ctx.set_value().copied(),
+    reasoning: knobs.reasoning.set_value().copied(),
     model_path: path,
     knobs,
     extras,
@@ -3085,6 +3086,7 @@ fn tick_has_time_decay_ui(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::config::KnobValue;
   use crossterm::event::{KeyEvent, KeyModifiers};
 
   fn key(code: KeyCode, mods: KeyModifiers) -> TermEvent {
@@ -4217,7 +4219,7 @@ mod tests {
     let p = app.launch_picker.as_mut().unwrap();
     p.field = PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
     p.cycle_focused_value_next();
-    let expected_ctx = p.user_knobs.ctx;
+    let expected_ctx = p.user_knobs.ctx.set_value().copied();
     // Round-8: tri-state cycle — None → Some(true).
     p.field = PickerField::Knob(crate::launch::flag_aliases::KnobField::Reasoning);
     p.cycle_focused_value_next();
@@ -4727,7 +4729,7 @@ mod tests {
     );
     assert_eq!(
       p.user_knobs.ctx,
-      Some(CTX_PRESETS[0]),
+      Some(KnobValue::Set(CTX_PRESETS[0])),
       "→ advances Ctx preset"
     );
 
@@ -4845,7 +4847,7 @@ mod tests {
     let committed = app.launch_picker.as_ref().expect("picker still staged");
     assert_eq!(
       committed.user_knobs.ctx,
-      Some(65536),
+      Some(KnobValue::Set(65536)),
       "ctx commit must write the typed value to user_knobs, not silently drop it"
     );
     assert!(

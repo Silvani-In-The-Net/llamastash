@@ -290,7 +290,9 @@ sequenceDiagram
 
 ### Phase 2 — Auto state plumbing (R1–R3, R5 config, R7, R8 gate, R9, R19 option)
 
-- [ ] **Unit 4: `KnobValue` tri-state, seeding rule, recorder fix, one-time migration**
+- [x] **Unit 4: `KnobValue` tri-state, seeding rule, recorder fix, one-time migration**
+
+> Done: `KnobValue<T>` (`Set`/`Auto`) with the object-sentinel serde (`Auto` → `{"auto":true}`, `Set` → bare scalar) + a `KnobValueOpt` accessor trait (`set_value()`/`is_auto()`) so the ~180 read sites keep their shape. All 19 `TypedKnobs` fields are `Option<KnobValue<T>>`; `argvify`/`resolve_layered`/`overlay`/`merge`/`compose` treat `Auto` as argv-neutral (emits nothing, exactly like the unset slot it replaces) so U4 ships **no argv change** — the fit-flag emission is U6. The `knobs.ctx` bypass of `MAX_CTX_TOKENS` is closed (resolved ctx validated post-resolution). Recorder now persists **user-set knobs only**, drops the resolved top-level `ctx`/`reasoning` and the force-copied `device`, and its deadline is the size-scaled probe budget (not the fixed 180 s). Schema **v2** migration scrubs stale `ngl`/resolved-ctx/`reasoning`/`device` from both `last_params` and `running` (presets/favorites kept verbatim); newer-than-current is rejected (quarantine). `seed_layerless` + `DefaultLaunchMode` (factory `Auto`) implement the R1 seeding matrix, wired into `start_model_inner`. **Deferred:** the `Default`→`Inherited` *string* rename — `LayerLabel` carries only compound provenance labels (`server default`, `arch default`, …) with no standalone "Default" token, and the picker/help tri-state rendering (`Auto (fit)`/`Inherited`) is U10's scope; folded there. **U5 dependency:** the `auto` CLI literal and the `default_launch_mode` config/env/flag that *selects* the seed mode land in U5 — U4 wires the mechanism at the factory default.
 
 **Goal:** The Auto state exists end to end: representation, serde, resolver seeding, source chips, the `Default`→`Inherited` label rename, recorder persisting user-set knobs only, and the schema v2 one-time transform.
 

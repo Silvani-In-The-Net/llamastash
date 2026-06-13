@@ -25,7 +25,7 @@
 
 use std::path::Path;
 
-use crate::config::TypedKnobs;
+use crate::config::{KnobValueOpt, TypedKnobs};
 use crate::daemon::host_metrics::{GpuFlavor, HostMetricsSnapshot};
 use crate::gguf::header::{read_path, GgufHeader, HeaderReadOptions};
 use crate::gguf::memory::{kv_bytes, weights_bytes, CacheType, EstimateOptions};
@@ -82,10 +82,18 @@ pub fn compute_ctx_from_header(
 ) -> Option<u32> {
   let arch = header.string(&["general.architecture"])?.to_string();
 
-  let n_parallel = knobs.parallel.unwrap_or(DEFAULT_PARALLEL).max(1);
-  let n_gpu_layers = knobs.n_gpu_layers;
-  let cache_type_k = parse_cache_type(knobs.cache_type_k.as_deref());
-  let cache_type_v = parse_cache_type(knobs.cache_type_v.as_deref());
+  // An `Auto` knob reads as "no pinned value" here (`set_value()` →
+  // `None`), so the estimator falls back to its own defaults exactly as
+  // it did for an unset knob — `--fit` does the real placement.
+  let n_parallel = knobs
+    .parallel
+    .set_value()
+    .copied()
+    .unwrap_or(DEFAULT_PARALLEL)
+    .max(1);
+  let n_gpu_layers = knobs.n_gpu_layers.set_value().copied();
+  let cache_type_k = parse_cache_type(knobs.cache_type_k.set_value().map(String::as_str));
+  let cache_type_v = parse_cache_type(knobs.cache_type_v.set_value().map(String::as_str));
 
   let n_ctx_train = header
     .u64(&[format!("{arch}.context_length")])
@@ -166,6 +174,7 @@ fn parse_cache_type(raw: Option<&str>) -> CacheType {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::config::KnobValue;
   use crate::daemon::host_metrics::HostMetricsSnapshot;
   use crate::gguf::header::{read_reader, HeaderReadOptions};
   use crate::gguf::test_fixtures::FixtureBuilder;
@@ -204,8 +213,8 @@ mod tests {
 
   fn knobs_all_gpu() -> TypedKnobs {
     TypedKnobs {
-      n_gpu_layers: Some(99),
-      parallel: Some(1),
+      n_gpu_layers: Some(KnobValue::Set(99)),
+      parallel: Some(KnobValue::Set(1)),
       ..TypedKnobs::default()
     }
   }
@@ -240,7 +249,7 @@ mod tests {
     let host = amd_host(22, 0);
     let mut knobs = knobs_all_gpu();
     let one = compute_ctx_from_header(&h, &knobs, &host).unwrap();
-    knobs.parallel = Some(4);
+    knobs.parallel = Some(KnobValue::Set(4));
     let four = compute_ctx_from_header(&h, &knobs, &host).unwrap();
     assert!(
       one > four * 3,
@@ -256,10 +265,10 @@ mod tests {
     let host = amd_host(22, 0);
     let f16 = compute_ctx_from_header(&h, &knobs_all_gpu(), &host).unwrap();
     let knobs_q4 = TypedKnobs {
-      n_gpu_layers: Some(99),
-      parallel: Some(1),
-      cache_type_k: Some("q4_0".into()),
-      cache_type_v: Some("q4_0".into()),
+      n_gpu_layers: Some(KnobValue::Set(99)),
+      parallel: Some(KnobValue::Set(1)),
+      cache_type_k: Some(KnobValue::Set("q4_0".into())),
+      cache_type_v: Some(KnobValue::Set("q4_0".into())),
       ..TypedKnobs::default()
     };
     let q4 = compute_ctx_from_header(&h, &knobs_q4, &host).unwrap();
@@ -302,7 +311,7 @@ mod tests {
     let knobs = TypedKnobs {
       // CPU-only run keeps n_gpu_layers None — the helper falls back
       // to RAM headroom.
-      parallel: Some(1),
+      parallel: Some(KnobValue::Set(1)),
       ..TypedKnobs::default()
     };
     let ctx = compute_ctx_from_header(&h, &knobs, &host).unwrap();

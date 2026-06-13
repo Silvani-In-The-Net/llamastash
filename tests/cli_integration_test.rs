@@ -767,15 +767,21 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
   loop {
     let lp = client.call("last_params_list", None).await.unwrap();
     let arr = lp["last_params"].as_array().cloned().unwrap_or_default();
+    // U4 recorder contract: the daemon persists *user-set knobs only*,
+    // and stops persisting the resolved top-level `ctx`/`reasoning`
+    // (those are now Null/false). The preset's ctx/reasoning/threads
+    // live in the `knobs` sub-object.
     if arr.iter().any(|row| {
-      row["params"]["ctx"] == serde_json::json!(16384)
-        && row["params"]["reasoning"] == serde_json::json!(true)
+      row["params"]["knobs"]["ctx"] == serde_json::json!(16384)
+        && row["params"]["knobs"]["reasoning"] == serde_json::json!(true)
         && row["params"]["knobs"]["threads"] == serde_json::json!(8)
     }) {
       break;
     }
     if Instant::now() > deadline {
-      panic!("supervisor should have recorded preset ctx + reasoning + knobs.threads: {arr:?}",);
+      panic!(
+        "supervisor should have recorded preset knobs.ctx + knobs.reasoning + knobs.threads: {arr:?}",
+      );
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
   }
