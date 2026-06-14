@@ -49,7 +49,15 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         for field in group.fields {
           let value = match field {
             KnobField::Ctx => resolved_ctx
-              .map(|v| v.to_string())
+              .map(|v| {
+                // Flag a memory-driven clamp (R19) so the user knows the
+                // window was squeezed to the floor, not chosen freely.
+                if m.ctx_clamped {
+                  format!("{v} · clamped to floor")
+                } else {
+                  v.to_string()
+                }
+              })
               .unwrap_or_else(|| format_persisted_knob_value(dispatched, KnobField::Ctx)),
             _ => format_persisted_knob_value(dispatched, *field),
           };

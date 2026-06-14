@@ -93,6 +93,7 @@ async fn pre_launch(
     log_path: log_dir.join("evict.log"),
     plan,
     origin,
+    fit_gate: None,
   })
   .await
   .expect("spawn");

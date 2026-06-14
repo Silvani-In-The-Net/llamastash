@@ -36,10 +36,22 @@ pub struct Actuals {
   /// reports `n_ctx=2048, total_slots=4`, which is `8192` total.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub resolved_ctx: Option<u32>,
+
+  /// True when `--fit` had to clamp the context window down to the
+  /// `--fit-ctx` floor even though the model's trained window is larger
+  /// — i.e. memory pressure, not the model's own limit. Computed by the
+  /// supervisor's readiness gate (it needs the floor + the trained
+  /// window, neither of which `/props` reports), not parsed from
+  /// `/props`. Drives the strict-fit refusal and the soft "ctx clamped"
+  /// notice on the running surfaces.
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub ctx_clamped: bool,
 }
 
 impl Actuals {
   /// True when nothing was captured — surfaces render "unavailable".
+  /// Keyed on `resolved_ctx` alone: `ctx_clamped` is a derived flag that
+  /// is only meaningful once a context window was resolved.
   pub fn is_empty(&self) -> bool {
     self.resolved_ctx.is_none()
   }
@@ -98,6 +110,9 @@ fn parse_actuals(response: &[u8]) -> Actuals {
   };
   Actuals {
     resolved_ctx: extract_total_ctx(&v),
+    // `/props` can't tell us this; the readiness gate computes it from
+    // the floor + the trained window. Always false out of the parser.
+    ctx_clamped: false,
   }
 }
 
@@ -169,6 +184,7 @@ mod tests {
     assert!(Actuals::default().is_empty());
     assert!(!Actuals {
       resolved_ctx: Some(4096),
+      ctx_clamped: false,
     }
     .is_empty());
   }

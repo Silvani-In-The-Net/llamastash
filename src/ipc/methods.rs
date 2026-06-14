@@ -463,10 +463,12 @@ async fn status_response(ctx: &MethodContext) -> Value {
     let latest = model.latest_resource().await;
     let latest_rss_bytes = latest.as_ref().map(|r| r.rss_bytes);
     let latest_cpu_pct = latest.as_ref().map(|r| r.cpu_percent);
-    let resolved_ctx = running
+    let actuals = running
       .iter()
       .find(|r| r.port == model.port())
-      .and_then(|r| r.actuals.resolved_ctx);
+      .map(|r| r.actuals);
+    let resolved_ctx = actuals.and_then(|a| a.resolved_ctx);
+    let ctx_clamped = actuals.map(|a| a.ctx_clamped).unwrap_or(false);
     let row = json!({
       "launch_id": launch_id,
       "id": model.id(),
@@ -481,6 +483,9 @@ async fn status_response(ctx: &MethodContext) -> Value {
       // Resolved context window `--fit` chose (R6); null until the
       // post-Ready `/props` fetch lands or when the build omits it.
       "resolved_ctx": resolved_ctx,
+      // True when `--fit` had to clamp ctx to the floor under memory
+      // pressure (R19 soft notice); strict mode refuses such launches.
+      "ctx_clamped": ctx_clamped,
     });
     models.push(row);
   }
@@ -1437,7 +1442,7 @@ pub(crate) async fn start_model_inner(
   // managed-multiplexer dispatch below select Lemonade rather than crashing on
   // the missing GGUF. Every other path is a local GGUF: one header read yields
   // both the canonical id and the arch.
-  let (id, arch, identity): (ModelId, Option<String>, ModelIdentity) =
+  let (id, arch, native_ctx, identity): (ModelId, Option<String>, Option<u32>, ModelIdentity) =
     match crate::backend::lemonade::registry_name_from_path(&parsed.model_path) {
       Some(name) => {
         let backend_id = crate::backend::identity::BackendModelId {
@@ -1446,17 +1451,18 @@ pub(crate) async fn start_model_inner(
         };
         // A synthetic ModelId keeps the file-keyed plumbing (log path, running
         // snapshot retention) working; the sentinel header hash marks it as
-        // not-a-GGUF. Arch is `None` — lemond owns the recipe, not us.
+        // not-a-GGUF. Arch + native_ctx are `None` — lemond owns the recipe,
+        // not us, so the strict-fit ctx gate never applies to a Lemonade row.
         let synthetic = ModelId {
           path: parsed.model_path.clone(),
           header_blake3: [0u8; 32],
         };
-        (synthetic, None, ModelIdentity::Backend(backend_id))
+        (synthetic, None, None, ModelIdentity::Backend(backend_id))
       }
       None => {
-        let (id, arch) = resolve_model_id_and_arch(&parsed.model_path)?;
+        let (id, arch, native_ctx) = resolve_model_id_and_arch(&parsed.model_path)?;
         let identity: ModelIdentity = id.clone().into();
-        (id, arch, identity)
+        (id, arch, native_ctx, identity)
       }
     };
 
@@ -1827,6 +1833,18 @@ pub(crate) async fn start_model_inner(
     }
   }
 
+  // Strict-fit ctx-clamp gate (R19): only meaningful when ctx is
+  // delegated to `--fit` (`ctx == None`) and we know the trained window
+  // to compare its resolution against. A pinned ctx or unknown window
+  // leaves the gate off. `strict_fit` then decides whether a floor-pinned
+  // resolution withholds Ready (refuse) or just flags a soft notice.
+  let fit_gate = (launch_params.ctx.is_none() && native_ctx.is_some()).then(|| {
+    crate::daemon::supervisor::FitGate {
+      floor: env.fit_ctx_floor,
+      native: native_ctx.unwrap_or(0),
+      strict: env.strict_fit,
+    }
+  });
   let spawn_result = supervisor_spawn(ManagedSpawn {
     id: id.clone(),
     params: launch_params.clone(),
@@ -1835,6 +1853,7 @@ pub(crate) async fn start_model_inner(
     log_path: log_path.clone(),
     plan: launch_spec,
     origin,
+    fit_gate,
   })
   .await;
   let model = match spawn_result {
@@ -2181,13 +2200,21 @@ fn spawn_last_params_recorder(
           state
             .mutate(|s| s.upsert_last_params(id.clone(), params.clone()))
             .await;
-          // Post-launch actuals (R6): read what `--fit` actually chose
-          // from the child's `/props` and stamp it on the running
-          // snapshot so `status` / the TUI Running view / `show` can
-          // render the resolved context. Best-effort — an empty result
-          // (no `/props`, transport error) leaves the row "unavailable".
+          // Post-launch actuals (R6): stamp what `--fit` actually chose
+          // on the running snapshot so `status` / the TUI Running view /
+          // `show` can render the resolved context. The supervisor's
+          // readiness gate already fetched `/props` for fit-governed
+          // launches (to run the strict-fit ctx-clamp check) and stashed
+          // the result on the model, so reuse it instead of fetching
+          // twice; only fall back to a fetch when the gate didn't run
+          // (pinned ctx / no trained-window metadata). Best-effort — an
+          // empty result (no `/props`, transport error) leaves the row
+          // "unavailable".
           if let Some(port) = params.port {
-            let actuals = crate::daemon::actuals::fetch(port, Duration::from_secs(5)).await;
+            let mut actuals = model.actuals().await;
+            if actuals.is_empty() {
+              actuals = crate::daemon::actuals::fetch(port, Duration::from_secs(5)).await;
+            }
             if !actuals.is_empty() {
               let id = id.clone();
               state
@@ -2250,7 +2277,7 @@ async fn collect_in_use_ports(ctx: &MethodContext) -> Vec<u16> {
 }
 
 fn resolve_model_id(path: &std::path::Path) -> Result<ModelId, ErrorObject> {
-  let (id, _) = resolve_model_id_and_arch(path)?;
+  let (id, _, _) = resolve_model_id_and_arch(path)?;
   Ok(id)
 }
 
@@ -2261,7 +2288,7 @@ fn resolve_model_id(path: &std::path::Path) -> Result<ModelId, ErrorObject> {
 /// just means the `defaults_table` lookup falls back to the `*` row.
 fn resolve_model_id_and_arch(
   path: &std::path::Path,
-) -> Result<(ModelId, Option<String>), ErrorObject> {
+) -> Result<(ModelId, Option<String>, Option<u32>), ErrorObject> {
   let header = read_gguf_header(path, HeaderReadOptions::default()).map_err(|e| {
     ErrorObject::new(
       ErrorCode::InvalidParams,
@@ -2269,8 +2296,14 @@ fn resolve_model_id_and_arch(
     )
   })?;
   let id = compute_model_id(path, &header.raw);
-  let arch = crate::gguf::metadata::summarise(&header.header).arch;
-  Ok((id, arch))
+  let summary = crate::gguf::metadata::summarise(&header.header);
+  // Trained context window (`<arch>.context_length`), clamped into u32.
+  // Feeds the strict-fit ctx-clamp gate: a `--fit` resolution pinned to
+  // the floor is only "degraded" when the model could have gone higher.
+  let native_ctx = summary
+    .native_ctx
+    .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+  Ok((id, summary.arch, native_ctx))
 }
 
 /// Does the caller's `extras` tail already manage the multimodal

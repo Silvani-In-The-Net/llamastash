@@ -94,6 +94,10 @@ pub struct ManagedRow {
   /// the build omits it). The running-launch settings view shows this
   /// real number instead of the dispatched `auto` sentinel.
   pub resolved_ctx: Option<u32>,
+  /// True when `--fit` had to clamp the context window down to the floor
+  /// under memory pressure (R19). The running view tags the resolved ctx
+  /// with a "clamped" note so the user knows it was squeezed.
+  pub ctx_clamped: bool,
   /// The knobs this launch was actually dispatched with (the live
   /// `status` `params.knobs`), so the running-launch settings view shows
   /// what the server is *running* with — `auto` for a fit-delegated
@@ -1851,6 +1855,7 @@ fn parse_external_row(row: &Value) -> Option<ManagedRow> {
     rss_bytes: None,
     cpu_pct: None,
     resolved_ctx: None,
+    ctx_clamped: false,
     knobs: crate::config::TypedKnobs::default(),
   })
 }
@@ -1910,6 +1915,10 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
     .get("resolved_ctx")
     .and_then(Value::as_u64)
     .map(|n| n as u32);
+  let ctx_clamped = row
+    .get("ctx_clamped")
+    .and_then(Value::as_bool)
+    .unwrap_or(false);
   // The knobs the launch was dispatched with — `auto` sentinels for
   // fit-delegated rows, pinned numbers when set. Parsed from the live
   // `status` row so the running view reflects the server, not the user's
@@ -1929,6 +1938,7 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
     rss_bytes,
     cpu_pct,
     resolved_ctx,
+    ctx_clamped,
     knobs,
   })
 }
