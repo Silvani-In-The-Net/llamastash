@@ -32,8 +32,7 @@ use std::sync::Mutex;
 use crate::config::{KnobValueOpt, TypedKnobs};
 use crate::daemon::host_metrics::HostMetricsSnapshot;
 use crate::gguf::header::GgufHeader;
-use crate::gguf::memory::{kv_bytes, weights_bytes, EstimateOptions};
-use crate::launch::ctx_fit::parse_cache_type;
+use crate::gguf::memory::{kv_bytes, parse_cache_type, weights_bytes, EstimateOptions};
 use crate::launch::headroom::{admissible_bytes, overhead_band_bytes, PoolKind};
 
 /// One in-flight launch's hold on the budget, keyed by `launch_id`.
@@ -142,14 +141,33 @@ pub fn is_sampled(snap: &HostMetricsSnapshot) -> bool {
   snap.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
 }
 
-/// Post-headroom free bytes across the budget pool(s). UMA / Apple hosts
-/// budget the single physical pool (≈ system RAM); discrete hosts sum
-/// post-headroom VRAM free + post-headroom system-RAM free.
+/// Post-headroom free bytes across the budget pool(s). Discrete hosts
+/// sum post-headroom VRAM free + post-headroom system-RAM free.
+///
+/// UMA hosts budget the **GPU pool**, not all of system RAM. On an
+/// AMD/Intel integrated APU the GPU can only allocate within the amdgpu
+/// GTT cap (carve-out + GTT), which on a default-config box is roughly
+/// half of system RAM. llama.cpp's own free reading conflates the two
+/// and hard-OOMs (it sees system-RAM free, allocates past the GTT cap,
+/// and `hipMalloc` fails); sysfs GTT is the budget authority. So when
+/// the snapshot carries the GTT pool (`uma_shared_*`, from the sysfs
+/// probe) we budget `min(ram_free, gtt_free)` — the GTT cap bounds the
+/// GPU allocation, and `ram_free` still guards the rare case where
+/// system RAM is the tighter constraint. Apple Silicon has no GTT carve
+/// (it leaves `uma_shared_*` unset), so it falls back to `ram_free` with
+/// its 0.75 headroom.
 pub fn effective_free_bytes(snap: &HostMetricsSnapshot) -> u64 {
   let ram_free = snap.ram_total_bytes.saturating_sub(snap.ram_used_bytes);
   let unified = snap.unified || snap.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL;
   if unified {
-    admissible_bytes(ram_free, pool_kind(snap))
+    let pool_free = match snap.uma_shared_total_bytes {
+      Some(gtt_total) => {
+        let gtt_free = gtt_total.saturating_sub(snap.uma_shared_used_bytes.unwrap_or(0));
+        ram_free.min(gtt_free)
+      }
+      None => ram_free,
+    };
+    admissible_bytes(pool_free, pool_kind(snap))
   } else if let (Some(total), Some(used)) = (snap.gpu_mem_total_bytes, snap.gpu_mem_used_bytes) {
     let vram_free = total.saturating_sub(used);
     admissible_bytes(vram_free, PoolKind::DiscreteVram)
@@ -160,11 +178,20 @@ pub fn effective_free_bytes(snap: &HostMetricsSnapshot) -> u64 {
 }
 
 /// Demand floor for a launch: model weights + KV cache at the effective
-/// context window + the backend's fixed overhead band. `n_gpu_layers`
-/// from the knobs bounds the KV/offload estimate; an `Auto`/unset value
-/// is treated as full offload by the estimator. Missing attention
+/// context window + the backend's fixed overhead band. Missing attention
 /// geometry yields a KV of 0, so demand degrades to weights + band
 /// rather than refusing on missing data.
+///
+/// **It is a floor, not a ceiling.** Under Auto the caller passes
+/// `fit_ctx_floor` as `effective_ctx` (a pinned `--ctx` passes the pin),
+/// so the KV term reflects the *minimum* context, not the (possibly much
+/// larger) window `--fit` ends up choosing. So admission guarantees the
+/// floor-sized launch fits, not fit's actual choice. The residual window
+/// is "weights fit, fit then grows ctx past the floor": on a discrete
+/// host fit self-limits against its own correct VRAM reading; on UMA the
+/// GTT-pool budget in [`effective_free_bytes`] bounds it, and the
+/// in-process load check is the final backstop. Weights dominate demand,
+/// so the gross "this model is too big" case is always caught here.
 pub fn project_demand(
   header: &GgufHeader,
   arch: Option<&str>,
@@ -176,7 +203,10 @@ pub fn project_demand(
     ctx_len: effective_ctx as u64,
     cache_type_k: parse_cache_type(knobs.cache_type_k.set_value().map(String::as_str)),
     cache_type_v: parse_cache_type(knobs.cache_type_v.set_value().map(String::as_str)),
-    n_gpu_layers: knobs.n_gpu_layers.set_value().copied(),
+    // The GPU/RAM split is not modelled here — demand is the combined
+    // total against the combined pool free — so `n_gpu_layers` would be
+    // ignored downstream. Left unset rather than threaded in.
+    n_gpu_layers: None,
   };
   weights_bytes(header)
     .saturating_add(kv_bytes(header, arch, opts))
@@ -262,10 +292,41 @@ mod tests {
   }
 
   #[test]
-  fn uma_budget_is_the_single_ram_pool() {
+  fn uma_budget_falls_back_to_ram_when_gtt_unknown() {
+    // No sysfs GTT data on the snapshot → budget system-RAM free at the
+    // IntegratedUma 1.0 fraction.
     let s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 128 * GIB, 28 * GIB);
-    // IntegratedUma uses 1.0 fraction → full free RAM.
     assert_eq!(effective_free_bytes(&s), 100 * GIB);
+  }
+
+  #[test]
+  fn uma_budget_uses_gtt_pool_not_system_ram() {
+    // Default-config UMA box: the amdgpu GTT cap is ~half of system RAM.
+    // A resident model leaves plenty of system RAM free but little GTT.
+    // Admission must budget the GTT pool, or it admits a model that then
+    // hard-OOMs on hipMalloc (the exact conflation this feature defeats).
+    let mut s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 160 * GIB, 80 * GIB);
+    s.uma_shared_total_bytes = Some(80 * GIB); // GTT cap ~50% of RAM
+    s.uma_shared_used_bytes = Some(60 * GIB); // 20 GiB GTT free
+                                              // ram_free is 80 GiB but GTT free is only 20 GiB → budget GTT.
+    assert_eq!(effective_free_bytes(&s), 20 * GIB);
+    // A 37 GiB launch is refused against the 20 GiB GTT pool, not
+    // admitted against the 80 GiB system-RAM figure.
+    let ledger = Ledger::default();
+    assert!(ledger
+      .try_admit(1, 37 * GIB, effective_free_bytes(&s))
+      .is_err());
+  }
+
+  #[test]
+  fn uma_budget_clamps_to_ram_when_gtt_exceeds_ram_free() {
+    // Reference-box config: GTT raised to ~full RAM, so GTT free can
+    // exceed system-RAM free; min() keeps the tighter (RAM) bound.
+    let mut s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 128 * GIB, 70 * GIB);
+    s.uma_shared_total_bytes = Some(124 * GIB);
+    s.uma_shared_used_bytes = Some(40 * GIB); // 84 GiB GTT free
+                                              // ram_free 58 GiB < gtt_free 84 GiB → budget the RAM bound.
+    assert_eq!(effective_free_bytes(&s), 58 * GIB);
   }
 
   #[test]
