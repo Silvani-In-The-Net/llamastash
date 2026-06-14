@@ -135,7 +135,7 @@ pub struct Baseline {
 
 /// Live hardware section of the doctor report (R12). Built from the
 /// same [`HardwareSnapshot`] the init banner renders, with the R15
-/// label conventions (`MEM`/`MEM*`, `GPU (shared)`) from day one.
+/// label conventions (`MEM`/`MEM*`, `VRAM (shared)`) from day one.
 #[derive(Debug, Clone, Serialize)]
 pub struct HardwareSection {
   pub cpu_brand: String,
@@ -170,7 +170,7 @@ pub struct HardwareSection {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub uma_carve_bytes: Option<u64>,
   /// UMA composition (R15): the system-RAM-backed shared pool, rendered
-  /// `GPU (shared)` as a breakdown *of* `MEM*` (not a separate pool).
+  /// `VRAM (shared)` as a breakdown *of* `MEM*` (not a separate pool).
   #[serde(skip_serializing_if = "Option::is_none")]
   pub uma_shared_bytes: Option<u64>,
 }
@@ -486,8 +486,8 @@ fn is_readable(path: &Path) -> bool {
 
 /// Render the live hardware section (R12) with the R15 label
 /// conventions. `MEM`/`MEM*` mark discrete vs unified memory; the
-/// `GPU (shared)` row is the UMA pool's system-RAM portion, indented as
-/// a composition of `MEM*` rather than a separate pool.
+/// `VRAM (shared)` row is the UMA pool's system-RAM portion — a
+/// breakdown of `MEM*`, not a separate pool.
 fn format_hardware_section(hw: &HardwareSection) -> String {
   use crate::cli::format;
   use std::fmt::Write as _;
@@ -519,7 +519,7 @@ fn format_hardware_section(hw: &HardwareSection) -> String {
   );
   let _ = writeln!(out, "  {:<5} {gpu_detail}", "GPU");
   if let Some(shared) = hw.uma_shared_bytes {
-    let _ = writeln!(out, "    GPU (shared)  {}", fmt_gib(shared));
+    let _ = writeln!(out, "  VRAM (shared) {}", fmt_gib(shared));
   }
   if hw.disk_free_bytes > 0 {
     let _ = writeln!(out, "  {:<5} {} free", "DISK", fmt_gib(hw.disk_free_bytes));
@@ -923,9 +923,12 @@ mod tests {
     let hw = uma_hw(CARVE, 124 * GIB, 128 * GIB);
     let out = format_hardware_section(&HardwareSection::from_hardware(&hw));
     assert!(out.contains("MEM*"), "unified host uses MEM*: {out:?}");
-    assert!(out.contains("GPU (shared)"), "UMA composition row: {out:?}");
     assert!(
-      out.contains("carve signature"),
+      out.contains("VRAM (shared)"),
+      "UMA composition row: {out:?}"
+    );
+    assert!(
+      out.contains("unified, inferred"),
       "classification source: {out:?}"
     );
     console::set_colors_enabled(prior_colors);

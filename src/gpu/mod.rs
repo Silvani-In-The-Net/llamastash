@@ -180,11 +180,16 @@ pub enum GpuInfo {
 
 /// How a device's unified-vs-discrete verdict was reached (R18).
 /// Surfaced in the `doctor` hardware section so a misclassification is
-/// inspectable rather than silent. Only set on the AMD / DXGI paths;
-/// Apple Metal's source is implicit in the `AppleMetal` variant.
+/// inspectable rather than silent. The serialized snake_case value
+/// (`apple_unified` / `explicit_dxgi_uma` / `carve_signature` /
+/// `discrete`) is the precise *method* and stays in `--json`; the human
+/// [`Self::label`] collapses it to the verdict + confidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassSource {
+  /// Apple Silicon — unified by construction (the architecture has no
+  /// dedicated VRAM at all). Authoritative.
+  AppleUnified,
   /// Windows D3D12 `UMA` architecture flag — authoritative.
   ExplicitDxgiUma,
   /// Linux amdgpu: no driver flag exists; classified unified by the
@@ -196,12 +201,15 @@ pub enum ClassSource {
 }
 
 impl ClassSource {
-  /// Human label for the classification source, shown in the `doctor`
-  /// hardware section and the shared GPU summary line.
+  /// Human label shown after the GPU pool size on `doctor` / `status`:
+  /// the *verdict* (`unified` / `discrete`) plus a confidence qualifier
+  /// when the verdict was inferred rather than read from an
+  /// authoritative flag. The precise method survives in `--json` via the
+  /// serialized enum value.
   pub fn label(self) -> &'static str {
     match self {
-      ClassSource::ExplicitDxgiUma => "D3D12 UMA flag",
-      ClassSource::CarveSignature => "carve signature",
+      ClassSource::AppleUnified | ClassSource::ExplicitDxgiUma => "unified",
+      ClassSource::CarveSignature => "unified, inferred",
       ClassSource::Discrete => "discrete",
     }
   }
@@ -297,26 +305,32 @@ impl GpuInfo {
   }
 
   /// The classification verdict + method for this host's GPU memory,
-  /// for the `doctor` hardware section (R18). Apple Metal is unified by
-  /// construction (no `ClassSource` needed — the variant itself says
-  /// so); AMD / DXGI devices carry an explicit [`ClassSource`]; NVIDIA /
-  /// Vulkan / CPU-only have no UMA classification (`None`).
+  /// for the `doctor` hardware section + `status` GPU line (R18). Apple
+  /// Metal is `AppleUnified` (unified by construction); AMD / DXGI
+  /// devices carry an explicit [`ClassSource`]; a NVIDIA / AMD card with
+  /// no unified marker reports `Discrete` (the verdict — a real GPU that
+  /// isn't unified is discrete). Only the vendor-unknown Vulkan fallback
+  /// and CPU-only return `None`, since there we genuinely can't say.
   pub fn uma_class_source(&self) -> Option<ClassSource> {
     match self {
-      Self::AppleMetal { .. } => None,
+      // Apple Metal is unified by construction — report it explicitly so
+      // every surface labels it from the same source as the AMD/DXGI
+      // paths rather than rendering a bare vendor word.
+      Self::AppleMetal { .. } => Some(ClassSource::AppleUnified),
       Self::CpuOnly => None,
-      Self::Multi { devices }
-      | Self::Nvidia { devices }
-      | Self::Amd { devices }
-      | Self::Unknown { devices } => {
+      // Vulkan fallback: vendor is unknown, so discrete-vs-unified is
+      // genuinely undecidable — no suffix rather than a guessed one.
+      Self::Unknown { .. } => None,
+      Self::Multi { devices } | Self::Nvidia { devices } | Self::Amd { devices } => {
         // Prefer a unified verdict when any device reports one (a UMA
-        // APU paired with a discrete card budgets as unified), else the
-        // first recorded source (typically Discrete).
+        // APU paired with a discrete card budgets as unified). A real GPU
+        // with no unified marker (e.g. NVIDIA, which doesn't classify) is
+        // discrete — fall back to that verdict rather than `None`.
         devices
           .iter()
           .filter_map(|d| d.classification_source)
           .find(|s| !matches!(s, ClassSource::Discrete))
-          .or_else(|| devices.iter().find_map(|d| d.classification_source))
+          .or(Some(ClassSource::Discrete))
       }
     }
   }

@@ -828,13 +828,17 @@ mod tests {
     });
     assert_eq!(
       host_gpu_label(&amd).as_deref(),
-      Some("AMD · 124.5 GiB (carve signature)")
+      Some("AMD · 124.5 GiB (unified, inferred)")
     );
     let nv = serde_json::json!({
       "gpu_backend": "nvidia",
       "gpu_mem_total_bytes": 24u64 * 1024 * 1024 * 1024,
+      "uma_class_source": "discrete",
     });
-    assert_eq!(host_gpu_label(&nv).as_deref(), Some("NVIDIA · 24.0 GiB"));
+    assert_eq!(
+      host_gpu_label(&nv).as_deref(),
+      Some("NVIDIA · 24.0 GiB (discrete)")
+    );
     // Pre-first-sample window reads "detecting", not "CPU only".
     let unsampled = serde_json::json!({"gpu_backend": "unsampled"});
     assert_eq!(host_gpu_label(&unsampled).as_deref(), Some("detecting"));

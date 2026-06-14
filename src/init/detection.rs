@@ -48,9 +48,11 @@ pub fn gpu_vendor_display(backend: &str) -> &'static str {
 }
 
 /// Canonical one-line GPU summary shared by `status` and `doctor`:
-/// `<vendor> · <pool total> (<classification source>)`, e.g.
-/// `AMD · 124.5 GiB (carve signature)`. CPU-only and not-yet-sampled
-/// hosts render the bare vendor word so the line never claims memory it
+/// `<vendor> · <pool total> (<verdict>)`, e.g.
+/// `AMD · 124.5 GiB (unified, inferred)`. The parenthetical is the
+/// classification *verdict* + confidence ([`ClassSource::label`]);
+/// discrete cards carry no suffix. CPU-only and not-yet-sampled hosts
+/// render the bare vendor word so the line never claims memory it
 /// doesn't have.
 pub fn gpu_summary_line(
   backend: &str,

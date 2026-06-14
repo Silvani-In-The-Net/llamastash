@@ -289,6 +289,18 @@ fn hardware_line(hw: &HardwareSnapshot) -> String {
   lines.join("\n")
 }
 
+/// Classification verdict suffix for the init banner — `(unified,
+/// inferred)` / `(unified)` / `(discrete)` — sourced from the same
+/// [`GpuInfo::uma_class_source`] that drives the `status` and `doctor`
+/// GPU lines, so all three name the verdict identically. Empty (no
+/// suffix) when the vendor-unknown Vulkan path can't classify.
+fn verdict_suffix(gpu: &GpuInfo) -> String {
+  gpu
+    .uma_class_source()
+    .map(|s| format!(" ({})", s.label()))
+    .unwrap_or_default()
+}
+
 fn format_gpu_segment(hw: &HardwareSnapshot) -> String {
   match &hw.gpu {
     GpuInfo::CpuOnly => "(none — CPU only)".to_string(),
@@ -300,26 +312,23 @@ fn format_gpu_segment(hw: &HardwareSnapshot) -> String {
       };
       let name_segment = format_device_name(devices, vendor);
       let mem = format_gib(hw.vram_bytes.unwrap_or(0));
-      // A unified APU (AMD UMA) draws from the shared pool — calling it
-      // "VRAM" would re-introduce the 2x-memory confusion the MEM*
-      // rename fixed. Label it "unified" like the Apple branch.
-      let mem_kind = if hw.gpu.is_unified() {
-        "unified"
-      } else {
-        "VRAM"
-      };
-      format!("{name_segment} · {mem} {mem_kind}")
+      // Verdict vocabulary matches `status` / `doctor`: a unified APU
+      // reads `(unified, inferred)`, a discrete card `(discrete)` — never
+      // the bare `VRAM` word that re-introduced the 2x-memory confusion.
+      format!("{name_segment} · {mem}{}", verdict_suffix(&hw.gpu))
     }
     GpuInfo::AppleMetal {
       total_memory_bytes: _,
     } => {
       let mem = format_gib(hw.vram_bytes.unwrap_or(0));
-      format!("Apple Silicon · {mem} unified")
+      format!("Apple Silicon · {mem}{}", verdict_suffix(&hw.gpu))
     }
     GpuInfo::Unknown { devices } => {
+      // Vendor unknown (Vulkan fallback): no discrete-vs-unified verdict,
+      // so show the raw pool size without claiming either.
       let name_segment = format_device_name(devices, "GPU (vendor unknown)");
       let mem = match hw.vram_bytes {
-        Some(b) => format!(" · {} VRAM", format_gib(b)),
+        Some(b) => format!(" · {}", format_gib(b)),
         None => String::new(),
       };
       format!("{name_segment}{mem}")
@@ -373,7 +382,7 @@ fn format_gpu_segment(hw: &HardwareSnapshot) -> String {
       .collect();
       let mem = hw
         .vram_bytes
-        .map(|b| format!(" · {} VRAM", format_gib(b)))
+        .map(|b| format!(" · {}{}", format_gib(b), verdict_suffix(&hw.gpu)))
         .unwrap_or_default();
       if parts.is_empty() {
         "(none)".to_string()
@@ -937,7 +946,12 @@ mod tests {
       line.contains("NVIDIA GeForce RTX 4090"),
       "expected NVIDIA + device name, got {line:?}"
     );
-    assert!(line.contains("24.0 GiB VRAM"));
+    // Verdict vocabulary now matches `status` / `doctor`: a discrete
+    // card reads `(discrete)`, not the bare `VRAM` word.
+    assert!(
+      line.contains("24.0 GiB (discrete)"),
+      "expected discrete verdict, got {line:?}"
+    );
   }
 
   #[test]
