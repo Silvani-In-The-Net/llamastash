@@ -23,6 +23,12 @@ use crate::launch::params::{BackendChoice, LayerLabel};
 /// values flow through the same field when the user types digits.
 pub const CTX_PRESETS: &[u32] = &[2048, 4096, 8192, 16384, 32768, 65536, 131072];
 
+/// Value-column label for a knob the user hasn't set — it inherits from
+/// the resolver chain (last used / arch default / model default / server
+/// default), named by the row's source chip. One constant so every
+/// surface (picker form, running view, device row) agrees on the word.
+pub const INHERITED_LABEL: &str = "inherited";
+
 /// Which row the cursor is on. The editor renders top-to-bottom in
 /// [`PickerField::all`] order so it doubles as the vertical-navigation
 /// order.
@@ -720,7 +726,8 @@ impl LaunchPickerState {
   /// the catalog to show `"<name> (<backend>)"` (e.g.
   /// `"NVIDIA GeForce RTX 3080 (Vulkan)"`). Falls back to the raw
   /// selector when it isn't in the catalog (stale persisted value).
-  /// Returns `"default"` when no device is selected.
+  /// Returns `"inherited"` when no device is selected (llama-server
+  /// picks) — matching the unset-value label every other knob row uses.
   pub fn device_value_display(&self) -> String {
     let sel = self
       .effective_str(KnobField::Device)
@@ -732,7 +739,7 @@ impl LaunchPickerState {
           None => s.to_string(),
         },
       )
-      .unwrap_or_else(|| "default".into())
+      .unwrap_or_else(|| INHERITED_LABEL.into())
   }
 }
 
@@ -1170,8 +1177,8 @@ mod tests {
   fn device_value_display_resolves_selector_to_name_and_backend() {
     let mut s = LaunchPickerState::for_model("test");
     s.device_catalog = catalog_two_vendors();
-    // No selection → default.
-    assert_eq!(s.device_value_display(), "default");
+    // No selection → inherited (llama-server picks the device).
+    assert_eq!(s.device_value_display(), "inherited");
     s.set_user_str(KnobField::Device, Some("Vulkan1".into()));
     assert_eq!(s.device_value_display(), "NVIDIA GeForce RTX 3080 (Vulkan)");
     s.set_user_str(KnobField::Device, Some("ROCm0".into()));
@@ -1181,7 +1188,7 @@ mod tests {
   #[test]
   fn device_value_display_unknown_selector_falls_back_to_raw() {
     // A persisted selector no longer in the catalog still renders
-    // something useful rather than "default".
+    // something useful rather than "inherited".
     let mut s = LaunchPickerState::for_model("test");
     s.device_catalog = catalog_two_vendors();
     s.set_user_str(KnobField::Device, Some("CUDA9".into()));

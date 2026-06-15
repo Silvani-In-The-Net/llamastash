@@ -17,7 +17,7 @@ use crate::launch::flag_aliases::{knob_display_groups, KnobField};
 use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::keybindings::{Action, Focus};
-use crate::tui::launch_picker::{LaunchPickerState, PickerField};
+use crate::tui::launch_picker::{LaunchPickerState, PickerField, INHERITED_LABEL};
 
 /// Render the Settings tab body into `area`.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
@@ -150,7 +150,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     );
   }
 
-  let show_source = area.width >= 50;
+  // Show the right-aligned source chip once the pane has room for a
+  // `label + value + (chip)` row. In wide mode the right pane is only
+  // 35% of the terminal, so a 50-col gate kept the chip hidden until
+  // ~150-col terminals; 40 surfaces it at realistic widths (a row fits
+  // `2 marker + 16 label + value + "  (server default)"` by ~38 cols).
+  let show_source = area.width >= 40;
   let row_for = |field: PickerField| picker_view.field == field;
   // Track the line index of the focused row so we can adjust the
   // scroll offset below — on tall viewports nothing scrolls; on
@@ -160,12 +165,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   // Every typed knob — including ctx and reasoning — flows through
   // the same `value (chip)` shape, grouped by function with a header
   // per cluster (display order is distinct from argv order). Empty
-  // rows render `default` as the value; the chip names the layer that
+  // rows render `inherited` as the value; the chip names the layer that
   // would supply it.
   for group in knob_display_groups() {
     // Skip the whole group — header included — when every row in it is
     // hidden (the Multi-GPU placement group on single-GPU / CPU-only
-    // hosts, where each control can only ever hold `default`).
+    // hosts, where each control can only ever hold `inherited`).
     if !group
       .fields
       .iter()
@@ -346,26 +351,26 @@ fn knob_label(field: KnobField) -> &'static str {
 }
 
 /// Read-only formatter for the running-launch view. Same vocabulary
-/// as `format_knob_value` (value or `default` / `on` / `off`) but
+/// as `format_knob_value` (value or `inherited` / `on` / `off`) but
 /// reads straight from a persisted `TypedKnobs` instead of a picker
-/// state. Untouched fields render `default` — the user can open the
+/// state. Untouched fields render `inherited` — the user can open the
 /// editor (`e`) to see the resolved chip.
 /// Render a persisted knob slot: a pinned value verbatim, the literal
-/// `auto` for the Auto state, and `default` for an unset (Inherited)
+/// `auto` for the Auto state, and `inherited` for an unset (Inherited)
 /// slot. Empty strings (cleared `device` / `tensor_split` / `split_mode`)
-/// read as `default` too.
+/// read as `inherited` too.
 fn knob_value_label<T: std::fmt::Display>(slot: &Option<KnobValue<T>>) -> String {
   match slot {
     Some(KnobValue::Set(v)) => {
       let s = v.to_string();
       if s.is_empty() {
-        "default".into()
+        INHERITED_LABEL.into()
       } else {
         s
       }
     }
     Some(KnobValue::Auto) => "auto".into(),
-    None => "default".into(),
+    None => INHERITED_LABEL.into(),
   }
 }
 
@@ -398,7 +403,7 @@ fn bool_label(v: &Option<KnobValue<bool>>) -> String {
     Some(true) => "on".into(),
     Some(false) => "off".into(),
     None if v.is_auto() => "auto".into(),
-    None => "default".into(),
+    None => INHERITED_LABEL.into(),
   }
 }
 
@@ -420,23 +425,23 @@ fn format_knob_value(state: &LaunchPickerState, field: KnobField) -> String {
     | KnobField::MainGpu => state
       .effective_u32(field)
       .map(|v| v.to_string())
-      .unwrap_or_else(|| "default".into()),
+      .unwrap_or_else(|| INHERITED_LABEL.into()),
     KnobField::RopeFreqScale => state
       .effective_f32(field)
       .map(|v| format!("{v}"))
-      .unwrap_or_else(|| "default".into()),
+      .unwrap_or_else(|| INHERITED_LABEL.into()),
     KnobField::CacheTypeK
     | KnobField::CacheTypeV
     | KnobField::TensorSplit
     | KnobField::SplitMode => state
       .effective_str(field)
-      .unwrap_or_else(|| "default".into()),
+      .unwrap_or_else(|| INHERITED_LABEL.into()),
     KnobField::Device => state.device_value_display(),
     KnobField::Reasoning | KnobField::FlashAttn | KnobField::Mlock | KnobField::NoMmap => {
       match state.effective_bool(field) {
         Some(true) => "on".into(),
         Some(false) => "off".into(),
-        None => "default".into(),
+        None => INHERITED_LABEL.into(),
       }
     }
   }
@@ -463,15 +468,15 @@ fn group_header(title: &str, palette: &Palette) -> Line<'static> {
 
 const LABEL_W: usize = 16;
 
-/// Default-value sentinels rendered when no override exists. Tracked
-/// in one place so `kv` / `kv_focused` agree on which strings deserve
-/// the muted tone.
+/// Inherited / empty value sentinels rendered when no override exists.
+/// Tracked in one place so `kv` / `kv_focused` agree on which strings
+/// deserve the muted tone.
 fn is_default_value(value: &str) -> bool {
-  matches!(value, "default" | "(none)")
+  value == INHERITED_LABEL || value == "(none)"
 }
 
 /// Style to paint a settings value with — muted when the row falls
-/// through to its layered default (`default`, `(none)`), normal text
+/// through to its layered default (`inherited`, `(none)`), normal text
 /// when the value is overridden by the user or carries a real reading.
 fn value_style(value: &str, palette: &Palette) -> Style {
   if is_default_value(value) {
@@ -643,6 +648,62 @@ mod tests {
     }
     assert!(joined.contains("16384"), "{joined}");
     assert!(joined.contains("on"), "{joined}");
+  }
+
+  #[test]
+  fn source_chip_shows_at_40_cols_hidden_at_39() {
+    use crate::tui::app::LastParamsRow;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+
+    // A user-set ctx earns a `(user)` source chip on its row, which is
+    // the marker we assert on. The right pane in wide mode is only ~35%
+    // of the terminal, so the chip gate must trip well below 50 cols.
+    let render_at = |w: u16| -> String {
+      let mut app = App::new(AppOptions::default());
+      let path = PathBuf::from("/m/qwen.gguf");
+      app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+      app.last_params.insert(
+        path,
+        LastParamsRow {
+          ctx: Some(16384),
+          reasoning: false,
+          knobs: crate::config::TypedKnobs {
+            ctx: Some(KnobValue::Set(16384)),
+            ..Default::default()
+          },
+          extras: vec![],
+          port: Some(41100),
+        },
+      );
+      app.list_cursor = 2;
+      let palette = app.palette();
+      let mut term = Terminal::new(TestBackend::new(w, 32)).unwrap();
+      term
+        .draw(|f| render(f, Rect::new(0, 0, w, 32), &app, palette))
+        .unwrap();
+      let buf = term.backend().buffer().clone();
+      let mut joined = String::new();
+      for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+          joined.push_str(buf.cell((x, y)).unwrap().symbol());
+        }
+        joined.push('\n');
+      }
+      joined
+    };
+
+    let wide = render_at(40);
+    assert!(
+      wide.contains("(user)"),
+      "source chip must show at 40 cols: {wide}"
+    );
+    let narrow = render_at(39);
+    assert!(
+      !narrow.contains("(user)"),
+      "source chip must be hidden below 40 cols: {narrow}"
+    );
   }
 
   #[test]
