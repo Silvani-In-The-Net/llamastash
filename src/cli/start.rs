@@ -133,6 +133,12 @@ async fn wait_and_emit(
   let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
   // Final running row once terminal, or None if we time out / can't find it.
   let mut settled: Option<crate::cli::resolve::RunningRow> = None;
+  // `resolved_ctx` is stamped by a separate recorder a beat *after* the
+  // Ready transition, so a row can read `ready` with no ctx yet. Once we
+  // first see Ready, give the recorder this grace window to land the
+  // actuals before settling — otherwise `--wait` prints `ctx=—`.
+  let mut ready_since: Option<std::time::Instant> = None;
+  let actuals_grace = std::time::Duration::from_secs(5);
   while std::time::Instant::now() < deadline {
     let snap = fetch_status(client).await?;
     let index = running_index(&snap.models);
@@ -145,11 +151,23 @@ async fn wait_and_emit(
       .cloned()
       .or_else(|| index.get(&row.path).cloned());
     if let Some(r) = found {
-      // Ready or Error/Stopped are terminal for the wait; "launching" /
-      // "loading" keep us polling.
-      if matches!(r.state.as_str(), "ready" | "error" | "stopped") {
-        settled = Some(r);
-        break;
+      match r.state.as_str() {
+        // Error / Stopped are terminal immediately — no actuals to wait on.
+        "error" | "stopped" => {
+          settled = Some(r);
+          break;
+        }
+        // Ready settles once the resolved ctx is stamped, or after the
+        // grace window elapses (a build whose `/props` omits it, etc.).
+        "ready" => {
+          let since = *ready_since.get_or_insert_with(std::time::Instant::now);
+          if r.resolved_ctx.is_some() || since.elapsed() >= actuals_grace {
+            settled = Some(r);
+            break;
+          }
+        }
+        // launching / loading → keep polling.
+        _ => {}
       }
     }
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;

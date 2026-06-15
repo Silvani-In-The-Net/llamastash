@@ -22,18 +22,28 @@ use tokio::net::TcpStream;
 /// What the child reports it actually loaded with.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Actuals {
-  /// Resolved **total** context window the child loaded with — what
-  /// `--fit` (or a pin) settled on, matching the `--ctx` / `-c` knob.
-  /// `None` when `/props` didn't expose it. This is the one placement
-  /// value llama-server's HTTP API reports; the rest (layers, threads,
-  /// batch) live only in load-time logs, so the TUI shows those as
-  /// `auto`.
+  /// Resolved **per-request** context window the child loaded with —
+  /// the window a single sequence/conversation can actually use, what
+  /// `--fit` (or a pin) settled on. `None` when `/props` didn't expose
+  /// it. This is the one placement value llama-server's HTTP API
+  /// reports; the rest (layers, threads, batch) live only in load-time
+  /// logs, so the TUI shows those as `auto`.
   ///
-  /// `/props` reports `default_generation_settings.n_ctx` as the
-  /// **per-slot** window (`total / total_slots`), so this is rebuilt as
-  /// `n_ctx * total_slots` to match the `-c` value the user sees and
-  /// pins. Verified against a `-c 8192 --parallel 4` launch: `/props`
-  /// reports `n_ctx=2048, total_slots=4`, which is `8192` total.
+  /// Read straight from `/props` `default_generation_settings.n_ctx` —
+  /// **not** multiplied by `total_slots`. That field already is the
+  /// per-request window in both slot modes:
+  /// - **non-unified** (explicit `--parallel N`): `n_ctx` is per-slot
+  ///   (`total / N`), which is exactly what one request gets.
+  /// - **unified** (`--parallel` auto → `kv_unified = true`, the
+  ///   default): `n_ctx` is the full shared window, and a request can
+  ///   use all of it.
+  ///
+  /// An earlier version multiplied by `total_slots` to recover the `-c`
+  /// aggregate, but that double-counted under the default kv-unified
+  /// mode (e.g. `-c 8192` auto → `/props n_ctx=8192, total_slots=4`,
+  /// which is `8192`, not `32768`) and could report a window larger
+  /// than the model's trained context. The per-request value is both
+  /// correct and what users mean by "context window".
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub resolved_ctx: Option<u32>,
 
@@ -97,9 +107,10 @@ async fn fetch_props_body(port: u16, timeout: Duration) -> std::io::Result<Vec<u
 
 /// Split the HTTP response at the header/body boundary and parse the
 /// JSON body for the resolved context window. llama-server carries the
-/// per-slot `n_ctx` under `default_generation_settings` (and at the top
-/// level in some builds) and the slot count at the top-level
-/// `total_slots`; the **total** window is `n_ctx * total_slots`.
+/// per-request `n_ctx` under `default_generation_settings` (and at the
+/// top level in some builds); we read it verbatim — see
+/// [`extract_n_ctx`] and the `Actuals::resolved_ctx` doc for why
+/// `total_slots` is deliberately *not* a factor.
 fn parse_actuals(response: &[u8]) -> Actuals {
   let Some(split) = response.windows(4).position(|w| w == b"\r\n\r\n") else {
     return Actuals::default();
@@ -109,33 +120,25 @@ fn parse_actuals(response: &[u8]) -> Actuals {
     return Actuals::default();
   };
   Actuals {
-    resolved_ctx: extract_total_ctx(&v),
+    resolved_ctx: extract_n_ctx(&v),
     // `/props` can't tell us this; the readiness gate computes it from
     // the floor + the trained window. Always false out of the parser.
     ctx_clamped: false,
   }
 }
 
-/// Per-slot context window from `/props`.
+/// Per-request context window from `/props` — the window one sequence
+/// can use. This is `default_generation_settings.n_ctx` read verbatim:
+/// per-slot in non-unified mode and the full shared window under the
+/// default kv-unified mode, which is the per-request size either way.
+/// Multiplying by `total_slots` would double-count under kv-unified and
+/// can exceed the model's trained window, so we never do.
 fn extract_n_ctx(v: &serde_json::Value) -> Option<u32> {
   v.get("default_generation_settings")
     .and_then(|g| g.get("n_ctx"))
     .and_then(serde_json::Value::as_u64)
     .or_else(|| v.get("n_ctx").and_then(serde_json::Value::as_u64))
     .map(|n| n as u32)
-}
-
-/// Total context window = per-slot `n_ctx` * `total_slots`. `total_slots`
-/// defaults to 1 when absent (older builds / `np=1`), so the value
-/// degrades to the per-slot reading rather than vanishing.
-fn extract_total_ctx(v: &serde_json::Value) -> Option<u32> {
-  let per_slot = extract_n_ctx(v)?;
-  let slots = v
-    .get("total_slots")
-    .and_then(serde_json::Value::as_u64)
-    .filter(|&n| n > 0)
-    .unwrap_or(1) as u32;
-  Some(per_slot.saturating_mul(slots))
 }
 
 #[cfg(test)]
@@ -156,15 +159,23 @@ mod tests {
   }
 
   #[test]
-  fn total_ctx_is_per_slot_times_slots() {
-    // `/props` reports the per-slot window; the total is x total_slots.
-    // Verified live against `-c 8192 --parallel 4`: n_ctx=2048, slots=4.
-    let resp = b"HTTP/1.1 200 OK\r\n\r\n\
+  fn resolved_ctx_reads_n_ctx_verbatim_ignoring_slots() {
+    // `default_generation_settings.n_ctx` is the per-request window; we
+    // report it as-is and never multiply by `total_slots`.
+    //
+    // Non-unified (explicit `--parallel 4`, `-c 8192`): n_ctx is the
+    // per-slot 2048 — what one request gets — so we report 2048, not
+    // the 8192 aggregate.
+    let non_unified = b"HTTP/1.1 200 OK\r\n\r\n\
       {\"default_generation_settings\":{\"n_ctx\":2048},\"total_slots\":4}";
-    assert_eq!(parse_actuals(resp).resolved_ctx, Some(8192));
-    // total_slots absent → degrade to the per-slot reading (np=1).
-    let resp1 = b"HTTP/1.1 200 OK\r\n\r\n{\"default_generation_settings\":{\"n_ctx\":4096}}";
-    assert_eq!(parse_actuals(resp1).resolved_ctx, Some(4096));
+    assert_eq!(parse_actuals(non_unified).resolved_ctx, Some(2048));
+    // Unified (auto `--parallel` → kv_unified, the default): `/props`
+    // reports the full shared window. Verified live against `-c 8192`
+    // auto: n_ctx=8192, total_slots=4. The old `x slots` logic wrongly
+    // produced 32768 (and 524288 for the 80B); we now report 8192.
+    let unified = b"HTTP/1.1 200 OK\r\n\r\n\
+      {\"default_generation_settings\":{\"n_ctx\":8192},\"total_slots\":4}";
+    assert_eq!(parse_actuals(unified).resolved_ctx, Some(8192));
   }
 
   #[test]
