@@ -361,9 +361,16 @@ pub struct StartArgs {
   pub backend: Option<BackendArg>,
   /// Emit JSON instead of human-readable success prose. Stable
   /// shape: `{ "name", "launch_id", "port", "pid", "preset",
-  /// "path" }`.
+  /// "path" }`. With `--wait`, also carries `state` and `resolved_ctx`.
   #[arg(long)]
   pub json: bool,
+  /// Block until the model finishes loading (reaches Ready or Error),
+  /// then report the resolved context window `--fit` chose. Default is
+  /// fire-and-forget: `start` returns as soon as the daemon accepts the
+  /// launch, while the model is still loading. Useful for big models
+  /// where you want the resolved ctx without a follow-up `status`.
+  #[arg(long)]
+  pub wait: bool,
 }
 
 /// CLI surface for the per-model backend override (R17). Wire labels match

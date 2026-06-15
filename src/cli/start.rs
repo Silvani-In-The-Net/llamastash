@@ -96,8 +96,128 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     .call("start_model", Some(payload))
     .await
     .map_err(|e| map_start_error(e, &row))?;
+  if args.wait {
+    return wait_and_emit(
+      &mut client,
+      args.preset.as_deref(),
+      &row,
+      &resp,
+      args.json,
+      cli.quiet,
+    )
+    .await;
+  }
   emit_response(args.preset.as_deref(), &row, &resp, args.json, cli.quiet);
   Ok(())
+}
+
+/// `--wait`: poll `status` until the just-started launch reaches a
+/// terminal-ish state (Ready / Error / Stopped) or the budget runs out,
+/// then report the resolved context window. The daemon's own probe budget
+/// (size-scaled) guarantees a stuck load eventually flips to Error, so the
+/// 15-minute ceiling here is only a safety net for pathological cases.
+async fn wait_and_emit(
+  client: &mut Client,
+  preset: Option<&str>,
+  row: &CatalogRow,
+  resp: &Value,
+  json: bool,
+  quiet: bool,
+) -> CliResult {
+  use crate::cli::resolve::{fetch_status, running_index};
+
+  let launch_id = resp
+    .get("launch_id")
+    .and_then(Value::as_str)
+    .map(str::to_string);
+  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+  // Final running row once terminal, or None if we time out / can't find it.
+  let mut settled: Option<crate::cli::resolve::RunningRow> = None;
+  while std::time::Instant::now() < deadline {
+    let snap = fetch_status(client).await?;
+    let index = running_index(&snap.models);
+    // Prefer the launch_id match; fall back to the model path (a daemon
+    // build without launch_id on the row still resolves by path).
+    let found = snap
+      .models
+      .iter()
+      .find(|m| Some(m.launch_id.as_str()) == launch_id.as_deref())
+      .cloned()
+      .or_else(|| index.get(&row.path).cloned());
+    if let Some(r) = found {
+      // Ready or Error/Stopped are terminal for the wait; "launching" /
+      // "loading" keep us polling.
+      if matches!(r.state.as_str(), "ready" | "error" | "stopped") {
+        settled = Some(r);
+        break;
+      }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+  }
+
+  let failed = matches!(settled.as_ref().map(|r| r.state.as_str()), Some("error"));
+  if json {
+    let mut body = json!({
+      "name": row.name(),
+      "launch_id": resp.get("launch_id"),
+      "port": resp.get("port"),
+      "pid": resp.get("pid"),
+      "preset": preset,
+      "path": row.path,
+      "state": settled.as_ref().map(|r| r.state.clone()),
+      "resolved_ctx": settled.as_ref().and_then(|r| r.resolved_ctx),
+      "ctx_clamped": settled.as_ref().map(|r| r.ctx_clamped).unwrap_or(false),
+    });
+    if let Some(cause) = settled.as_ref().and_then(|r| r.state_cause.clone()) {
+      body["cause"] = Value::String(cause);
+    }
+    println!("{}", crate::cli::output::pretty_json(&body));
+  } else if !quiet {
+    // Headline first (reuses the standard "started ..." prose), then the
+    // readiness follow-up.
+    emit_response(preset, row, resp, false, false);
+    print_wait_followup(settled.as_ref());
+  }
+  if failed {
+    // The launch was accepted but the model never came up; reflect that
+    // in the exit code so scripts can branch on it.
+    return Err(CliExit::code_only(LAUNCH_FAILED));
+  }
+  Ok(())
+}
+
+/// One-line readiness summary appended under the `start` headline when
+/// `--wait` settles. Covers Ready (with resolved ctx + clamp note),
+/// Error (with cause), and the timeout fallthrough.
+fn print_wait_followup(settled: Option<&crate::cli::resolve::RunningRow>) {
+  use crate::cli::colors;
+  let arrow = colors::dim("→");
+  match settled {
+    Some(r) if r.state == "ready" => {
+      let ctx = match r.resolved_ctx {
+        Some(c) if r.ctx_clamped => {
+          format!("{c} {}", colors::dim("(clamped to fit-ctx floor)"))
+        }
+        Some(c) => c.to_string(),
+        None => "—".into(),
+      };
+      println!("{} {arrow} ctx={ctx}", colors::success("ready"), ctx = ctx,);
+    }
+    Some(r) if r.state == "error" => {
+      let cause = r.state_cause.as_deref().unwrap_or("unknown");
+      println!("{} {arrow} {cause}", colors::error("failed"));
+    }
+    Some(r) => {
+      // Stopped before we observed Ready (raced with an external stop).
+      println!("{} {arrow} {}", colors::dim("settled"), r.state);
+    }
+    None => {
+      println!(
+        "{} {arrow} still loading; check `llamastash status`",
+        colors::dim("waiting timed out"),
+      );
+    }
+  }
 }
 
 fn select_start_row(rows: &[CatalogRow], args: &StartArgs) -> Result<CatalogRow, CliExit> {
@@ -574,6 +694,7 @@ mod tests {
       extra: vec![],
       backend: None,
       json: false,
+      wait: false,
     };
     let err = direct_path_candidate(&model, &args).unwrap_err();
     assert_eq!(err.code, USAGE);
@@ -597,6 +718,7 @@ mod tests {
       extra: vec![],
       backend: None,
       json: false,
+      wait: false,
     };
     let resolved = direct_path_candidate(&model, &args).unwrap();
     assert_eq!(resolved, Some(path));
@@ -626,6 +748,7 @@ mod tests {
       extra: vec![],
       backend: None,
       json: false,
+      wait: false,
     };
     let row = select_start_row(&[], &args).unwrap();
     assert_eq!(row.path, path.display().to_string());
@@ -667,6 +790,7 @@ mod tests {
       extra: vec![],
       backend: None,
       json: false,
+      wait: false,
     };
     let selected = select_start_row(std::slice::from_ref(&row), &args).unwrap();
     assert_eq!(selected.display_label.as_deref(), Some("known-model"));

@@ -379,13 +379,22 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
     out.push_str(&colors::dim("(no managed launches)"));
     out.push('\n');
   } else {
-    let header = ["LAUNCH_ID", "STATE", "MODE", "PORT", "PID", "NAME"];
+    let header = ["LAUNCH_ID", "STATE", "MODE", "PORT", "PID", "CTX", "NAME"];
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(snap.models.len() + snap.external.len());
     for r in &snap.models {
       let pid = r
         .pid
         .map(|p| p.to_string())
         .unwrap_or_else(|| "-".to_string());
+      // Resolved context window `--fit` chose (R6); "-" until the
+      // post-Ready `/props` fetch lands. A trailing `*` flags a
+      // memory-driven clamp to the floor (R19), explained beneath the
+      // table so the column width stays stable.
+      let ctx = match r.resolved_ctx {
+        Some(c) if r.ctx_clamped => format!("{c}*"),
+        Some(c) => c.to_string(),
+        None => "-".to_string(),
+      };
       let name = r.name();
       rows.push(vec![
         if tty {
@@ -405,6 +414,7 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
           r.port.to_string()
         },
         pid,
+        ctx,
         name,
       ]);
     }
@@ -419,6 +429,7 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
         dim_or_plain("-"),
         dim_or_plain("-"),
         dim_or_plain(&r.pid.to_string()),
+        dim_or_plain("-"),
         if tty { colors::dim(&name) } else { name },
       ]);
     }
@@ -442,6 +453,25 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
           format!("{lid} cause:")
         };
         out.push_str(&format!("{cause_header} {cause}\n"));
+      }
+    }
+    // Explain the `*` clamp marker for any row whose ctx fit had to
+    // squeeze to the floor (R19) — same long-form treatment as causes
+    // so the table columns stay stable.
+    let clamped: Vec<&str> = snap
+      .models
+      .iter()
+      .filter(|r| r.ctx_clamped)
+      .map(|r| r.launch_id.as_str())
+      .collect();
+    if !clamped.is_empty() {
+      out.push('\n');
+      for lid in clamped {
+        let note = format!("{lid} note: * ctx clamped to the fit-ctx floor under memory pressure");
+        out.push_str(&format!(
+          "{}\n",
+          if tty { colors::dim(&note) } else { note }
+        ));
       }
     }
   }
@@ -970,6 +1000,7 @@ mod tests {
         latest_rss_bytes: Some(4_500_000_000),
         latest_cpu_pct: Some(312.0),
         resolved_ctx: None,
+        ctx_clamped: false,
       }],
       external: vec![ExternalRow {
         pid: 999,
@@ -1074,6 +1105,7 @@ mod tests {
       latest_rss_bytes: None,
       latest_cpu_pct: None,
       resolved_ctx: None,
+      ctx_clamped: false,
     }
   }
 
@@ -1099,11 +1131,45 @@ mod tests {
     // Regression guard: managed + external rows are exact tabs, no
     // padding, no color, no truncation.
     assert!(
-      s.contains("LAUNCH_ID\tSTATE\tMODE\tPORT\tPID\tNAME\n"),
+      s.contains("LAUNCH_ID\tSTATE\tMODE\tPORT\tPID\tCTX\tNAME\n"),
       "header drifted: {s:?}"
     );
-    assert!(s.contains("L1\tready\tchat\t41100\t123\tqwen.gguf\n"));
-    assert!(s.contains("external\texternal\t-\t-\t9999\text.gguf\n"));
+    // resolved_ctx unset → "-" in the CTX column.
+    assert!(s.contains("L1\tready\tchat\t41100\t123\t-\tqwen.gguf\n"));
+    assert!(s.contains("external\texternal\t-\t-\t9999\t-\text.gguf\n"));
+  }
+
+  #[test]
+  fn status_human_shows_resolved_ctx_and_flags_clamp() {
+    let _g = ColorGuard::set(false);
+    let mut clamped = running("L1", "ready", 41100, "/m/qwen.gguf");
+    clamped.resolved_ctx = Some(16384);
+    clamped.ctx_clamped = true;
+    let mut healthy = running("L2", "ready", 41101, "/m/gemma.gguf");
+    healthy.resolved_ctx = Some(131072);
+    let snap = StatusSnapshot {
+      models: vec![clamped, healthy],
+      external: vec![],
+      gpu: Value::Null,
+      host: Value::Null,
+      daemon: None,
+      proxy: Value::Null,
+      backends: Value::Null,
+    };
+    let s = status_human(&snap);
+    // Clamped row carries the `*` marker; healthy row is the bare number.
+    assert!(s.contains("\t16384*\t"), "clamp marker missing: {s:?}");
+    assert!(s.contains("\t131072\t"), "resolved ctx missing: {s:?}");
+    // The marker is explained beneath the table, keyed by launch_id.
+    assert!(
+      s.contains("L1 note: * ctx clamped to the fit-ctx floor under memory pressure"),
+      "clamp note missing: {s:?}"
+    );
+    // The un-clamped row gets no note.
+    assert!(
+      !s.contains("L2 note:"),
+      "spurious note for healthy row: {s:?}"
+    );
   }
 
   #[test]
