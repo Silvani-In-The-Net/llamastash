@@ -4,6 +4,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+### Added
+
+- Browser web UI through the proxy at `/ui` — opens the running model's stock llama.cpp UI on one port-stable origin, with a chooser when several run (and `/ui/switch` to re-pick) plus HTTP Basic auth (the proxy key as the password) for LAN access.
+
 ### Changed
 
 - **Breaking: Auto launch mode is the new default.** Instead of pinning `n_gpu_layers=99` and a computed context size, LlamaStash delegates GPU/CPU placement and context sizing to llama-server's `--fit`, and keeps memory-budget authority itself with pre-spawn admission control: it refuses a launch that would not fit the sampled free memory rather than letting concurrent models OOM the machine. A fit-capable `llama-server` is now required.
