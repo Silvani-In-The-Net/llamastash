@@ -4,6 +4,8 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+## [0.0.4] — 2026-06-16
+
 ### Added
 
 - Anthropic Messages API through the proxy — `/v1/messages` + `/v1/messages/count_tokens` forward to llama-server's native endpoints, so Claude Code and other Anthropic-shape clients attach via `ANTHROPIC_BASE_URL` (key sent as `x-api-key`). New `jinja` config key (default `true`) emits `--jinja` on every launch for tool calling; the reasoning toggle still forces it on.
@@ -16,13 +18,15 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 - Every launch knob accepts the literal `auto` (`--n-gpu-layers auto`, `start --ctx auto`, and an Auto stop in the TUI knob cycle); a value you pin still wins.
 - New config options with `LLAMASTASH_*` env overrides: `default_launch_mode` (`auto`|`inherited`), `fit_ctx_floor` (default 16384), `strict_fit`.
 - TUI host pane, init banner, and help legend rename `RAM`/`RAM*` to `MEM`/`MEM*` so unified-memory machines stop reading as roughly twice their physical memory.
-- `doctor` gained a hardware section (CPU, memory, GPU pool composition, classification source), a memory-drift finding, and a GTT-cap hint; `status --json` reports the fit-resolved context as `resolved_ctx` once a model is up.
+- `doctor` gained a hardware section (CPU, memory, GPU pool composition, classification source), a memory-drift finding, and a GTT-cap hint.
+- Fit-resolved context surfaces on every running-model view: a `CTX` column on `status` (a trailing `*` flags a memory clamp to the fit floor), a running block on `show`, a new `start --wait` that blocks until the launch settles and prints `ready → ctx=N`, and `resolved_ctx` / `ctx_clamped` on `status --json`.
 - Hardware reporting now uses one consistent vocabulary across `status`, `doctor`, `init`, and the TUI: the GPU is named by vendor (`AMD`/`NVIDIA`/`Apple`), memory always prints `GiB`, a unified APU pool reads `unified`/`MEM*` rather than `VRAM`, and `doctor` is the superset (it adds CPU instruction sets and an OS line). `doctor` and `status` now print the same one-line GPU summary, e.g. `AMD · 124.5 GiB (carve signature)`.
 
 ### Fixed
 
 - Lemonade preload now waits for the `lemond` umbrella to be ready before loading a model, so an explicit launch on a cold daemon no longer flips to `error` on a transient connection failure.
 - `--flash-attn auto` no longer leaves a dangling positional token in the argv tail.
+- TUI Chat and Embed output now scrolls with `↑`/`↓` from the composer (the keys were unbound there — mouse-scroll only); a low-priority `↑↓:scroll` hint shows on every scrollable pane. (#34)
 - `status` no longer reports `GPU: CPU only` during the daemon's first second (before the metrics sampler ticks); it reads the live host snapshot like the TUI, and the pre-sample window reads `detecting`.
 
 ## [0.0.3] — 2026-06-11

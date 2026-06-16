@@ -262,7 +262,7 @@ llamastash list [--json] [--filter <PATTERN>]
 Launch a model. Layered resolution: catalog row → optional preset → per-invocation flags → trailing raw `llama-server` flags after `--`.
 
 ```
-llamastash start <ref> [--preset NAME] [--ctx N] [--port N]
+llamastash start <ref> [--preset NAME] [--ctx N] [--port N] [--wait]
                      [--reasoning on|off] [--mode chat|embedding|rerank]
                      [--<advanced-knob> ...] [-- <llama-server-flags>...]
 ```
@@ -284,6 +284,16 @@ Every knob has three states:
 - unset (Inherited) — falls through presets / arch defaults / the server default.
 
 `fit_ctx_floor` (default 16384) is the minimum context `--fit` is told to keep. Set `default_launch_mode: inherited` to opt the whole machine back to the pre-Auto behavior (knobs you never touch fall through to llama-server's own defaults instead of `--fit`). See the config schema and the environment-variable table above for `default_launch_mode`, `fit_ctx_floor`, and `strict_fit`.
+
+#### `--wait` (block until the launch settles)
+
+`start` is fire-and-forget by default: it returns as soon as the daemon accepts the launch, while the model is still loading. Pass `--wait` to block until the launch reaches a terminal state (Ready / Error / Stopped) and report the fit-resolved context:
+
+- **Ready** prints a `ready → ctx=N` follow-up under the headline (`N (clamped to fit-ctx floor)` when memory pressure clamped the window down to `fit_ctx_floor`).
+- **Error** prints `failed → <cause>` and exits `67` (`LAUNCH_FAILED`), so scripts can branch on a load that was accepted but never came up.
+- A 15-minute safety ceiling caps the wait; the daemon's own size-scaled probe budget normally flips a stuck load to Error well before that, after which it prints `waiting timed out → still loading; check llamastash status`.
+
+`--wait --json` emits a single combined object — the launch fields plus `state`, `resolved_ctx`, `ctx_clamped`, and `cause` (on error) — instead of the immediate accept-time object.
 
 ### `llamastash stop <target>` / `llamastash stop --all`
 
