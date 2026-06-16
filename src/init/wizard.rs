@@ -1232,7 +1232,7 @@ async fn run_integrations_step(
         return Err(CliExit::new(
           INIT_ABORTED,
           format!(
-            "init: --integrations: unknown tool id `{id}` (known: opencode,aider,continue,zed,pi,env-sh,none)"
+            "init: --integrations: unknown tool id `{id}` (known: opencode,aider,continue,zed,pi,env-sh,claude-code,none)"
           ),
         ));
       }
