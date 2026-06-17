@@ -177,9 +177,9 @@ places.
   - [ ] Apple Metal : macOS
   - [ ] AMD GPU ROCm: Linux
   - [ ] AMD GPU Vulkan: Linux
-  - [ ] AMD GPU ROCm: Windows
   - [ ] NVidia CUDA: Windows
   - [ ] NVidia Vulkan: Windows
+  - [x] AMD APU Vulkan: Windows
   - [x] AMD GPU Vulkan: Windows
 - [ ] Adopt external running loads (user forced via keybinding/cli)
 - [ ] MLX as a native peer backend (the generic `ModelIdentity` seam already supports it; would drop in alongside llama.cpp/Lemonade).
