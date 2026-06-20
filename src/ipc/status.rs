@@ -732,4 +732,30 @@ mod tests {
     assert_eq!(proxy["status"], json!("unbound"));
     assert_eq!(proxy["bind_error"], json!("permission denied"));
   }
+
+  #[test]
+  fn accelerator_from_selector_maps_known_backend_prefixes() {
+    use super::accelerator_from_selector;
+    use crate::backend::Accelerator;
+    // Each `--device` selector prefix maps to its accelerator class,
+    // case-insensitively (the device catalog reports mixed case).
+    assert_eq!(accelerator_from_selector("CUDA0"), Some(Accelerator::Cuda));
+    assert_eq!(accelerator_from_selector("rocm1"), Some(Accelerator::Rocm));
+    assert_eq!(
+      accelerator_from_selector("Vulkan0"),
+      Some(Accelerator::Vulkan)
+    );
+    assert_eq!(accelerator_from_selector("metal"), Some(Accelerator::Metal));
+    // An unrecognised selector contributes no accelerator class.
+    assert_eq!(accelerator_from_selector("sycl0"), None);
+    assert_eq!(accelerator_from_selector(""), None);
+  }
+
+  #[tokio::test]
+  async fn lemonade_umbrella_state_is_disabled_when_backend_off() {
+    // With Lemonade disabled the umbrella state short-circuits to
+    // "disabled" without touching the supervisor registry.
+    let c = ctx();
+    assert_eq!(super::lemonade_umbrella_state(&c).await, "disabled");
+  }
 }

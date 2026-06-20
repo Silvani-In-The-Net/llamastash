@@ -428,3 +428,91 @@ pub(crate) fn deconstruct(
   let (parts, body) = req.into_parts();
   (parts.method, parts.uri, parts.headers, body)
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use http_body_util::BodyExt;
+
+  #[test]
+  fn sanitize_header_value_replaces_non_visible_ascii() {
+    // Visible ASCII passes through unchanged.
+    assert_eq!(sanitize_header_value("gemma-3-4b"), "gemma-3-4b");
+    // CJK, emoji, and ASCII controls all collapse to `_` so the header
+    // stays `HeaderValue::from_str`-acceptable.
+    assert_eq!(sanitize_header_value("模型"), "__");
+    assert_eq!(sanitize_header_value("a\tb\nc"), "a_b_c");
+    // DEL (0x7f) is explicitly excluded from the visible range.
+    assert_eq!(sanitize_header_value("x\u{007f}y"), "x_y");
+    // The result is always a valid header value.
+    assert!(HeaderValue::from_str(&sanitize_header_value("模型 🚀")).is_ok());
+  }
+
+  #[test]
+  fn collect_connection_listed_splits_and_lowercases() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+      hyper::header::CONNECTION,
+      HeaderValue::from_static("Keep-Alive, X-Custom"),
+    );
+    let listed = collect_connection_listed(&headers);
+    assert_eq!(
+      listed,
+      vec!["keep-alive".to_string(), "x-custom".to_string()]
+    );
+  }
+
+  #[test]
+  fn collect_connection_listed_drops_empty_tokens() {
+    // A trailing comma / stray whitespace must not yield empty entries
+    // that would then strip a header named "".
+    let mut headers = HeaderMap::new();
+    headers.insert(
+      hyper::header::CONNECTION,
+      HeaderValue::from_static("close, , upgrade"),
+    );
+    let listed = collect_connection_listed(&headers);
+    assert_eq!(listed, vec!["close".to_string(), "upgrade".to_string()]);
+  }
+
+  #[test]
+  fn collect_connection_listed_empty_when_header_absent() {
+    assert!(collect_connection_listed(&HeaderMap::new()).is_empty());
+  }
+
+  #[test]
+  fn status_to_hyper_round_trips_known_status() {
+    assert_eq!(
+      status_to_hyper(reqwest::StatusCode::NOT_FOUND),
+      hyper::StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+      status_to_hyper(reqwest::StatusCode::OK),
+      hyper::StatusCode::OK
+    );
+  }
+
+  #[tokio::test]
+  async fn error_envelope_builds_openai_shaped_body() {
+    // The 502 forwarding-arm error must carry the OpenAI `{error:{...}}`
+    // envelope shape so SDK clients surface it as a structured error.
+    let resp = error_envelope(
+      StatusCode::BAD_GATEWAY,
+      "upstream_unreachable",
+      "model exited before forwarding could begin",
+    );
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    let body = resp
+      .into_body()
+      .collect()
+      .await
+      .expect("collect")
+      .to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(v["error"]["type"], "upstream_unreachable");
+    assert_eq!(
+      v["error"]["message"],
+      "model exited before forwarding could begin"
+    );
+  }
+}

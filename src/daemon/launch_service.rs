@@ -1208,4 +1208,140 @@ mod tests {
       .expect("reserved port must be released on the lemonade-unavailable error path");
     assert_eq!(reclaimed, port);
   }
+
+  /// A `MethodContext` wired with a real (single-port) launch env and a
+  /// minimal GGUF on disk, so `compose_and_spawn` clears identity
+  /// resolution and reaches the post-header validation seams (port / ctx
+  /// bounds) without ever spawning a process. Returns `(ctx, model_path,
+  /// _tempdir-guard)`; keep the guard alive for the test's duration.
+  async fn ctx_with_env_and_gguf() -> (MethodContext, PathBuf, tempfile::TempDir) {
+    use crate::config::loader::PortRange;
+    use crate::gguf::test_fixtures::build_minimal_gguf;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let model_path = dir.path().join("tiny.gguf");
+    std::fs::write(&model_path, build_minimal_gguf("llama")).expect("write gguf");
+
+    let env = LaunchEnv {
+      binary: PathBuf::from("/nonexistent/llama-server"),
+      port_range: PortRange {
+        start: 41000,
+        end: 41000,
+      },
+      log_dir: dir.path().to_path_buf(),
+      probe: ProbeOptions::default(),
+      arch_defaults: Default::default(),
+      device_catalog: Arc::new(RwLock::new(Vec::new())),
+      default_launch_mode: Default::default(),
+      fit_ctx_floor: 16384,
+      strict_fit: false,
+      jinja_default: true,
+    };
+    let ctx = MethodContext::new(ShutdownToken::new())
+      .with_supervisors(SupervisorRegistry::new())
+      .with_launch_env(env);
+    (ctx, model_path, dir)
+  }
+
+  async fn expect_invalid_params(ctx: &MethodContext, parsed: StartParams) -> String {
+    match compose_and_spawn(ctx, parsed, crate::daemon::supervisor::LaunchOrigin::Manual).await {
+      Ok(_) => panic!("expected an InvalidParams error, launch succeeded"),
+      Err(e) => {
+        assert_eq!(e.code, ErrorCode::InvalidParams.as_i32());
+        e.message
+      }
+    }
+  }
+
+  #[tokio::test]
+  async fn compose_rejects_both_port_and_prefer_port() {
+    // The mutual-exclusion guard runs before the env lookup, so a bare
+    // context (no launch env) is enough to exercise it.
+    let ctx = MethodContext::new(ShutdownToken::new());
+    let parsed = StartParams {
+      model_path: PathBuf::from("/m/x.gguf"),
+      port: Some(11500),
+      prefer_port: Some(11501),
+      ..Default::default()
+    };
+    let msg = expect_invalid_params(&ctx, parsed).await;
+    assert!(msg.contains("exactly one of"), "got: {msg}");
+  }
+
+  #[tokio::test]
+  async fn compose_rejects_privileged_port() {
+    let (ctx, model_path, _guard) = ctx_with_env_and_gguf().await;
+    let parsed = StartParams {
+      model_path,
+      port: Some(80),
+      ..Default::default()
+    };
+    let msg = expect_invalid_params(&ctx, parsed).await;
+    assert!(msg.contains(">= 1024"), "got: {msg}");
+  }
+
+  #[tokio::test]
+  async fn compose_rejects_ctx_over_maximum() {
+    let (ctx, model_path, _guard) = ctx_with_env_and_gguf().await;
+    let parsed = StartParams {
+      model_path,
+      ctx: Some(crate::config::MAX_CTX_TOKENS + 1),
+      ..Default::default()
+    };
+    let msg = expect_invalid_params(&ctx, parsed).await;
+    assert!(msg.contains("exceeds maximum"), "got: {msg}");
+  }
+
+  #[test]
+  fn format_admission_refusal_reports_every_number() {
+    // The refusal string must surface demand, available (effective −
+    // reserved), effective free, and reserved bytes so the operator can
+    // see exactly why the launch was turned away.
+    let refusal = crate::launch::admission::Refusal {
+      demand_bytes: 8 * 1024 * 1024 * 1024,
+      effective_free_bytes: 10 * 1024 * 1024 * 1024,
+      reserved_bytes: 4 * 1024 * 1024 * 1024,
+    };
+    let msg = format_admission_refusal(&refusal);
+    assert!(msg.contains("launch refused"));
+    // demand 8 GiB, available 6 GiB (10 − 4), effective 10 GiB, reserved 4 GiB.
+    assert!(msg.contains("8.0 GiB"), "demand: {msg}");
+    assert!(msg.contains("6.0 GiB"), "available: {msg}");
+    assert!(msg.contains("10.0 GiB"), "effective free: {msg}");
+    assert!(msg.contains("4.0 GiB"), "reserved: {msg}");
+    // Remediation menu is part of the contract — it tells the user what
+    // to do next.
+    assert!(msg.contains("Stop a resident model"));
+  }
+
+  #[test]
+  fn build_log_path_uses_stem_fingerprint_and_timestamp() {
+    let id = crate::gguf::identity::ModelId {
+      path: PathBuf::from("/models/Qwen3-7B-Q4_K_M.gguf"),
+      header_blake3: [0xabu8; 32],
+    };
+    let path = build_log_path(std::path::Path::new("/var/log/ls"), &id);
+    let name = path.file_name().unwrap().to_string_lossy();
+    // `<stem>-<short-fingerprint>-<unix-ts>.log`
+    assert!(name.starts_with("Qwen3-7B-Q4_K_M-"), "stem prefix: {name}");
+    assert!(name.ends_with(".log"), "log suffix: {name}");
+    assert!(
+      name.contains(&id.short_fingerprint()),
+      "embeds the short fingerprint: {name}"
+    );
+    assert_eq!(path.parent().unwrap(), std::path::Path::new("/var/log/ls"));
+  }
+
+  #[test]
+  fn build_log_path_falls_back_to_model_stem_for_pathless_id() {
+    // An id whose path has no file stem (e.g. a bare directory) still
+    // produces a usable log filename rather than panicking.
+    let id = crate::gguf::identity::ModelId {
+      path: PathBuf::from("/"),
+      header_blake3: [0u8; 32],
+    };
+    let path = build_log_path(std::path::Path::new("/tmp"), &id);
+    let name = path.file_name().unwrap().to_string_lossy();
+    assert!(name.starts_with("model-"), "fallback stem: {name}");
+  }
 }

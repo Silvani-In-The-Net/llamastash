@@ -746,3 +746,64 @@ pub(crate) fn json_response(
 fn full_body(bytes: Bytes) -> BoxBody<Bytes, BodyError> {
   Full::new(bytes).map_err(|never| match never {}).boxed()
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::discovery::{DiscoveredModel, ModelSource};
+  use crate::gguf::metadata::{ModeHint, ModelMetadata, Quant};
+
+  fn discovered_with_mode(mode: ModeHint) -> DiscoveredModel {
+    DiscoveredModel {
+      path: std::path::PathBuf::from("/tmp/fake.gguf"),
+      parent: std::path::PathBuf::from("/tmp"),
+      source: ModelSource::HuggingFace,
+      display_label: None,
+      multimodal: None,
+      parse_error: None,
+      split_siblings: vec![],
+      metadata: Some(ModelMetadata {
+        arch: Some("llama".into()),
+        quant: Quant::Q4_K,
+        native_ctx: Some(4096),
+        parameter_label: Some("7B".into()),
+        weights_bytes: Some(100),
+        chat_template: None,
+        tokenizer_kind: Some("llama".into()),
+        total_parameters: Some(7_000_000_000),
+        reasoning_hint: false,
+        mode_hint: mode,
+      }),
+    }
+  }
+
+  #[test]
+  fn capabilities_for_maps_each_mode_hint() {
+    // Ollama-shape capabilities derived from the GGUF mode hint. Chat →
+    // completion, embedding/rerank pass through verbatim.
+    assert_eq!(
+      capabilities_for(Some(&discovered_with_mode(ModeHint::Chat))),
+      vec!["completion"]
+    );
+    assert_eq!(
+      capabilities_for(Some(&discovered_with_mode(ModeHint::Embedding))),
+      vec!["embedding"]
+    );
+    assert_eq!(
+      capabilities_for(Some(&discovered_with_mode(ModeHint::Rerank))),
+      vec!["rerank"]
+    );
+  }
+
+  #[test]
+  fn capabilities_for_is_empty_without_hint() {
+    // Unknown mode and a `None` discovery row (or one with no metadata)
+    // both produce an empty capability list — the catalog has no signal.
+    assert!(capabilities_for(Some(&discovered_with_mode(ModeHint::Unknown))).is_empty());
+    assert!(capabilities_for(None).is_empty());
+
+    let mut no_meta = discovered_with_mode(ModeHint::Chat);
+    no_meta.metadata = None;
+    assert!(capabilities_for(Some(&no_meta)).is_empty());
+  }
+}

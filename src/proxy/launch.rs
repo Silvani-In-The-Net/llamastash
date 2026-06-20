@@ -158,12 +158,7 @@ async fn drive_launch_as_leader(
   // chat default still applies.
   let params = StartParams {
     model_path: std::path::PathBuf::from(&resolved.path),
-    mode: resolved.mode_hint.as_deref().and_then(|s| match s {
-      "chat" => Some(LaunchModeWire::Chat),
-      "embedding" => Some(LaunchModeWire::Embedding),
-      "rerank" => Some(LaunchModeWire::Rerank),
-      _ => None,
-    }),
+    mode: launch_mode_from_hint(resolved.mode_hint.as_deref()),
     ..StartParams::default()
   };
   let started = match compose_and_spawn(
@@ -218,16 +213,131 @@ async fn drive_launch_as_leader(
   }
 }
 
+/// Map a catalog row's GGUF-derived `mode_hint` string onto the launch
+/// wire mode so `compose_and_spawn` emits `--embeddings` / `--rerank`
+/// when the model needs it. `None` (unknown/absent hint) leaves the
+/// chat default in place — this is the seam that regressed embedding
+/// auto-start to a 501 before the mode hint was threaded through.
+fn launch_mode_from_hint(hint: Option<&str>) -> Option<LaunchModeWire> {
+  match hint? {
+    "chat" => Some(LaunchModeWire::Chat),
+    "embedding" => Some(LaunchModeWire::Embedding),
+    "rerank" => Some(LaunchModeWire::Rerank),
+    _ => None,
+  }
+}
+
 /// Compute the canonical [`ModelId`] for a resolved [`CatalogRow`].
 /// Synchronous — call via `spawn_blocking` to keep the async worker
 /// thread free.
 fn canonical_id_for_row(row: &CatalogRow) -> Result<ModelId, String> {
   let path = std::path::Path::new(&row.path);
-  // Path is omitted from the error string so it does not leak into
-  // the 503 `launch_failed` response body. The daemon log still
-  // carries the path via the wrapped IoError on the supervisor side.
   let header =
     crate::gguf::header::read_path(path, crate::gguf::header::HeaderReadOptions::default())
       .map_err(|e| format!("could not read GGUF header: {e}"))?;
   Ok(crate::gguf::identity::compute(path, &header.raw))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn row(path: &str, mode_hint: Option<&str>) -> CatalogRow {
+    CatalogRow {
+      path: path.to_string(),
+      model_id: None,
+      parent: "/m".to_string(),
+      source: "user".to_string(),
+      arch: Some("llama".to_string()),
+      quant: None,
+      native_ctx: None,
+      mode_hint: mode_hint.map(str::to_string),
+      parameter_label: None,
+      weights_bytes: None,
+      display_label: None,
+      parse_error: None,
+      split_siblings: Vec::new(),
+      has_chat_template: false,
+      has_reasoning_hint: false,
+      tokenizer_kind: None,
+      total_parameters: None,
+    }
+  }
+
+  #[test]
+  fn launch_mode_from_hint_maps_each_wire_mode() {
+    assert!(matches!(
+      launch_mode_from_hint(Some("chat")),
+      Some(LaunchModeWire::Chat)
+    ));
+    assert!(matches!(
+      launch_mode_from_hint(Some("embedding")),
+      Some(LaunchModeWire::Embedding)
+    ));
+    assert!(matches!(
+      launch_mode_from_hint(Some("rerank")),
+      Some(LaunchModeWire::Rerank)
+    ));
+  }
+
+  #[test]
+  fn launch_mode_from_hint_is_none_for_unknown_or_absent() {
+    // Absent hint and unrecognised label both leave the chat default to
+    // `compose_and_spawn` (None) rather than guessing a mode.
+    assert!(launch_mode_from_hint(None).is_none());
+    assert!(launch_mode_from_hint(Some("")).is_none());
+    assert!(launch_mode_from_hint(Some("unknown")).is_none());
+  }
+
+  #[test]
+  fn outcome_round_trips_through_shared_outcome() {
+    use crate::gguf::identity::ModelId;
+    let id = ModelId {
+      path: std::path::PathBuf::from("/m/x.gguf"),
+      header_blake3: [3u8; 32],
+    };
+    let ready = LaunchOutcome::Ready {
+      port: 11440,
+      model_id: id.clone(),
+    };
+    let ready_shared: SharedOutcome = ready.into();
+    match LaunchOutcome::from(ready_shared) {
+      LaunchOutcome::Ready { port, model_id } => {
+        assert_eq!(port, 11440);
+        assert_eq!(model_id, id);
+      }
+      other => panic!("expected Ready, got {other:?}"),
+    }
+
+    let failed = LaunchOutcome::Failed {
+      cause: "boom".to_string(),
+    };
+    let failed_shared: SharedOutcome = failed.into();
+    match LaunchOutcome::from(failed_shared) {
+      LaunchOutcome::Failed { cause } => assert_eq!(cause, "boom"),
+      other => panic!("expected Failed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn canonical_id_for_row_errors_on_missing_file() {
+    // A row pointing at a non-existent GGUF returns the wrapped header
+    // read error under the "could not read GGUF header" prefix.
+    let r = row("/nonexistent/secret-model.gguf", None);
+    let err = canonical_id_for_row(&r).expect_err("missing file must error");
+    assert!(err.starts_with("could not read GGUF header"), "got: {err}");
+  }
+
+  #[test]
+  fn canonical_id_for_row_computes_id_for_real_gguf() {
+    use crate::gguf::test_fixtures::build_minimal_gguf;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("tiny.gguf");
+    std::fs::write(&path, build_minimal_gguf("llama")).expect("write gguf");
+    let r = row(path.to_str().unwrap(), Some("chat"));
+    let id = canonical_id_for_row(&r).expect("real gguf resolves");
+    assert_eq!(id.path, crate::util::paths::canonicalize(&path).unwrap());
+    // Header hash is populated (not the all-zero synthetic placeholder).
+    assert_ne!(id.header_blake3, [0u8; 32]);
+  }
 }

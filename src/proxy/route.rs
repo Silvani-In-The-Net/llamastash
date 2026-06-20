@@ -704,4 +704,49 @@ mod tests {
     let row = catalog_row_from_discovered(&m);
     assert_eq!(row.mode_hint, None);
   }
+
+  // ─── served-by name resolution ──────────────────────────────────
+  use super::{index_catalog_by_path, served_name_for_row};
+
+  #[test]
+  fn served_name_prefers_display_label_then_falls_back_to_stem() {
+    // Ollama rows carry a human `<name>:<tag>` display_label — that wins
+    // so the `x-llamastash-served-by` header is readable.
+    let mut m = discovered_with_mode(ModeHint::Chat);
+    m.display_label = Some("gemma3:4b".to_string());
+    let labelled = catalog_row_from_discovered(&m);
+    assert_eq!(served_name_for_row(&labelled), "gemma3:4b");
+
+    // Without a display_label the served name derives from the file
+    // stem, byte-equal to the `/v1/models` id for the same model.
+    let mut plain = discovered_with_mode(ModeHint::Chat);
+    plain.display_label = None;
+    plain.path = std::path::PathBuf::from("/models/Qwen3-7B-Q4_K_M.gguf");
+    let stem_row = catalog_row_from_discovered(&plain);
+    assert_eq!(served_name_for_row(&stem_row), "Qwen3-7B-Q4_K_M");
+  }
+
+  #[test]
+  fn index_catalog_by_path_keys_on_canonical_path_string() {
+    let a = {
+      let mut m = discovered_with_mode(ModeHint::Chat);
+      m.path = std::path::PathBuf::from("/m/a.gguf");
+      m
+    };
+    let b = {
+      let mut m = discovered_with_mode(ModeHint::Embedding);
+      m.path = std::path::PathBuf::from("/m/b.gguf");
+      m
+    };
+    let catalog = vec![a, b];
+    let index = index_catalog_by_path(&catalog);
+    assert_eq!(index.len(), 2);
+    assert!(index.contains_key("/m/a.gguf"));
+    let hit = index.get("/m/b.gguf").expect("b indexed");
+    assert_eq!(
+      hit.metadata.as_ref().unwrap().mode_hint,
+      ModeHint::Embedding
+    );
+    assert!(!index.contains_key("/m/missing.gguf"));
+  }
 }

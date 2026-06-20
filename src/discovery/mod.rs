@@ -150,3 +150,61 @@ impl ModelSource {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn multimodal_glyphs_track_advertised_modalities() {
+    // Glyphs come out in LEGEND order: vision first, audio second.
+    let vision = Multimodal {
+      vision: true,
+      audio: false,
+    };
+    assert_eq!(vision.glyphs(), vec![Multimodal::LEGEND[0].0]);
+
+    let audio = Multimodal {
+      vision: false,
+      audio: true,
+    };
+    assert_eq!(audio.glyphs(), vec![Multimodal::LEGEND[1].0]);
+
+    let omni = Multimodal {
+      vision: true,
+      audio: true,
+    };
+    assert_eq!(
+      omni.glyphs(),
+      vec![Multimodal::LEGEND[0].0, Multimodal::LEGEND[1].0]
+    );
+
+    let none = Multimodal {
+      vision: false,
+      audio: false,
+    };
+    assert!(none.glyphs().is_empty());
+  }
+
+  #[test]
+  fn model_source_label_and_backend_id_are_stable() {
+    // Labels are the stable wire/display strings the TUI groups by.
+    assert_eq!(ModelSource::UserPath.label(), "user");
+    assert_eq!(ModelSource::HuggingFace.label(), "huggingface");
+    assert_eq!(ModelSource::Ollama.label(), "ollama");
+    assert_eq!(ModelSource::LmStudio.label(), "lm-studio");
+    assert_eq!(ModelSource::Lemonade.label(), "lemonade");
+
+    // Disk sources resolve to the direct llama.cpp backend; only the
+    // Lemonade source routes to the managed multiplexer.
+    for src in [
+      ModelSource::UserPath,
+      ModelSource::HuggingFace,
+      ModelSource::Ollama,
+      ModelSource::LmStudio,
+    ] {
+      assert_eq!(src.backend_id(), "llamacpp", "{src:?}");
+    }
+    assert_eq!(ModelSource::Lemonade.backend_id(), "lemonade");
+  }
+}

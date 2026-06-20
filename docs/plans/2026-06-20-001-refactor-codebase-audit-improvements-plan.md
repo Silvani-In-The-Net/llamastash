@@ -784,7 +784,7 @@ the flag.
 
 ### Phase 5 — Test coverage
 
-- [ ] **Unit 10: Raise coverage to the tiered target**
+- [x] **Unit 10: Raise coverage to the tiered target**
 
 **Goal:** Move overall line coverage from ~74% to ~90%+, with ≈100% on pure-logic
 modules, adding tests for reachable error/edge paths and annotating the genuinely
@@ -841,6 +841,21 @@ group); the `apply_knob_handles_every_spec…` drift-test style for exhaustivene
 **Verification:** `make test-cov` reports overall ~90%+ and each module at/above its
 tiered floor; excluded lines are documented; CI green (and, if added, the coverage-floor
 gate passes).
+
+**As built:** Added genuine error/edge/precedence tests to the thin pure-logic and
+new-code seams — `gguf/metadata.rs` (quant table + mode/param inference branches,
+85.8→94.1%), `proxy/forward.rs` (header sanitisation / connection-list parsing / error
+envelope, +new test mod, 82→89.9%), `proxy/launch.rs` (mode-hint mapping + id resolution
++ outcome conversions, +new test mod, 68→83.8%), `proxy/router.rs` (`capabilities_for`,
++new test mod), `proxy/route.rs` (served-name + catalog index), `ipc/status.rs`
+(`accelerator_from_selector`, umbrella-state), `discovery/mod.rs` (mode labels + modality
+glyphs, +new test mod, →100%), `launch/binary.rs` (directory-not-file arm), and
+`daemon/launch_service.rs` (`compose_and_spawn` port/ctx validation refusals + admission
+formatter + log-path builder). The coverage policy and the honest exclusion list
+(render / interactive-prompt / installer-subprocess / per-OS `cfg` / defensive-log) live
+in [`docs/testing/coverage.md`](../testing/coverage.md), referenced from
+`docs/architecture.md §Testing strategy`. No tarpaulin-exclusion attributes were added;
+the exclusions are documented in prose per the chosen "document the list" approach.
 
 ## System-Wide Impact
 
