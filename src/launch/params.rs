@@ -120,7 +120,7 @@ pub fn redact_for_display(extras: &[OsString]) -> String {
   out
 }
 
-/// Which inference backend should run a launch (R17).
+/// Which inference backend should run a launch.
 ///
 /// This is a *launch-level* choice, not a translated knob — "which backend"
 /// has no `llama-server` argv form, so it rides on [`LaunchParams`] rather
@@ -131,7 +131,7 @@ pub fn redact_for_display(extras: &[OsString]) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendChoice {
-  /// Pick automatically from the model's identity (R13).
+  /// Pick automatically from the model's identity.
   #[default]
   Auto,
   /// Force the direct, zero-overhead llama.cpp backend. Wire value pinned
@@ -225,7 +225,7 @@ pub struct LaunchParams {
   /// companion.
   #[serde(default)]
   pub mmproj_path: Option<PathBuf>,
-  /// Which backend runs this launch (R17). Defaults to
+  /// Which backend runs this launch. Defaults to
   /// [`BackendChoice::Auto`] (the R13 identity rule); an explicit value
   /// overrides per-model. Persisted in last-params like the other choices,
   /// so a returning user keeps their override. `#[serde(default)]` keeps
@@ -425,7 +425,7 @@ fn format_f32(v: f32) -> String {
   }
 }
 
-/// One layer in the precedence chain (R106). The label is reported
+/// One layer in the precedence chain. The label is reported
 /// back in `Resolved.sources` so the editor can render per-row
 /// origin chips (`(user)`, `(last used)`, `(arch default)`,
 /// `(model default)`, `(server default)`).
@@ -797,7 +797,7 @@ mod tests {
   #[test]
   fn launch_params_without_backend_field_loads_as_auto() {
     // A pre-Phase-2b last_params row has no `backend` key; #[serde(default)]
-    // must load it as Auto so existing state.json keeps working (R17).
+    // must load it as Auto so existing state.json keeps working.
     let mut v = serde_json::to_value(base_params()).unwrap();
     v.as_object_mut().unwrap().remove("backend");
     assert!(v.get("backend").is_none());
@@ -1337,7 +1337,7 @@ mod tests {
   #[test]
   fn resolve_layered_walks_full_precedence_chain() {
     let _lock = crate::cli::test_lock::serialize();
-    // R106: preset > last_used > yaml-arch > built-in. Same field
+    // preset > last_used > yaml-arch > built-in. Same field
     // contributed by every layer — the highest precedence wins.
     let preset = TypedKnobs {
       threads: Some(KnobValue::Set(1)),

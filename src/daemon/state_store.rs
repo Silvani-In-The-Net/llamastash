@@ -3,11 +3,11 @@
 //! `state.json` lives under the XDG state dir and survives daemon
 //! restart. It captures:
 //! - `favorites` — the user's pinned models (R24 storage half).
-//! - `last_params` — last successful launch params per model (R20).
-//! - `presets` — named presets per model (R21).
+//! - `last_params` — last successful launch params per model.
+//! - `presets` — named presets per model.
 //! - `running` — snapshot of every active supervised process so
 //!   orphan re-adoption on next daemon start has something to anchor
-//!   on (R42).
+//!   on.
 //!
 //! Writes go through `<state.json>.tmp` + atomic `rename` so a torn
 //! write never strands a half-finished file. Reads tolerate `None`
@@ -51,7 +51,7 @@ pub struct DaemonState {
 }
 
 /// One entry in `last_params`. `params` is the most recently
-/// *successful* launch params (R20) — the supervisor only stamps it
+/// *successful* launch params — the supervisor only stamps it
 /// on the Loading → Ready transition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LastParamsEntry {
@@ -133,7 +133,7 @@ pub struct RunningSnapshot {
   pub started_at: u64,
   pub params: LaunchParams,
   /// What `--fit` actually chose, read from the child's `/props` once
-  /// on Ready (R6). Empty for adopted/external/Lemonade rows and until
+  /// on Ready. Empty for adopted/external/Lemonade rows and until
   /// the fetch lands. `#[serde(default)]` keeps older rows loading.
   #[serde(default)]
   pub actuals: crate::daemon::actuals::Actuals,
@@ -398,7 +398,7 @@ mod tests {
     // A state.json written by pre-Phase-2 code: every `id` is a bare
     // ModelId object `{path, header_blake3}` with no enum tag. The
     // untagged `ModelIdentity` must load each one as `Gguf` — the
-    // no-migration guarantee for existing users (R12).
+    // no-migration guarantee for existing users.
     let dir = temp_state_dir("legacy-load");
     let legacy = r#"{
       "favorites": [
@@ -424,7 +424,7 @@ mod tests {
   fn backend_identity_persists_and_reloads_across_every_map() {
     // A backend-registry identity (no local file) must persist + reload
     // through favorites / last_params / presets / running alongside GGUF
-    // rows — the persisted-key generalization (R12).
+    // rows — the persisted-key generalization.
     use crate::backend::identity::BackendModelId;
     let dir = temp_state_dir("backend-id");
     let bid: ModelIdentity = BackendModelId {

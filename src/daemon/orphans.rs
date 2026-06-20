@@ -4,7 +4,7 @@
 //! 1. **Re-adopt** entries from `state.json::running` whose PID is
 //!    still alive, whose recorded port answers, and whose
 //!    `/v1/models` reports the same model file the supervisor
-//!    launched (R42). Three-factor confirmation guards against
+//!    launched. Three-factor confirmation guards against
 //!    PID-reuse: the kernel may have handed our recorded PID to an
 //!    unrelated process by the time we restart.
 //! 2. **Surface external** `llama-server` processes (started
@@ -234,7 +234,7 @@ fn pid_alive(pid: i32) -> bool {
     return false;
   }
   // Defer to the cross-platform liveness check so the Windows
-  // backend (Unit 6) lights up here without a second migration.
+  // backend lights up here without a second migration.
   crate::util::process_control::platform_default().is_alive(pid as u32)
 }
 

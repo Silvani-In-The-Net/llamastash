@@ -107,7 +107,7 @@ async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowV
     .unwrap_or("");
   let backend = GpuFlavor::from_label(backend_label);
 
-  // Live running info for this exact model path (R6/R19): when a
+  // Live running info for this exact model path: when a
   // supervisor is up, surface what `--fit` actually resolved (and any
   // ctx clamp) so `show` reflects the running reality, not just the
   // catalog metadata + arch defaults. `null` when nothing is running.
@@ -305,7 +305,7 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
     kv(&mut out, &label, &format!("{size}  {path}"));
   }
 
-  // Live running block (R6/R19) — only when a supervisor is up for this
+  // Live running block — only when a supervisor is up for this
   // model. Shows the context window `--fit` actually resolved and flags
   // a memory-driven clamp, so `show` reflects the running reality.
   if let Some(running) = env.get("running").filter(|r| !r.is_null()) {

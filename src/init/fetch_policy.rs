@@ -53,7 +53,7 @@ pub const MAX_REDIRECTS: usize = 3;
 /// cap explicitly. 1 GiB is enough for any one llama.cpp asset
 /// (heaviest is the Windows CUDA + HIP zip at ~320 MB); HF model
 /// downloads override this cap with a per-shard value derived from
-/// the disk-space precheck (R64).
+/// the disk-space precheck.
 pub const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// The fetch contract's URL scheme requirement.

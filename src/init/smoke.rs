@@ -1,4 +1,4 @@
-//! Smoke launch (R70 / R71 / R79) + TUI handoff.
+//! Smoke launch + TUI handoff.
 //!
 //! v2 ships two layered checks:
 //! - **Phase 1 — pure-function dry-run**: estimate peak memory at the

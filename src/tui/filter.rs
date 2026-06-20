@@ -1,4 +1,4 @@
-//! Fuzzy filter for the model list pane (R25).
+//! Fuzzy filter for the model list pane.
 //!
 //! v1 ships a hand-rolled subsequence matcher rather than pulling
 //! in `nucleo-matcher` or `fuzzy-matcher`. The matcher we need is

@@ -1,4 +1,4 @@
-//! Launch surface: everything the supervisor (Unit 5) needs to spawn
+//! Launch surface: everything the supervisor needs to spawn
 //! and parameterise a `llama-server` child.
 //!
 //! - [`binary`] — locate the `llama-server` executable on disk.

@@ -129,13 +129,13 @@ pub struct DaemonOptions {
   /// this only needs to ride through the detached re-exec so the foreground
   /// child skips the same gate the parent already waived.
   pub force: bool,
-  /// Knob seeding mode (R1) from `Config.default_launch_mode`
+  /// Knob seeding mode from `Config.default_launch_mode`
   /// (+ `LLAMASTASH_DEFAULT_LAUNCH_MODE`). Threaded into `LaunchEnv`.
   pub default_launch_mode: crate::config::DefaultLaunchMode,
-  /// `--fit-ctx` floor (R7) from `Config.fit_ctx_floor`
+  /// `--fit-ctx` floor from `Config.fit_ctx_floor`
   /// (+ `LLAMASTASH_FIT_CTX_FLOOR`), validated `1..=MAX_CTX_TOKENS`.
   pub fit_ctx_floor: u32,
-  /// Strict-fit mode (R19) from `Config.strict_fit`
+  /// Strict-fit mode from `Config.strict_fit`
   /// (+ `LLAMASTASH_STRICT_FIT`).
   pub strict_fit: bool,
   /// Pass `--jinja` to `llama-server` by default from `Config.jinja`

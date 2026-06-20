@@ -50,7 +50,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
           let value = match field {
             KnobField::Ctx => resolved_ctx
               .map(|v| {
-                // Flag a memory-driven clamp (R19) so the user knows the
+                // Flag a memory-driven clamp so the user knows the
                 // window was squeezed to the floor, not chosen freely.
                 if m.ctx_clamped {
                   format!("{v} · clamped to floor")

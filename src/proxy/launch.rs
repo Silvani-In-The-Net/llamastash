@@ -23,7 +23,7 @@
 //!      the locked Key Decision "Hard supervisor Error only; wait
 //!      indefinitely on Loading."
 //!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 4).
+//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -53,7 +53,7 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     focus: Focus::List,
     actions: &[Action::NextFocus, Action::PrevFocus],
   },
-  // R104: surface the HF pull dialog opener right after `panes` so
+  // surface the HF pull dialog opener right after `panes` so
   // first-time users see the affordance without having to open the
   // help overlay. List focus only — the binding only fires from the
   // model list (the dialog overlays once open).
@@ -337,7 +337,7 @@ mod tests {
   #[test]
   fn global_hint_text_fits_typical_terminal_widths() {
     // The strip must stay scannable on a normal terminal. Restart /
-    // kill chips are out, the HF `D:pull` chip (R104) is in; the
+    // kill chips are out, the HF `D:pull` chip is in; the
     // default keymap now produces ~50 cells. Keep the budget under
     // 70 so a small label tweak still catches accidental blowups.
     let app = default_app();

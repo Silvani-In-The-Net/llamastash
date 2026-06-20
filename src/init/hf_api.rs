@@ -14,7 +14,7 @@
 //! - [`list_repo_files`] hits `GET /api/models/<repo>/tree/main`, which
 //!   returns per-file `path` + `size` (unlike `hf-hub::Api::model(id).info()`,
 //!   whose `Siblings` struct only carries the filename). Sizes feed the
-//!   picker's hardware-fit indicator (R111) directly.
+//!   picker's hardware-fit indicator directly.
 //!
 //! Search + listing are deliberately unauthenticated; the v2 fetch
 //! contract forbids opportunistic `Authorization` headers, and both
@@ -335,7 +335,7 @@ fn parse_next_link(header: &str) -> Option<String> {
 /// List the files of a single repo with their resolved sizes. Hits
 /// `/api/models/<repo>/tree/main` via [`FetchClient`] so the v2 fetch
 /// contract guards the request (cap, allowlist, offline branch) and
-/// the picker's hardware-fit indicator (R111) can read real sizes for
+/// the picker's hardware-fit indicator can read real sizes for
 /// every row. Directories are filtered out — the picker only renders
 /// flat files.
 ///

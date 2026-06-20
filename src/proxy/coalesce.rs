@@ -19,7 +19,7 @@
 //! different fuzzy spellings of the same model still share one
 //! launch.
 //!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 4).
+//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};

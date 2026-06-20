@@ -5,7 +5,7 @@
 //! Module layout mirrors the responsibilities in the v1 plan:
 //! - [`scanner`] — walk one or more roots and emit `DiscoveredModel`s.
 //! - [`split_gguf`] — collapse `*-NNNNN-of-MMMMM.gguf` sets into one
-//!   user-visible entry (R5).
+//!   user-visible entry.
 //!
 //! Cache-aware enumerators (HuggingFace, Ollama, LM Studio), the
 //! filesystem watcher, and the HuggingFace pull worker land in later
@@ -135,7 +135,7 @@ impl ModelSource {
     }
   }
 
-  /// The id of the backend that serves models from this source (R13/R14).
+  /// The id of the backend that serves models from this source.
   ///
   /// Disk sources (user / HF / Ollama / LM Studio) are all local GGUF files
   /// served by the direct llama.cpp backend; the Lemonade source is served

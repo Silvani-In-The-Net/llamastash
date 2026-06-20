@@ -1,4 +1,4 @@
-//! Exit-code table shared by every non-interactive subcommand (R35).
+//! Exit-code table shared by every non-interactive subcommand.
 //!
 //! Codes are part of the public CLI contract: agent scripts pin
 //! against them to branch on failure class without having to parse

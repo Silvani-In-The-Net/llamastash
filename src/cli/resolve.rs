@@ -112,12 +112,12 @@ pub struct RunningRow {
   /// inference workloads). `None` before the per-PID sampler primes.
   pub latest_cpu_pct: Option<f32>,
   /// Context window `--fit` actually chose, read from the child's
-  /// `/props` on Ready (R6). `None` until the fetch lands, or when the
+  /// `/props` on Ready. `None` until the fetch lands, or when the
   /// build doesn't expose it. Carried so `status --json` surfaces the
   /// resolved window without re-querying the child.
   pub resolved_ctx: Option<u32>,
   /// True when `--fit` had to clamp the context window down to the floor
-  /// under memory pressure (R19). Surfaced as a note on `status` and in
+  /// under memory pressure. Surfaced as a note on `status` and in
   /// the `show` running section.
   pub ctx_clamped: bool,
 }
@@ -377,7 +377,7 @@ pub async fn fetch_status(client: &mut Client) -> Result<StatusSnapshot, CliExit
   // key entirely.
   let proxy = body.get("proxy").cloned().unwrap_or(Value::Null);
   // Backends block — verbatim copy of the daemon's `status.backends`
-  // array (R3/R16). `Value::Null` when talking to a daemon that predates
+  // array. `Value::Null` when talking to a daemon that predates
   // the field; the formatter then skips the section.
   let backends = body.get("backends").cloned().unwrap_or(Value::Null);
   Ok(StatusSnapshot {
@@ -414,7 +414,7 @@ pub struct StatusSnapshot {
   /// when talking to a pre-Unit-5 daemon that omits the field.
   pub proxy: Value,
   /// Backends block — array of `{id, lifecycle, installed, accelerators}`
-  /// (R3/R16). Verbatim copy of the daemon's wire shape; `Value::Null`
+  /// Verbatim copy of the daemon's wire shape; `Value::Null`
   /// against a daemon that predates the field.
   pub backends: Value,
 }

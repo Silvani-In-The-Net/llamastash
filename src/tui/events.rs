@@ -2054,7 +2054,7 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "extras": extras,
           "mode": mode_str,
           "prefer_port": prefer_port,
-          // Per-model backend override (R17); serde → "auto"/"llamacpp".
+          // Per-model backend override; serde → "auto"/"llamacpp".
           "backend": backend,
         }),
       )
@@ -2703,7 +2703,7 @@ fn enqueue_hf_pull(app: &mut App, repo: String, row: crate::tui::hf_dialog::Pick
 /// return the path to the user-facing first file (the row's
 /// `download_filename`). Used by `spawn_download_task` to short-
 /// circuit a redundant pull deterministically, replacing the
-/// previous elapsed-time heuristic (R116). Returns `None` when the
+/// previous elapsed-time heuristic. Returns `None` when the
 /// repo isn't cached, any shard is missing, or the cache root can't
 /// be resolved on this platform.
 fn probe_cached_pull(repo_id: &str, filenames: &[String]) -> Option<std::path::PathBuf> {
@@ -2734,7 +2734,7 @@ fn probe_cached_pull(repo_id: &str, filenames: &[String]) -> Option<std::path::P
 /// with a `DownloadProgress` shim relaying every callback to the
 /// strip's mpsc. Caller has already run `probe_cached_pull` against
 /// the requested files, so this path only fires for real downloads —
-/// the cache-hit short-circuit (R116) lives next to the queue
+/// the cache-hit short-circuit lives next to the queue
 /// enqueue, not inside the spawn.
 ///
 /// Returns the spawned task's [`tokio::task::AbortHandle`] so the

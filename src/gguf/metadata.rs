@@ -6,7 +6,7 @@
 //! Lookup is **best-effort**: GGUFs in the wild are inconsistent about
 //! whether keys are present, what arch prefix they use, and what the
 //! intended mode is. We bias toward "return None / Unknown" rather than
-//! "fail the file" so that discovery (Unit 4) can still surface the row
+//! "fail the file" so that discovery can still surface the row
 //! with a partial/warning state.
 
 use crate::gguf::header::{GgufHeader, GgufValue, TensorInfo};

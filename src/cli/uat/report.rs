@@ -1,4 +1,4 @@
-//! Structured UAT report (Unit 4).
+//! Structured UAT report.
 //!
 //! Schema is additive-only within v1; consumers ignore unknown fields.
 //! Bumping `SCHEMA_VERSION` signals a breaking shape change — pair with

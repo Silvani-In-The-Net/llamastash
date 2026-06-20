@@ -1,4 +1,4 @@
-//! Generalized model identity at the backend seam (R12).
+//! Generalized model identity at the backend seam.
 //!
 //! [`crate::gguf::identity::ModelId`] is `(canonical path, BLAKE3 of header)`
 //! — it assumes a **local GGUF file**. A managed-multiplexer backend names
@@ -33,7 +33,7 @@ pub struct BackendModelId {
   pub name: String,
 }
 
-/// A model's identity, generalized across backend lifecycle shapes (R12).
+/// A model's identity, generalized across backend lifecycle shapes.
 ///
 /// Serialized `#[serde(untagged)]` so the [`Gguf`](ModelIdentity::Gguf)
 /// variant is wire-identical to today's bare `ModelId`

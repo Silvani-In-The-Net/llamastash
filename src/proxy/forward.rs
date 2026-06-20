@@ -19,7 +19,7 @@
 //!   produces `false`; Unit 4 supplies the `true` case once the
 //!   family-MRU fallback path lands.
 //!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 3).
+//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
 
 use std::sync::Arc;
 

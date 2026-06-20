@@ -1,4 +1,4 @@
-//! `llama-server` install routing (R52 / R53 / R54).
+//! `llama-server` install routing.
 //!
 //! Three sources land here, picked by the wizard's install-method
 //! prompt:
@@ -11,7 +11,7 @@
 //!   running the same integrity gates the other two paths emit.
 //!
 //! Every path returns a [`BinaryInstall`] the wizard records in
-//! `_init_snapshot` (Unit 2) so `doctor` (Unit 13) can flag drift.
+//! `_init_snapshot` so `doctor` can flag drift.
 //! Integrity-check failures abort with `INIT_ABORTED` (72) per the
 //! non-interactive semantics in the plan.
 

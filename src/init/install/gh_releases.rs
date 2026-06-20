@@ -157,7 +157,7 @@ pub struct AssetPick {
 /// asset matching the host's variant suffix. Walking back through the
 /// page covers the upstream-incomplete-release case (e.g. `b9352`
 /// shipped without `ubuntu-x64.tar.gz`); only when no surveyed release
-/// matches do we return `NoMatchingAsset`. The wizard (Unit 10) layers
+/// matches do we return `NoMatchingAsset`. The wizard layers
 /// a user-visible fallback on top for the interactive flow.
 /// Backoff between the first and second GH API attempt when the
 /// initial call comes back rate-limited. 60 s is the practical floor
@@ -175,7 +175,7 @@ pub async fn fetch_latest_asset(
     os: hw.os,
     arch: hw.cpu_arch,
   })?;
-  // R71: GH Releases API allows 60 unauthenticated requests/hour.
+  // GH Releases API allows 60 unauthenticated requests/hour.
   // On the first 429/403 we sleep briefly and try again; a second
   // rate-limit response is surfaced as-is so the wizard can offer
   // the "point at existing binary" fallback. Any other error is

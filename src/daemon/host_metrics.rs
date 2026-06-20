@@ -106,7 +106,7 @@ pub struct HostMetricsSnapshot {
   /// of re-deriving it from the backend string + UMA fields.
   #[serde(default)]
   pub unified: bool,
-  /// How the unified-vs-discrete verdict was reached (R18) — surfaced
+  /// How the unified-vs-discrete verdict was reached — surfaced
   /// in the `doctor` hardware section so a misclassification is
   /// inspectable. `None` on Apple Metal (unified by construction),
   /// NVIDIA, Vulkan, and CPU-only.

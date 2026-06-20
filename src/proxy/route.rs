@@ -21,7 +21,7 @@
 //! carries the resolved row + arch so Unit 4 doesn't have to repeat
 //! the lookup.
 //!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 3).
+//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
 
 use std::sync::Arc;
 
@@ -52,7 +52,7 @@ pub(crate) enum RouteDecision {
   /// Forward to a Ready supervisor on `port`. `served_model_id` is
   /// the display name of the model actually serving the request;
   /// equal to `requested_model` on the happy path and diverges on
-  /// fallback (Unit 4). `fallback` gates the `x-llamastash-*`
+  /// fallback. `fallback` gates the `x-llamastash-*`
   /// response headers in [`super::forward`].
   ReadyAt {
     port: u16,
@@ -247,7 +247,7 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
 
   // Lemonade-backed models are served by the shared `lemond` umbrella, not
   // a per-model supervisor: route them to the umbrella's port with the
-  // `/api` prefix Lemonade serves OpenAI on (R10/R11). Handled before the
+  // `/api` prefix Lemonade serves OpenAI on. Handled before the
   // GGUF supervisor walk because a Lemonade row has no local file for the
   // path-match (or the GGUF auto-start) to key on.
   if resolved.source == crate::discovery::ModelSource::Lemonade.label() {
@@ -276,7 +276,7 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
 
   // Catalog matched but no supervisor is in Ready state — dispatch
   // into the auto-start + single-flight + family-MRU-fallback flow
-  // implemented by `route::handle_not_running` (Unit 4).
+  // implemented by `route::handle_not_running`.
   let arch = resolved.arch.clone();
   RouteDecision::NotRunning {
     requested_model: requested,
@@ -501,7 +501,7 @@ fn fallback_reason_for(requested: Option<&str>, picked: Option<&str>) -> &'stati
 
 /// Build the 503 `launch_failed` envelope used by the fallback path
 /// when no Ready model is available. The `running: []` field is
-/// always present (R155) and always empty here by construction —
+/// always present and always empty here by construction —
 /// this helper is only reached when `pick_fallback` returned None,
 /// which means zero Ready supervisors existed. The message surfaces
 /// the supervisor's `cause` so clients see *why* the launch failed.

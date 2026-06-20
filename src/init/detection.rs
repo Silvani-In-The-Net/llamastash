@@ -3,7 +3,7 @@
 //! Two pure entry points:
 //! - [`detect_hardware`] aggregates `gpu::probe` + RAM/disk inspection
 //!   into a [`HardwareSnapshot`] the wizard renders in its persistent
-//!   header (R50) and stamps into `_init_snapshot` (R67).
+//!   header and stamps into `_init_snapshot`.
 //! - [`detect_binary`] wraps `launch::binary::locate` with the
 //!   common-location probes from R54: prior llamastash-managed install
 //!   dir, `/opt/homebrew/bin`, `/usr/local/bin`, the linuxbrew prefix
@@ -74,7 +74,7 @@ pub fn gpu_summary_line(
 ///   devices that report a non-zero size, because the recommender's
 ///   single-GPU placement is the limiting case.
 /// - AppleMetal: the **raw** unified total. The historical `× 0.75`
-///   OS/app headroom moved to [`crate::launch::headroom`] (R16) — the
+///   OS/app headroom moved to [`crate::launch::headroom`] — the
 ///   one place the budget authority and refusal messages consult, so
 ///   every display + sizing surface sees raw totals and headroom is
 ///   applied once, by admission. The recommender keeps its own
@@ -95,7 +95,7 @@ pub fn aggregate_vram_bytes(info: &GpuInfo) -> Option<u64> {
     GpuInfo::Nvidia { devices } | GpuInfo::Amd { devices } => devices,
     GpuInfo::AppleMetal { total_memory_bytes } => {
       // Raw unified total — the 0.75 OS/app headroom now lives in
-      // `launch::headroom` and is applied by admission (R16).
+      // `launch::headroom` and is applied by admission.
       return Some(*total_memory_bytes);
     }
     GpuInfo::Multi { devices } => devices,
@@ -359,7 +359,7 @@ fn common_locations() -> Vec<PathBuf> {
   }) {
     // The actual binary lives under `<data>/<version>/llama-server`;
     // we don't enumerate versions here, but expose the root so a
-    // higher-level probe (Unit 10) can pick the newest.
+    // higher-level probe can pick the newest.
     roots.push(data.join("llama-server"));
   }
   match (OsFamily::detect(), CpuArch::detect()) {
@@ -473,7 +473,7 @@ mod tests {
 
   #[test]
   fn aggregate_vram_for_apple_metal_returns_raw_total() {
-    // The 0.75 OS/app headroom moved to `launch::headroom` (R16); the
+    // The 0.75 OS/app headroom moved to `launch::headroom`; the
     // aggregate now reports the raw unified total like every other
     // display + sizing surface.
     let total = 64 * 1_024 * 1_024 * 1_024;

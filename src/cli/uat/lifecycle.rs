@@ -1,4 +1,4 @@
-//! 6-step UAT orchestrator (Unit 4).
+//! 6-step UAT orchestrator.
 //!
 //! Steps:
 //!

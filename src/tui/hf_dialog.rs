@@ -34,7 +34,7 @@ use crate::tui::app::App;
 use crate::tui::input_field::{InputField, InputOutcome};
 use crate::tui::keybindings::{Action as KeyAction, Focus};
 
-/// Three-state modal contract (R105).
+/// Three-state modal contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HfStage {
   Search,
@@ -82,7 +82,7 @@ pub enum HfDialogEvent {
 }
 
 /// One row in the File picker. Either a standalone GGUF file or a
-/// collapsed split-shard set (R112). Splits surface their sum of
+/// collapsed split-shard set. Splits surface their sum of
 /// sizes and the launch filename (shard 1) for the eventual pull
 /// dispatch (Unit 6 walks `shard_filenames` to enqueue every
 /// sibling).
@@ -293,11 +293,11 @@ pub struct HfDialogState {
   /// a pasted `owner/repo` slug).
   pub picker_repo_id: Option<String>,
   pub picker_load: PickerLoad,
-  /// Collapsed picker rows — singles plus split-shard groups (R112).
+  /// Collapsed picker rows — singles plus split-shard groups.
   pub picker_rows: Vec<PickerRow>,
   pub picker_idx: usize,
   /// Row selected for Confirm. Carries the download filename + sum
-  /// of sizes; the caller hands this to `download_repo` (Unit 6).
+  /// of sizes; the caller hands this to `download_repo`.
   pub confirm_row: Option<PickerRow>,
   /// `true` when the FetchClient is offline so the search bar can
   /// render an "offline — paste a repo ID …" hint immediately.
@@ -399,7 +399,7 @@ impl HfDialogState {
     self.input.buffer()
   }
 
-  /// Cycle to the next sort key (R107). Resets pagination to page 1
+  /// Cycle to the next sort key. Resets pagination to page 1
   /// and bumps the seq so a stale search-by-old-sort response can't
   /// land.
   pub fn cycle_sort(&mut self) {
@@ -578,7 +578,7 @@ impl HfDialogState {
 
   /// Move from Search → FilePicker. Returns the repo id the caller
   /// should spawn `list_repo_files` against. Honours the
-  /// slug-shortcut (R106): if the query buffer parses as an
+  /// slug-shortcut: if the query buffer parses as an
   /// `owner/repo[:filename]` RepoSpec, that wins over the selected
   /// search-result row.
   pub fn submit_search(&mut self) -> Option<String> {
@@ -597,7 +597,7 @@ impl HfDialogState {
   }
 
   /// Apply a successful `list_repo_files` response. Filters to
-  /// `.gguf` files and collapses split-shard sets (R112) into one
+  /// `.gguf` files and collapses split-shard sets into one
   /// logical row per group.
   pub fn apply_repo_files(&mut self, repo_id: &str, mut files: Vec<HfRepoFile>) {
     // Drop if the dialog moved on to a different repo.
@@ -654,7 +654,7 @@ impl HfDialogState {
   }
 
   /// Consume the dialog's pending confirm selection (repo + row).
-  /// Caller forwards this to the download orchestrator (Unit 6);
+  /// Caller forwards this to the download orchestrator;
   /// closing the dialog is the caller's job.
   pub fn take_confirm_target(&self) -> Option<(String, PickerRow)> {
     let repo = self.picker_repo_id.clone()?;
@@ -975,7 +975,7 @@ fn render_picker_body(
     }
     PickerLoad::Ready => {
       // Small one-line legend so the fit glyph column is
-      // self-describing (R113). Coloured spans mirror the per-row
+      // self-describing. Coloured spans mirror the per-row
       // styles below so the legend doubles as a visual key. Stays
       // muted-tinted around the glyphs so it doesn't compete with
       // the row data.

@@ -1,4 +1,4 @@
-//! Init wizard's config.yaml write half (R66 / R67 / R68 / R72).
+//! Init wizard's config.yaml write half.
 //!
 //! Thin user-facing wrapper around Unit 2's
 //! [`crate::config::writer::merge_and_write`] primitive that adds:
@@ -110,7 +110,7 @@ pub fn write_with_diff(
   if options.verbose {
     eprintln!("init config diff:\n{diff_human}");
   } else if options.show_diff_preview {
-    // Interactive caller (Unit 10) renders its own confirm prompt
+    // Interactive caller renders its own confirm prompt
     // around this — we just surface the diff so the user sees
     // what would be written.
     eprintln!("config diff (preview):\n{diff_human}");

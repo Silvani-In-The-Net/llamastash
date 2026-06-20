@@ -1,4 +1,4 @@
-//! `llamastash init` orchestration (R48 / R49 / R50 / R72 / R76 / R77).
+//! `llamastash init` orchestration.
 //!
 //! Six-step flow:
 //!   1. detect (hardware + binary) — always runs.
@@ -104,7 +104,7 @@ pub const INIT_JSON_SCHEMA_VERSION: u32 = 1;
 /// contract.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct InitSummary {
-  /// Schema version. Currently `1` (R77). Agents should compare
+  /// Schema version. Currently `1`. Agents should compare
   /// against `INIT_JSON_SCHEMA_VERSION` they were built against.
   pub schema_version: u32,
   /// Document-level safe-to-log classification. See struct doc.
@@ -433,7 +433,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
     log::warn!("init: failed to persist init_snapshot.json: {e}");
   }
 
-  // Step 6: smoke launch (Unit 12). Phase 1 + --version probe runs
+  // Step 6: smoke launch. Phase 1 + --version probe runs
   // whenever both an install and a downloaded model are present;
   // otherwise we emit an honest "skipped" note.
   let smoke = run_smoke_step(
@@ -454,7 +454,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   summary.steps_ran.push("handoff");
   print_handoff(&summary, args.json);
 
-  // R78: smoke failures map to INIT_SMOKE_FAILED (74) so agents can
+  // smoke failures map to INIT_SMOKE_FAILED (74) so agents can
   // branch on the exit code without parsing the JSON. The earlier
   // steps (install / download / config) already succeeded if we
   // reached this point — re-running smoke alone is the right
@@ -1436,7 +1436,7 @@ fn persist_init_snapshot(
   // Update the remote-snapshot failure counter: reset to 0 on a
   // verified fresh fetch, increment on a verified failure, leave
   // alone when no attempt was made (offline mode / models step
-  // skipped). doctor's `RemoteSnapshotUnreachable` (R74) reads
+  // skipped). doctor's `RemoteSnapshotUnreachable` reads
   // this counter once it crosses its threshold.
   match summary.remote_snapshot_attempt {
     Some(true) => snap.remote_fetch_failures = 0,

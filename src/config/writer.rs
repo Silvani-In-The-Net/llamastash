@@ -6,7 +6,7 @@
 //! [`crate::daemon::state_store::save`]. Unit 11 (the init wizard's
 //! diff preview + redaction) layers on top of this primitive.
 //!
-//! Merge semantics (R72):
+//! Merge semantics:
 //!   - YAML-aware recursive merge: leaf-level user edits inside a
 //!     managed block (e.g. `arch_defaults.qwen2`) are preserved when
 //!     the wizard regenerates the block.

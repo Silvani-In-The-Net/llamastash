@@ -180,7 +180,7 @@ pub struct LaunchPickerState {
   /// The focused model's *own* concrete backend (the one its catalog source
   /// binds to): `LlamaCpp` for a GGUF, `Lemonade` for a `lemonade://`
   /// registry model. A model lives in exactly one backend's catalog, so
-  /// there is no user-facing chooser — this drives knob visibility (R6)
+  /// there is no user-facing chooser — this drives knob visibility
   /// and is what the launch dispatches to. Never `Auto`.
   pub model_backend: BackendChoice,
   pub active_instances: usize,
@@ -243,7 +243,7 @@ impl LaunchPickerState {
     }
   }
 
-  /// Whether the model's backend honors `field` (R6).
+  /// Whether the model's backend honors `field`.
   /// [`Self::field_visible`] hides rows the backend can't honor.
   /// llama.cpp honors every typed knob; Lemonade honors `ctx` only
   /// (lemond's `ctx_size` load option).
@@ -461,7 +461,7 @@ impl LaunchPickerState {
   /// Whether a row is currently shown / navigable. The Multi-GPU
   /// placement knobs (`device`, `tensor_split`, `main_gpu`,
   /// `split_mode`) are gated on [`Self::multi_device`]; knobs the
-  /// model's backend can't honor are hidden outright (R6) — a Lemonade
+  /// model's backend can't honor are hidden outright — a Lemonade
   /// model shows just ctx and extras rather than a column of dead
   /// rows. Delegates to the single-source group table.
   pub fn field_visible(&self, field: PickerField) -> bool {

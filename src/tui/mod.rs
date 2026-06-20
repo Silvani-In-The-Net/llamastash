@@ -1,4 +1,4 @@
-//! TUI shell (Unit 6).
+//! TUI shell.
 //!
 //! Module layout mirrors the plan's file list:
 //! - [`app`] — pure App state machine.

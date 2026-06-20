@@ -3,7 +3,7 @@
 //! Top-level args are `global = true` so every subcommand inherits them, and
 //! a missing subcommand routes to the TUI. The shape of each subcommand
 //! mirrors the agent-facing surface defined in
-//! `docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md` (R35) —
+//! `docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md` —
 //! handlers are stubbed until their respective implementation units land.
 
 use std::{ffi::OsString, net::IpAddr, path::PathBuf};
@@ -354,7 +354,7 @@ pub struct StartArgs {
   /// inline flags above.
   #[arg(last = true, value_name = "ARG")]
   pub extra: Vec<OsString>,
-  /// Backend to run this model on (R17). `auto` (default) picks by model
+  /// Backend to run this model on. `auto` (default) picks by model
   /// identity; override with `llamacpp` (or another installed backend) to
   /// force one per launch.
   #[arg(long, value_enum)]
@@ -373,7 +373,7 @@ pub struct StartArgs {
   pub wait: bool,
 }
 
-/// CLI surface for the per-model backend override (R17). Wire labels match
+/// CLI surface for the per-model backend override. Wire labels match
 /// [`crate::launch::params::BackendChoice`] so `start --backend <id>`
 /// round-trips to the daemon unchanged. Additional backends add a variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]

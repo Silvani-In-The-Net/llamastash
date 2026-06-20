@@ -20,7 +20,7 @@
 //! with blobs stored under `blobs/<etag>` and snapshot paths as
 //! symlinks. hf-hub writes exactly that layout, so subsequent
 //! `llamastash list` rescans dedupe via the existing discovery path
-//! (R62).
+//! .
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -36,7 +36,7 @@ use crate::config::Config;
 use crate::init::fetch::{FetchClient, FetchError};
 
 /// Disk-space headroom required *on top of* the estimated download
-/// size (R64). 1 GiB matches the brainstorm spec.
+/// size. 1 GiB matches the brainstorm spec.
 pub const DISK_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Max bytes per per-file download. 64 GiB accommodates frontier
@@ -315,7 +315,7 @@ impl hf_hub::api::tokio::Progress for HfHubProgressAdapter {
   async fn finish(&mut self) {}
 }
 
-/// Disk-space precheck (R64). Refuses when free < needed + headroom.
+/// Disk-space precheck. Refuses when free < needed + headroom.
 pub fn precheck_disk(target_dir: &Path, needed_bytes: u64) -> Result<(), DownloadError> {
   let available = available_bytes(target_dir).unwrap_or(u64::MAX);
   let required = needed_bytes.saturating_add(DISK_HEADROOM_BYTES);

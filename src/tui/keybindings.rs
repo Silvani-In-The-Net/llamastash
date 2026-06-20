@@ -1,4 +1,4 @@
-//! Default keybinding map for the TUI shell (Unit 6).
+//! Default keybinding map for the TUI shell.
 //!
 //! Bindings are scoped to a [`Focus`] so the help bar can show
 //! only what's relevant in the current focus. Keys are stored as
@@ -93,7 +93,7 @@ pub enum Focus {
   /// resistant fallback so a stray keypress doesn't confirm a
   /// destructive action.
   ConfirmPopup,
-  /// HuggingFace pull dialog (R104). The per-stage key router lives
+  /// HuggingFace pull dialog. The per-stage key router lives
   /// in `events.rs` because the dialog's `Search` / `FilePicker` /
   /// `Confirm` stages each shadow a subset of the global keymap
   /// (typing extends the query buffer; arrows move row cursors;
@@ -176,7 +176,7 @@ impl Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
   Quit,
-  /// Open the HuggingFace pull dialog (R104). Bound to `Shift+D` in
+  /// Open the HuggingFace pull dialog. Bound to `Shift+D` in
   /// [`Focus::List`] — mirrors the other Shift-letter quick-jumps
   /// (`M / L / C / R / E / S`). The dialog itself handles its
   /// per-stage keys.
@@ -1501,7 +1501,7 @@ mod tests {
   fn chat_input_enter_sends() {
     // Plain Enter — Ctrl+Enter relies on the kitty keyboard protocol
     // which most terminals don't implement, so we settle on the
-    // universal binding (R0).
+    // universal binding.
     assert_eq!(
       action_for(Focus::ChatInput, KeyCode::Enter, KeyModifiers::NONE),
       Some(Action::SendChat),

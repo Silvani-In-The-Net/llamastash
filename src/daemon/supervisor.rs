@@ -153,14 +153,14 @@ pub struct ManagedSpawn {
   /// How this launch entered the supervisor. Defaults to `Manual`
   /// (safe — never evicted) for callers that don't care.
   pub origin: LaunchOrigin,
-  /// Strict-fit ctx-clamp readiness gate (R19), populated by the caller
+  /// Strict-fit ctx-clamp readiness gate, populated by the caller
   /// only for fit-governed launches. `None` leaves the readiness path
   /// untouched (pinned ctx, missing trained-window metadata, Lemonade
   /// rows). See [`FitGate`].
   pub fit_gate: Option<FitGate>,
 }
 
-/// Resolved inputs for the strict-fit ctx-clamp readiness gate (R19).
+/// Resolved inputs for the strict-fit ctx-clamp readiness gate.
 /// The caller builds this only for fit-governed launches (ctx delegated
 /// to `--fit` and a known trained window); the supervisor's probe task
 /// consumes it on the Loading → Ready transition.
@@ -565,7 +565,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   let (ready_path, ready_status) = match &input.plan.readiness {
     Readiness::HttpPoll { path, ready_status } => (path.clone(), *ready_status),
   };
-  // Strict-fit ctx-clamp gate (R19): the caller populates this only for
+  // Strict-fit ctx-clamp gate: the caller populates this only for
   // fit-governed launches; `None` leaves the readiness path unchanged.
   let fit_gate = input.fit_gate;
   spawn_supervised("probe", async move {

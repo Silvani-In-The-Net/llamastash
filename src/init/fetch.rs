@@ -61,7 +61,7 @@ impl From<UrlRefusal> for FetchError {
 /// Build-time inputs for [`FetchClient::new`]. Defaults mirror the
 /// v2 fetch contract; the wizard / snapshot fetcher / GH Releases
 /// installer all construct one of these and inject the result into
-/// `hf-hub` for HF traffic (Unit 9).
+/// `hf-hub` for HF traffic.
 #[derive(Debug, Clone)]
 pub struct FetchClientConfig {
   pub allowlist: HostAllowlist,

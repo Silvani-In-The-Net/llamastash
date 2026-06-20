@@ -113,18 +113,18 @@ pub struct Config {
   /// never installs `lemond`; the user sets it up and points us at it.
   pub lemonade: LemonadeConfig,
   /// How a knob no layer supplied a value for is seeded at launch
-  /// (R1). `auto` (factory) delegates layer-less knobs to `--fit`;
+  /// `auto` (factory) delegates layer-less knobs to `--fit`;
   /// `inherited` leaves them unset (pre-Auto behavior). Env override:
   /// `LLAMASTASH_DEFAULT_LAUNCH_MODE=auto|inherited`.
   #[serde(default)]
   pub default_launch_mode: DefaultLaunchMode,
   /// `--fit-ctx` floor passed to fit-capable `llama-server` so the
-  /// context window never collapses below a usable size (R7). Factory
+  /// context window never collapses below a usable size. Factory
   /// [`DEFAULT_FIT_CTX_FLOOR`]; validated `1..=MAX_CTX_TOKENS`. Env
   /// override: `LLAMASTASH_FIT_CTX_FLOOR`.
   #[serde(default = "default_fit_ctx_floor")]
   pub fit_ctx_floor: u32,
-  /// Strict-fit mode (R19): when true, refuse (rather than degrade) a
+  /// Strict-fit mode: when true, refuse (rather than degrade) a
   /// launch that fit could not place as requested. Factory `false`.
   /// Env override: `LLAMASTASH_STRICT_FIT=1`.
   #[serde(default)]

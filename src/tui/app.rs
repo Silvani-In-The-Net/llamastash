@@ -90,12 +90,12 @@ pub struct ManagedRow {
   /// `None` until the daemon's per-launch sampler primes.
   pub cpu_pct: Option<f32>,
   /// Context window `--fit` actually resolved, read from the child's
-  /// `/props` after Ready (R6). `None` until that fetch lands (or when
+  /// `/props` after Ready. `None` until that fetch lands (or when
   /// the build omits it). The running-launch settings view shows this
   /// real number instead of the dispatched `auto` sentinel.
   pub resolved_ctx: Option<u32>,
   /// True when `--fit` had to clamp the context window down to the floor
-  /// under memory pressure (R19). The running view tags the resolved ctx
+  /// under memory pressure. The running view tags the resolved ctx
   /// with a "clamped" note so the user knows it was squeezed.
   pub ctx_clamped: bool,
   /// The knobs this launch was actually dispatched with (the live
@@ -143,7 +143,7 @@ pub struct DaemonInfo {
   /// the IPC channel is. `None` when the daemon hasn't surfaced the
   /// field (pre-Phase-A binaries don't).
   pub ipc_url: Option<String>,
-  /// Latest snapshot of the OpenAI-compat proxy listener (Unit 5).
+  /// Latest snapshot of the OpenAI-compat proxy listener.
   /// `None` when talking to a pre-Unit-5 daemon that omits the
   /// field — info_pane renders the proxy row as `proxy   —` in that case.
   pub proxy: Option<ProxyInfo>,
@@ -164,7 +164,7 @@ pub struct BackendBinary {
 }
 
 /// Wire shape of the proxy listener block surfaced via the IPC
-/// `status` response (R161). Parsed from the daemon's JSON and held
+/// `status` response. Parsed from the daemon's JSON and held
 /// on `DaemonInfo` so [`crate::tui::info_pane`] can render a one-line
 /// summary in the Daemon panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,11 +353,11 @@ pub struct App {
   /// and kill-daemon so a fat-finger doesn't drop a running model
   /// or the whole supervisor.
   pub confirm_dialog: Option<ConfirmAction>,
-  /// HuggingFace pull dialog (R104). `Some(_)` whenever the modal
+  /// HuggingFace pull dialog. `Some(_)` whenever the modal
   /// is open; the input pump routes through `Focus::HfDialog` to the
   /// per-stage key handler.
   pub hf_dialog: Option<crate::tui::hf_dialog::HfDialogState>,
-  /// Pinned download status strip (R115). Always present; the
+  /// Pinned download status strip. Always present; the
   /// renderer reserves a 1-line slot above the body only when
   /// `download_strip.is_active()` is true.
   pub download_strip: crate::tui::download_strip::DownloadStripState,
@@ -412,7 +412,7 @@ pub struct StartModelArgs {
   pub extras: Vec<String>,
   pub mode: Option<crate::launch::mode::LaunchMode>,
   pub prefer_port: Option<u16>,
-  /// Per-model backend choice from the Launch picker (R17). `Auto` runs
+  /// Per-model backend choice from the Launch picker. `Auto` runs
   /// the identity rule on the daemon side.
   pub backend: crate::launch::params::BackendChoice,
 }
@@ -550,7 +550,7 @@ impl App {
 
   /// Close the HuggingFace pull dialog and snap focus back to the
   /// Models list. Background download tasks the dialog spawned
-  /// (Unit 6) keep ticking under the pinned strip — closing the
+  ///  keep ticking under the pinned strip — closing the
   /// dialog does not cancel them.
   pub fn close_hf_dialog(&mut self) {
     self.hf_dialog = None;
@@ -1356,7 +1356,7 @@ impl App {
     if let Some(p) = &path {
       if let Some(last) = self.last_params.get(p) {
         state.prefer_port = last.port;
-        // R20: returning user inherits the typed-knob deltas they
+        // returning user inherits the typed-knob deltas they
         // last shipped. The daemon persists only user-supplied
         // deltas (not the fully resolved set) so seeding straight
         // into `user_knobs` keeps the picker's source labels
@@ -1420,7 +1420,7 @@ impl App {
   }
 
   /// Open the launch picker for the focused model. Seeds from
-  /// persisted `last_params` (R20) when the daemon has reported any
+  /// persisted `last_params` when the daemon has reported any
   /// for the focused path, so a returning user lands on the params
   /// they last shipped. No-op when the cursor is on a header.
   ///

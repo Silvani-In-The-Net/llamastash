@@ -116,7 +116,7 @@ pub struct MethodContext {
   /// the right port, and `status` reads it for the `installed` signal.
   /// Defaults to disabled, so catalog-only tests never touch `lemond`.
   pub lemonade: LemonadeConfig,
-  /// Pre-spawn memory admission ledger (R4). Shared across every launch
+  /// Pre-spawn memory admission ledger. Shared across every launch
   /// entry point so check-and-reserve is atomic against concurrent
   /// launches; settled (released) when each child reaches Ready / Error
   /// / Stopped. In-memory by design.
@@ -201,13 +201,13 @@ pub struct LaunchEnv {
   /// full set once the probe completes; a launch in that brief window
   /// finds no selector match and falls back to the default `binary`.
   pub device_catalog: Arc<RwLock<Vec<crate::launch::list_devices::LaunchDevice>>>,
-  /// Seed mode for knobs no layer filled (R1). Sourced from
+  /// Seed mode for knobs no layer filled. Sourced from
   /// `Config.default_launch_mode` (+ `LLAMASTASH_DEFAULT_LAUNCH_MODE`).
   pub default_launch_mode: crate::config::DefaultLaunchMode,
-  /// `--fit-ctx` floor (R7). Consumed by `compose` in U6; carried here
+  /// `--fit-ctx` floor. Consumed by `compose` in U6; carried here
   /// so the launch path reads one resolved value. Validated upstream.
   pub fit_ctx_floor: u32,
-  /// Strict-fit mode (R19). Consumed by the admission/strict path in
+  /// Strict-fit mode. Consumed by the admission/strict path in
   /// U8; carried here so it rides the same launch env.
   pub strict_fit: bool,
   /// Default for `LaunchParams.jinja` (from `Config.jinja`, factory
@@ -292,7 +292,7 @@ impl MethodContext {
 
   /// Builder helper: attach the proxy listener's status cell. The
   /// IPC `status` handler reads from this to surface the `proxy`
-  /// block (Unit 5). Catalog-only tests skip this — the response
+  /// block. Catalog-only tests skip this — the response
   /// then omits the `proxy` field entirely.
   pub fn with_proxy_status(mut self, status: crate::proxy::StatusCell) -> Self {
     self.proxy_status = Some(status);
@@ -427,7 +427,7 @@ fn respond(id: Value, result: Result<Value, ErrorObject>) -> Response {
 /// `status` is read-only; never triggers any state-machine transitions.
 async fn status_response(ctx: &MethodContext) -> Value {
   let snap = ctx.supervisors.snapshot().await;
-  // Post-launch actuals (R6) live on the persisted running snapshot
+  // Post-launch actuals live on the persisted running snapshot
   // (stamped by the recorder on Ready); the live status row is built
   // from the supervisor, so cross-reference by (id, port) to surface
   // the resolved context.
@@ -484,7 +484,7 @@ async fn status_response(ctx: &MethodContext) -> Value {
       "params": params_json,
       "latest_rss_bytes": latest_rss_bytes,
       "latest_cpu_pct": latest_cpu_pct,
-      // Resolved context window `--fit` chose (R6); null until the
+      // Resolved context window `--fit` chose; null until the
       // post-Ready `/props` fetch lands or when the build omits it.
       "resolved_ctx": resolved_ctx,
       // True when `--fit` had to clamp ctx to the floor under memory
@@ -661,7 +661,7 @@ async fn status_response(ctx: &MethodContext) -> Value {
   body
 }
 
-/// Build the `status.backends` array (R3/R16): one row per backend with
+/// Build the `status.backends` array: one row per backend with
 /// whether its binary is installed on this host and which accelerators it
 /// can run on. llama.cpp's accelerator set unions its CPU floor with the
 /// GPU backends the live device catalog reveals; Lemonade reports its
@@ -1266,7 +1266,7 @@ async fn logs_tail_handler(
 
 /// Wire-shape for the `start_model` IPC method. The fields land
 /// verbatim from JSON-RPC; `start_model_inner` consumes the parsed
-/// struct so the proxy's auto-start path (Unit 4) can build one
+/// struct so the proxy's auto-start path can build one
 /// directly without going through JSON.
 #[derive(Deserialize, Default, Clone)]
 pub(crate) struct StartParams {
@@ -1307,7 +1307,7 @@ pub(crate) struct StartParams {
   /// as `None` to let the daemon find it automatically.
   #[serde(default)]
   pub(crate) mmproj_path: Option<PathBuf>,
-  /// Per-model backend override (R17). `None` / `auto` runs the identity
+  /// Per-model backend override. `None` / `auto` runs the identity
   /// rule (GGUF → llama.cpp, registry → its backend); an explicit value
   /// forces a backend. Set by `start --backend` and the TUI Launch picker.
   #[serde(default)]
@@ -1374,7 +1374,7 @@ use crate::config::MAX_CTX_TOKENS;
 /// Output of [`start_model_inner`] — everything the caller needs to
 /// observe the launch from the outside. The IPC handler projects
 /// this onto the JSON-RPC response; the proxy's auto-start path
-/// (Unit 4) keeps the `ManagedModel` handle so it can poll the state
+///  keeps the `ManagedModel` handle so it can poll the state
 /// machine without going through the registry snapshot.
 pub(crate) struct StartedLaunch {
   pub(crate) launch_id: LaunchId,
@@ -1549,7 +1549,7 @@ pub(crate) async fn start_model_inner(
   // → built-in `(arch, backend)` table → llama-server's own default.
   let mut launch_params = LaunchParams::new(parsed.model_path.clone(), mode);
   launch_params.port = Some(port);
-  // Per-model backend override (R17): `None` keeps the default `Auto`
+  // Per-model backend override: `None` keeps the default `Auto`
   // (identity rule); an explicit choice from `start --backend` / the TUI
   // picker overrides it. Resolved into a backend at the selection seam below.
   launch_params.backend = parsed.backend.unwrap_or_default();
@@ -1615,7 +1615,7 @@ pub(crate) async fn start_model_inner(
       &builtin_knobs,
     ),
   ]);
-  // Seed knobs no layer filled per the default launch mode (R1): under
+  // Seed knobs no layer filled per the default launch mode: under
   // `Auto` a layer-less knob delegates to `--fit`. Argv-neutral in this
   // unit (an Auto knob emits nothing, exactly like the unset slot it
   // replaces) — the fit-flag emission lands in U6 and the picker
@@ -1793,7 +1793,7 @@ pub(crate) async fn start_model_inner(
       }
     };
 
-  // Pre-spawn admission (R4): project this launch's demand floor and
+  // Pre-spawn admission: project this launch's demand floor and
   // refuse *before* spawn if it won't fit the sampled budget minus the
   // bytes other in-flight launches already reserved. This is the safety
   // net `--fit` can't provide on UMA (its free reading conflates GTT
@@ -1850,7 +1850,7 @@ pub(crate) async fn start_model_inner(
     }
   }
 
-  // Strict-fit ctx-clamp gate (R19): only meaningful when ctx is
+  // Strict-fit ctx-clamp gate: only meaningful when ctx is
   // delegated to `--fit` (`ctx == None`) and we know the trained window
   // to compare its resolution against. A pinned ctx or unknown window
   // leaves the gate off. `strict_fit` then decides whether a floor-pinned
@@ -2241,7 +2241,7 @@ fn spawn_last_params_recorder(
           state
             .mutate(|s| s.upsert_last_params(id.clone(), params.clone()))
             .await;
-          // Post-launch actuals (R6): stamp what `--fit` actually chose
+          // Post-launch actuals: stamp what `--fit` actually chose
           // on the running snapshot so `status` / the TUI Running view /
           // `show` can render the resolved context. The supervisor's
           // readiness gate already fetched `/props` for fit-governed

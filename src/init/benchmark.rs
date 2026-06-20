@@ -1,10 +1,10 @@
 //! Benchmark snapshot — the curated model corpus + per-arch recommender
-//! weights the init wizard's recommender ranks against (R56).
+//! weights the init wizard's recommender ranks against.
 //!
 //! Two tiers travel together:
 //! - **Bundled**: `data/benchmark-snapshot.json` is `include_str!`-ed
 //!   into the binary so a fresh `cargo install` works offline.
-//! - **Remote**: a daily-CI-built JSON file (Unit 7) lives at the
+//! - **Remote**: a daily-CI-built JSON file lives at the
 //!   rolling release tag `snapshot-latest`. `load_remote` fetches it
 //!   through Unit 4's `FetchClient`, verifies the integrity contract
 //!   (monotonic `bundle_date` + `min_version` ≤ build), and prefers
@@ -85,7 +85,7 @@ pub struct BenchmarkSnapshot {
   #[serde(default)]
   pub remote_url: Option<String>,
   /// Tunables the recommender consumes. Sourced from the snapshot so
-  /// the CI workflow (Unit 7) can re-tune without a binary release.
+  /// the CI workflow can re-tune without a binary release.
   pub recommender_weights: RecommenderWeights,
   /// The curated model catalog. Unit 6's recommender ranks against
   /// this list intersected with the on-disk catalog.
@@ -106,7 +106,7 @@ pub struct RecommenderWeights {
 }
 
 /// One model in the curated catalog. Fields mirror what the
-/// recommender (Unit 6) reads + what `doctor` shows alongside picks.
+/// recommender reads + what `doctor` shows alongside picks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntry {
   pub id: String,

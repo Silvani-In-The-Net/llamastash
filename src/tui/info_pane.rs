@@ -50,7 +50,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 /// point are one glance away; when disabled or absent, the row renders an
 /// explicit `disabled` / `—` so the reader can tell "off by config"
 /// from "not reported yet". Labels match the wire `status` values
-/// (R161) and the success/error palette signals liveness without
+///  and the success/error palette signals liveness without
 /// forcing the user to read the endpoint.
 fn proxy_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
   let mut spans = vec![Span::styled(LABEL_PROXY, palette.label_style())];
