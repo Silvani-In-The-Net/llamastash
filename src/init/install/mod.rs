@@ -4,7 +4,7 @@
 //! prompt:
 //! - [`gh_releases`] — download a verified asset from
 //!   `github.com/ggml-org/llama.cpp/releases` (the default for any
-//!   Linux + GPU combination per the Unit 1 spike).
+//!   Linux + GPU combination).
 //! - [`brew`] — `brew install --quiet llama.cpp` (the default for
 //!   macOS arm64; CPU-only fallback on linuxbrew).
 //! - [`custom_path`] — accept a user-supplied existing binary after
@@ -82,8 +82,7 @@ pub fn default_install_method(hw: &HardwareSnapshot) -> InstallChoice {
   match (&hw.gpu, hw.os, hw.cpu_arch) {
     (GpuInfo::AppleMetal { .. }, OsFamily::MacOs, CpuArch::Arm64) => InstallChoice::Brew,
     (_, OsFamily::MacOs, _) => InstallChoice::Brew,
-    // Linux + Nvidia → GH Releases Vulkan (no CUDA prebuilt exists —
-    // see Unit 1 GH-Releases-contract spike's breaking finding).
+    // Linux + Nvidia → GH Releases Vulkan (no CUDA prebuilt exists).
     (GpuInfo::Nvidia { .. }, OsFamily::Linux, _)
     | (GpuInfo::Amd { .. }, OsFamily::Linux, _)
     | (GpuInfo::Unknown { .. }, OsFamily::Linux, _) => InstallChoice::GhReleases,
@@ -140,8 +139,8 @@ mod tests {
 
   #[test]
   fn linux_nvidia_routes_to_gh_releases() {
-    // Per Unit 1 spike: no ubuntu-cuda asset; routing lands on the
-    // Vulkan prebuilt with a downgrade banner Unit 10 displays.
+    // No ubuntu-cuda asset; routing lands on the Vulkan prebuilt with
+    // a downgrade banner.
     let choice = default_install_method(&hw(nvidia_device(), OsFamily::Linux, CpuArch::X86_64));
     assert!(matches!(choice, InstallChoice::GhReleases));
   }

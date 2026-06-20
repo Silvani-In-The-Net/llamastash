@@ -5274,7 +5274,7 @@ mod tests {
     app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
     app.go_top();
     // Walk to Settings via Tab (cycle_focus), exactly like the user
-    // would after focusing the list. After Phase 1, the chain is
+    // would after focusing the list. The chain is
     // [List, Settings] for an unlaunched selection so one Tab lands.
     pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::RightPane);

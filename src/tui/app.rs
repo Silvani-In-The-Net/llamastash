@@ -1093,7 +1093,7 @@ impl App {
 
   /// Rows for external `llama-server` processes the daemon detected
   /// outside its supervisor. Surfaced read-only (stop is the only
-  /// action allowed) — used by Unit 7's right pane to show "this
+  /// action allowed) — used by the right pane to show "this
   /// model is unmanaged" hints.
   pub fn external_rows(&self) -> &[ManagedRow] {
     &self.external

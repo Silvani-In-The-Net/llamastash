@@ -153,9 +153,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   render_body(frame, chunks[idx], app, &palette);
 
   // Transient toast bar — paints on top of the body so copy / theme /
-  // refusal confirmations are actually visible. The toast field has
-  // existed since Unit 6 but the kdash refactor (commit 5005b4c)
-  // removed the bottom help-bar slot that used to display it; this
+  // refusal confirmations are actually visible. The kdash refactor
+  // (commit 5005b4c) removed the bottom help-bar slot that used to
+  // display the toast; this
   // restores a single-line floating bar above the bottom edge.
   // Drawn before the modal overlays so a confirm/help popup still
   // wins focus while it is open.

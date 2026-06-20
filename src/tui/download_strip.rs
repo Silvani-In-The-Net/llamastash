@@ -1,4 +1,4 @@
-//! Pinned single-line download status strip (Unit 6 / R115–R117).
+//! Pinned single-line download status strip.
 //!
 //! Sits between the info row and the body of the dashboard. Renders
 //! one active pull at a time with `<friendly name> <pct%>

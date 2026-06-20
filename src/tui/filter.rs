@@ -6,8 +6,8 @@
 //! contiguous-run penalty (fewer runs = better) — enough to
 //! prioritise `qwen` over `q*w*e*n` on a real model list.
 //!
-//! Decision (closes the plan's deferred `nucleo-matcher` question
-//! from Unit 6): the hand-rolled ranker stays. It keeps the dep
+//! Decision on the deferred `nucleo-matcher` question: the
+//! hand-rolled ranker stays. It keeps the dep
 //! tree tight, ships ~50 LOC, and the model-name corpus (file
 //! stems + arch + quant tokens) is far smaller than the workloads
 //! nucleo is optimised for. Revisit if catalogs grow past ~500

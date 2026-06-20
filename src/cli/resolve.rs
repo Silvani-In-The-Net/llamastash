@@ -408,10 +408,10 @@ pub struct StatusSnapshot {
   /// which case this is `None` — the formatter silently skips it.
   pub daemon: Option<DaemonHealth>,
   /// Proxy listener block — `{enabled, listen, status, bind_error}`.
-  /// Verbatim copy of the daemon's wire shape (Unit 5 / R161); the
+  /// Verbatim copy of the daemon's wire shape; the
   /// CLI `status --json` rewrites it byte-for-byte so agents that
   /// parse the IPC and the CLI see identical shapes. `Value::Null`
-  /// when talking to a pre-Unit-5 daemon that omits the field.
+  /// when talking to a daemon that omits the field.
   pub proxy: Value,
   /// Backends block — array of `{id, lifecycle, installed, accelerators}`
   /// Verbatim copy of the daemon's wire shape; `Value::Null`

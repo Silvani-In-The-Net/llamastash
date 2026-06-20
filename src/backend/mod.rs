@@ -2,9 +2,9 @@
 //! on the **launch / supervise / identify** side, expressed as a
 //! contract so other inference engines can plug in.
 //!
-//! Phase 1 (this module + [`llama_cpp`]) shipped the contract with
-//! llama.cpp as the reference implementation and zero user-visible
-//! behavior change. This module is the backend-agnostic foundation: a
+//! This module + [`llama_cpp`] provide the contract with
+//! llama.cpp as the reference implementation. This module is the
+//! backend-agnostic foundation: a
 //! second engine plugs in by implementing [`Backend`], adding a variant to
 //! [`Backends`] (+ its match arms), and registering its
 //! [`identity`]/selection arms — no change to the supervisor, proxy, or
@@ -16,7 +16,7 @@
 //! identity.
 //!
 //! See `docs/plans/2026-06-08-001-refactor-backend-trait-abstraction-plan.md`
-//! (Phase 1) and the origin brainstorm
+//! and the origin brainstorm
 //! `docs/brainstorms/2026-06-08-multi-backend-abstraction-requirements.md`.
 //!
 //! # Two lifecycle shapes
@@ -82,7 +82,7 @@ impl Lifecycle {
 
 /// How to tell that a launched model is ready to serve.
 ///
-/// Phase 1 has only the HTTP-poll shape (llama.cpp's `/health`). The
+/// Currently only the HTTP-poll shape (llama.cpp's `/health`). The
 /// poll semantics live in [`crate::daemon::probe`]; this declares the
 /// endpoint + the status that means "ready" so the probe is no longer
 /// hardwired to `/health`.
@@ -149,7 +149,7 @@ pub struct ManagerLaunchSpec {
 }
 
 /// A reference to a model the umbrella backend serves from its own
-/// registry. Kept minimal (just the registry name) for Phase 2's slice;
+/// registry. Kept minimal (just the registry name) for now;
 /// room to grow as the API surface is wired.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagerModelRef {
@@ -219,7 +219,7 @@ impl AcceleratorSupport {
 ///
 /// llama.cpp supports every [`KnobField`]. Other backends declare a
 /// subset; fields outside the set are dropped from that backend's launch
-/// and (Phase 2) surfaced as "not supported by `<backend>`" in Settings.
+/// and surfaced as "not supported by `<backend>`" in Settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnobCapability {
   supported: BTreeSet<KnobField>,
@@ -253,7 +253,7 @@ impl KnobCapability {
     }
   }
 
-  /// Whether this backend honors `field`. Phase 2 backends that honor
+  /// Whether this backend honors `field`. A backend that honors
   /// only a subset of the IR will construct a narrower set here; the
   /// subset constructor lands with that first real consumer.
   pub fn supports(&self, field: KnobField) -> bool {
@@ -265,7 +265,7 @@ impl KnobCapability {
 /// `llama-server` is expressed here so each backend owns its own
 /// translation from the neutral knob IR.
 ///
-/// Phase 1 has a single implementor, [`llama_cpp::LlamaCppBackend`].
+/// Currently a single implementor, [`llama_cpp::LlamaCppBackend`].
 /// Dispatch is via the [`Backends`] enum (zero-cost, exhaustive) rather
 /// than `dyn Backend` — the backend set is small and closed.
 ///
@@ -300,8 +300,8 @@ pub trait Backend {
   /// [`ModelIdentity::Gguf`]; a managed-registry backend returns
   /// [`ModelIdentity::Backend`]. The `(path, header_bytes)` inputs are
   /// the GGUF-discovery shape — registry backends ignore them for now and
-  /// derive identity from their API in Phase 2b (see the module-level
-  /// design gate and [`identity`]).
+  /// will derive identity from their API when such a backend lands (see
+  /// [`identity`]).
   fn identify(&self, path: &Path, header_bytes: &[u8]) -> ModelIdentity;
 
   /// Translate a fully-resolved [`LaunchParams`] into a [`LaunchPlan`]

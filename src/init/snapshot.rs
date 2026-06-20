@@ -32,8 +32,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum InstallMethod {
   /// Downloaded from `github.com/ggml-org/llama.cpp/releases` and
-  /// verified against the per-asset `digest` field
-  /// (see Unit 1 spike `2026-05-19-llama-cpp-releases-asset-contract.md`).
+  /// verified against the per-asset `digest` field.
   GhReleases,
   /// `brew install llama.cpp` — bottle. macOS arm64 ships
   /// Metal-enabled; Linux bottles are CPU-only.

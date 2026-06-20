@@ -8,8 +8,8 @@
 //!   user-visible entry.
 //!
 //! Cache-aware enumerators (HuggingFace, Ollama, LM Studio), the
-//! filesystem watcher, and the HuggingFace pull worker land in later
-//! commits within Unit 4.
+//! filesystem watcher, and the HuggingFace pull worker live in the
+//! sibling modules.
 
 pub mod catalog;
 pub mod known_caches;
@@ -35,8 +35,8 @@ use crate::gguf::metadata::ModelMetadata;
 ///
 /// `metadata` is `None` when the GGUF header parse failed (truncated,
 /// bad magic, unsupported version, …); discovery still surfaces the
-/// row with a warning glyph rather than dropping the file (origin:
-/// Unit 4 edge case "empty file with `.gguf` extension").
+/// row with a warning glyph rather than dropping the file (edge case:
+/// "empty file with `.gguf` extension").
 #[derive(Debug, Clone)]
 pub struct DiscoveredModel {
   /// Canonical absolute path to the launchable file. For split-shard

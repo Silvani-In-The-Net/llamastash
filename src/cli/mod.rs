@@ -1,6 +1,6 @@
 //! CLI surface (clap definitions + dispatcher).
 //!
-//! The dispatcher is `async` because Unit 2's daemon client speaks
+//! The dispatcher is `async` because the daemon client speaks
 //! Tokio. Each subcommand has its own handler module under
 //! `src/cli/`. Handlers return [`exit_codes::CliResult`] so the
 //! top-level dispatcher can map structured failure into the
@@ -214,10 +214,9 @@ pub(crate) async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> Cli
     return render_snapshot(cli, config, client, daemon_start_error).await;
   }
   drop(client);
-  // Phase A of the Windows+HTTP-IPC plan: TUI attaches via the HTTP
-  // control plane which reads bearer token + URL out of
-  // `state_dir/runtime.json`. The legacy parameter is still named
-  // `socket` in `tui::events` for minimum churn; Unit 4 renames it.
+  // TUI attaches via the HTTP control plane which reads bearer token +
+  // URL out of `state_dir/runtime.json`. The parameter is still named
+  // `socket` in `tui::events` for minimum churn.
   let socket = crate::util::paths::state_dir().ok_or_else(|| {
     CliExit::new(
       exit_codes::DAEMON_UNREACHABLE,

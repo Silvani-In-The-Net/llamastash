@@ -73,8 +73,8 @@ pub struct DaemonOptions {
   /// single-backend builds. Backend is inferred from each binary's
   /// device names — never declared in config.
   pub extra_binaries: Vec<PathBuf>,
-  /// Listening-port range Unit 5's allocator probes. Defaults to
-  /// the plan's `41100..=41300`.
+  /// Listening-port range the launch allocator probes. Defaults to
+  /// `41100..=41300`.
   pub port_range: PortRange,
   /// Discovery roots and scan tunables. An empty `scan_roots` list
   /// leaves the catalog empty until the user adds paths via the TUI
@@ -359,8 +359,8 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   let persisted = PersistedState::new(state_after_sweep, Some(opts.state_dir.clone()));
   // Construct the proxy status cell *before* the context so the IPC
   // `status` handler and the proxy listener task share the same
-  // handle. Unit 5 surfaces the cell via `status.proxy`; Unit 1
-  // already locked the seeded variant (`Disabled`) so a daemon with
+  // handle. The cell surfaces via `status.proxy`; it is seeded with
+  // the `Disabled` variant so a daemon with
   // `proxy.enabled: false` reads as disabled even before §8b runs.
   let proxy_status_cell = proxy::server::new_status_cell();
   let mut ctx = MethodContext::with_catalog(token.clone(), catalog)
@@ -544,7 +544,7 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // non-fatal — the proxy is a convenience surface; the daemon's
   // primary contract (IPC + supervisor) survives a port collision.
   // The status cell holds the outcome (Disabled / Listening /
-  // PortInUse / Unbound); Unit 5's IPC `status` handler reads it
+  // PortInUse / Unbound); the IPC `status` handler reads it
   // via the clone attached to `ctx` above (§8).
   if opts.proxy.enabled {
     let host = opts.proxy.effective_host();

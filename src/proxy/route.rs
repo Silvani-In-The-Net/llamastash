@@ -1,7 +1,7 @@
 //! Pre-flight: turn an inbound HTTP request into a forwarding plan.
 //!
-//! Unit 3 walks every incoming `/v1/...` request through this module
-//! before reaching for the upstream `llama-server`. The output is a
+//! This module walks every incoming `/v1/...` request before reaching
+//! for the upstream `llama-server`. The output is a
 //! [`RouteDecision`] that captures everything [`super::forward`]
 //! needs to do the pass-through, plus enough context for the error
 //! arms to render an OpenAI-shaped body.
@@ -15,13 +15,10 @@
 //!   4. Walk the supervisor snapshot for a Ready entry whose
 //!      [`ModelId`] path matches the resolved catalog row.
 //!
-//! Unit 3 stops at step 4 — no auto-start, no fallback. Unit 4
-//! replaces the [`RouteDecision::NotRunning`] arm with the launch +
-//! single-flight + fallback machinery; the variant intentionally
-//! carries the resolved row + arch so Unit 4 doesn't have to repeat
-//! the lookup.
-//!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
+//! The [`RouteDecision::NotRunning`] arm drives the launch +
+//! single-flight + fallback machinery; the variant carries the
+//! resolved row + arch so that path doesn't have to repeat the
+//! lookup.
 
 use std::sync::Arc;
 
@@ -90,16 +87,16 @@ pub(crate) enum RouteDecision {
     #[allow(dead_code)]
     arch: Option<String>,
   },
-  /// `resolve_model` returned zero matches. Unit 3 emits 404
+  /// `resolve_model` returned zero matches. Emits 404
   /// `model_not_found` with `matches: []`.
   NotFound { requested_model: String },
-  /// `resolve_model` returned > 1 matches. Unit 3 emits 400
+  /// `resolve_model` returned > 1 matches. Emits 400
   /// `ambiguous_model` with the candidate names.
   Ambiguous {
     requested_model: String,
     candidates: Vec<String>,
   },
-  /// `body.model` is absent or empty. Unit 3 emits 400
+  /// `body.model` is absent or empty. Emits 400
   /// `invalid_request` with `code: "model_required"`.
   ModelRequired,
   /// The resolved model is served by a managed-multiplexer backend whose
@@ -393,7 +390,7 @@ fn same_path(model_id_path: &std::path::Path, row_path: &str) -> bool {
   model_id_path.to_string_lossy() == row_path
 }
 
-/// Unit 4 entry point — invoked from `router.rs` when a request
+/// Auto-start entry point — invoked from `router.rs` when a request
 /// hits a catalog row whose model isn't currently Ready.
 ///
 /// Drives:

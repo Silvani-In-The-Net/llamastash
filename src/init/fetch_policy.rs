@@ -19,7 +19,7 @@
 
 use std::collections::BTreeSet;
 
-/// Default allowlist hosts. Curated from Unit 1 spike outputs:
+/// Default allowlist hosts. Curated from spike findings:
 /// - `api.github.com` for the llama.cpp Releases REST API.
 /// - `github.com` for browser-download asset URLs (302-redirected to
 ///   the next entry).

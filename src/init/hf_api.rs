@@ -1,4 +1,4 @@
-//! HuggingFace Hub API client (Unit 3 / R104–R109).
+//! HuggingFace Hub API client.
 //!
 //! Two surfaces, both routed through [`FetchClient`] so the v2 fetch
 //! contract (HTTPS-only, host allowlist, redirect cap, body cap,

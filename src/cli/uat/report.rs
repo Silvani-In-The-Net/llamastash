@@ -8,7 +8,7 @@
 //! via `serde_json::to_value`. That preserves the tagged-union shape so
 //! per-backend fields (NVIDIA `devices[]`, Metal `total_memory_bytes`)
 //! survive without a lossy scalar projection. `backend.expected` is the
-//! CLI's `--host-backend` value passed through as-is — Unit 3's `UatBackend`
+//! CLI's `--host-backend` value passed through as-is — the `UatBackend`
 //! value-enum already restricts the spelling set to canonical
 //! discriminants, so no normalization step is needed at the report layer.
 

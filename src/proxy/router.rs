@@ -43,7 +43,7 @@ use crate::daemon::supervisor::ManagedState;
 use crate::discovery::DiscoveredModel;
 use crate::gguf::metadata::{ModeHint, ModelMetadata};
 
-/// The error type our `BoxBody` carries. Unit 3 streams upstream
+/// The error type our `BoxBody` carries. Forwarding streams upstream
 /// `reqwest::Response::bytes_stream()` chunks through `StreamBody`,
 /// so the body alias must accept *some* error type at frame time.
 /// Boxed dyn errors are the most flexible choice — non-streaming
@@ -158,7 +158,7 @@ fn text_response(status: StatusCode, body: &'static str) -> Response<BoxBody<Byt
     .expect("static text response must build")
 }
 
-/// Unit 3 pipeline: buffer the body under the 2 MiB cap, extract
+/// Forwarding pipeline: buffer the body under the 2 MiB cap, extract
 /// `body.model`, run the resolver, pick a Ready supervisor, forward.
 async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyResponse {
   let (method, uri, headers, body) = forward::deconstruct(req);
@@ -325,11 +325,11 @@ async fn list_models(state: Arc<ProxyState>) -> ProxyResponse {
 /// model identifier appears in every surface.
 ///
 /// Note: `CatalogRow::name()` falls back to `path.file_name()`
-/// (basename *with* extension) rather than the file stem. The plan
-/// explicitly calls for the stem here so the OpenAI `id` reads
-/// cleanly (`qwen2.5-coder` rather than `qwen2.5-coder.gguf`). The
-/// resolver's substring matching (used in Unit 3) is tolerant to
-/// either form, so this divergence is intentional and bounded.
+/// (basename *with* extension) rather than the file stem. We use the
+/// stem here so the OpenAI `id` reads cleanly (`qwen2.5-coder` rather
+/// than `qwen2.5-coder.gguf`). The resolver's substring matching is
+/// tolerant to either form, so this divergence is intentional and
+/// bounded.
 fn model_id_for(m: &DiscoveredModel) -> String {
   if let Some(label) = &m.display_label {
     return label.clone();
@@ -678,8 +678,8 @@ fn unauthorized_body() -> Vec<u8> {
 }
 
 /// Build an OpenAI-shaped error response from a `(status, type,
-/// message)` triple. Centralised so the 404 / Unit 3
-/// `model_not_running` arms all emit the same
+/// message)` triple. Centralised so the 404 / `model_not_running`
+/// arms all emit the same
 /// `{"error":{"type":..., "message":...}}` envelope.
 pub(crate) fn error_response(status: StatusCode, r#type: &str, message: &str) -> ProxyResponse {
   let body = ErrorResponse {

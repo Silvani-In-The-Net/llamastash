@@ -1,6 +1,6 @@
 //! GGUF parser, metadata extraction, model identity, and memory estimator.
 //!
-//! Owns Unit 3 of the v1 plan. Consumers:
+//! Consumers:
 //! - `discovery` calls [`header::read_path`] for each `*.gguf` found
 //!   during a scan, then [`metadata::summarise`] to surface badges in the UI.
 //! - `launch` calls [`identity::compute`] to key last-params /

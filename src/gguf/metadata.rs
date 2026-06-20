@@ -270,7 +270,7 @@ impl Quant {
 }
 
 /// What kind of inference surface this GGUF best matches. `Unknown` is the
-/// safe fallback — the launcher (Unit 6 / Unit 8) asks the user to pick.
+/// safe fallback — the launcher asks the user to pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModeHint {
   Chat,

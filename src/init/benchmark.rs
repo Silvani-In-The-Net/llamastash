@@ -6,7 +6,7 @@
 //!   into the binary so a fresh `cargo install` works offline.
 //! - **Remote**: a daily-CI-built JSON file lives at the
 //!   rolling release tag `snapshot-latest`. `load_remote` fetches it
-//!   through Unit 4's `FetchClient`, verifies the integrity contract
+//!   through the `FetchClient`, verifies the integrity contract
 //!   (monotonic `bundle_date` + `min_version` ≤ build), and prefers
 //!   it over the bundled tier on success.
 //!
@@ -87,7 +87,7 @@ pub struct BenchmarkSnapshot {
   /// Tunables the recommender consumes. Sourced from the snapshot so
   /// the CI workflow can re-tune without a binary release.
   pub recommender_weights: RecommenderWeights,
-  /// The curated model catalog. Unit 6's recommender ranks against
+  /// The curated model catalog. The recommender ranks against
   /// this list intersected with the on-disk catalog.
   pub models: Vec<ModelEntry>,
 }
@@ -225,7 +225,7 @@ pub async fn load_remote(
   Ok(Some(candidate))
 }
 
-/// Pure-function verifier used by `load_remote` and by Unit 5's tests.
+/// Pure-function verifier used by `load_remote` and its tests.
 pub fn verify_remote(
   candidate: &BenchmarkSnapshot,
   bundled: &BenchmarkSnapshot,

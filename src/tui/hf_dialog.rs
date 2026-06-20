@@ -1,4 +1,4 @@
-//! HuggingFace pull dialog (Unit 4 / R104–R109).
+//! HuggingFace pull dialog.
 //!
 //! Three-state modal overlay: Search → File picker → Confirm. State
 //! transitions are pure functions so the unit tests can exercise them
@@ -52,7 +52,7 @@ pub enum PickerLoad {
   /// A `list_repo_files` task is in flight.
   Loading,
   /// Files arrived; the picker iterates over `files` (after the
-  /// shard-collapse pass from Unit 5).
+  /// shard-collapse pass).
   Ready,
   /// Listing failed; the user can back up to Search to retry.
   Failed(String),
@@ -84,7 +84,7 @@ pub enum HfDialogEvent {
 /// One row in the File picker. Either a standalone GGUF file or a
 /// collapsed split-shard set. Splits surface their sum of
 /// sizes and the launch filename (shard 1) for the eventual pull
-/// dispatch (Unit 6 walks `shard_filenames` to enqueue every
+/// dispatch (the pull worker walks `shard_filenames` to enqueue every
 /// sibling).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickerRow {
@@ -110,7 +110,7 @@ pub enum PickerRow {
     /// sibling lands.
     launch_filename: String,
     /// All shard filenames in the set, sorted by index. Carried
-    /// here so a future Unit 6 progress shim can show
+    /// here so a future progress shim can show
     /// `<shard>-NNNNN-of-MMMMM` granularity if needed.
     shard_filenames: Vec<String>,
   },

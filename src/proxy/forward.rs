@@ -15,11 +15,8 @@
 //!   so SSE chunks land at the client as they arrive. No buffering,
 //!   no per-chunk parse.
 //! - Stamp `x-llamastash-served-by` + `x-llamastash-fallback-reason`
-//!   only when [`RouteDecision::fallback == true`]. Unit 3 always
-//!   produces `false`; Unit 4 supplies the `true` case once the
-//!   family-MRU fallback path lands.
-//!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
+//!   only when [`RouteDecision::fallback == true`] — set by the
+//!   family-MRU fallback path.
 
 use std::sync::Arc;
 

@@ -461,7 +461,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   // pass that re-incorporates the orphan as a managed supervisor.
   cmd.env("LLAMASTASH_LAUNCHED", "1");
   // Process-group setup + spawn go through [`ProcessControl`] so
-  // Unit 6's Windows backend can swap in `CREATE_NEW_PROCESS_GROUP`
+  // a future Windows backend can swap in `CREATE_NEW_PROCESS_GROUP`
   // without touching this call site.
   let pc = crate::util::process_control::platform_default();
   let spawned = pc

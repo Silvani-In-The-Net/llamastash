@@ -73,7 +73,7 @@ pub struct Recommendation {
   pub estimated_peak_bytes: Option<u64>,
 }
 
-// `large_enum_variant`: ModelEntry is ~272 bytes after Unit 1's
+// `large_enum_variant`: ModelEntry is ~272 bytes after the
 // schema additions; OnDisk is 56, Escape is 0. Boxing the Curated
 // payload would force every Recommendation consumer to dereference
 // for no measurable win — top-N is 5-6 entries so the per-list
@@ -572,7 +572,7 @@ fn on_disk_score(
 
 /// One-line justification rendered next to the prompt. Anchored
 /// around "fits N GB · ~X t/s · YB ZK". The wizard's `?` toggle
-/// shows the full breakdown — that's Unit 10's job.
+/// shows the full breakdown.
 pub fn render_one_line(entry: &ModelEntry, peak_bytes: u64, hw: &HardwareSnapshot) -> String {
   let fit = format_gib(peak_bytes);
   let total = match hw.vram_bytes {

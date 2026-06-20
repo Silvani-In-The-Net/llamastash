@@ -5,7 +5,7 @@
 //!   2. install — `--only` / `--skip` gated.
 //!   3. model recommend + download — `--only` / `--skip` gated.
 //!   4. config write — `--only` / `--skip` gated.
-//!   5. smoke launch — `--only` / `--skip` gated (Unit 12 owns the body).
+//!   5. smoke launch — `--only` / `--skip` gated.
 //!   6. handoff — always runs.
 //!
 //! `--recommended` (or the hidden `--yes` alias) short-circuits every
@@ -265,7 +265,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   // step 3 (models) has no offline fallback, and a mid-step abort with
   // `INIT_DOWNLOAD_FAILED` would mis-classify the failure for agent
   // consumers (which is "init aborted before substantive work", not
-  // "network op failed during the run"). Plan Unit 10 test scenario.
+  // "network op failed during the run").
   if args.offline && plan.models && !plan.server && !plan.config {
     return Err(CliExit::new(
       INIT_ABORTED,
@@ -433,7 +433,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
     log::warn!("init: failed to persist init_snapshot.json: {e}");
   }
 
-  // Step 6: smoke launch. Phase 1 + --version probe runs
+  // Step 6: smoke launch. The dry-run + --version probe runs
   // whenever both an install and a downloaded model are present;
   // otherwise we emit an honest "skipped" note.
   let smoke = run_smoke_step(

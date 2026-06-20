@@ -351,7 +351,7 @@ fn common_locations() -> Vec<PathBuf> {
   if let Some(home) = crate::util::paths::home_dir() {
     roots.push(home.join(".local/bin/llama-server"));
   }
-  // llamastash-managed install dir from Unit 8 — Vec keeps order stable
+  // llamastash-managed install dir — Vec keeps order stable
   // for tests.
   if let Some(data) = directories::BaseDirs::new().and_then(|b| {
     let p = b.data_dir().join("llamastash/llama-cpp");

@@ -1,6 +1,6 @@
 //! Most-recently-used tracker keyed on [`ModelId`].
 //!
-//! Unit 4's fallback path needs to answer "which currently-running
+//! The fallback path needs to answer "which currently-running
 //! model did the user touch most recently?" when an auto-start
 //! fails. The proxy stamps `last_request_at` *as forwarding starts*
 //! (not on completion — long-running streams shouldn't delay the

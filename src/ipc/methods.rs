@@ -1,12 +1,8 @@
 //! Method dispatch for the daemon's IPC layer.
 //!
-//! Unit 2 shipped `ping` / `version` / `shutdown` and `list_models`.
-//! Unit 5 added the supervisor-touching methods: `status`,
-//! `stop_model`, `stop_all`, `logs_tail`, `start_model`, plus the
-//! state-store CRUD surfaces `presets_*` and `favorite_*`. Keeping
-//! the registry as a `match` (rather than a `HashMap<&str, fn>`)
-//! avoids dynamic-dispatch plumbing for what is, in practice, a
-//! small fixed set of methods.
+//! Keeping the registry as a `match` (rather than a
+//! `HashMap<&str, fn>`) avoids dynamic-dispatch plumbing for what is,
+//! in practice, a small fixed set of methods.
 
 use std::{
   ffi::OsString,
@@ -788,8 +784,8 @@ fn lemond_installed(cfg: &LemonadeConfig) -> bool {
 
 /// Project the proxy listener's status cell into the wire shape
 /// surfaced under `status.proxy`. The cell is the single source of
-/// truth — Unit 1 wired the listener task to write every transition
-/// (Disabled / Listening / PortInUse / Unbound) here; Unit 5 is the
+/// truth — the listener task writes every transition
+/// (Disabled / Listening / PortInUse / Unbound) and this is the
 /// read side.
 ///
 /// `listen` is the *attempted* address: `Disabled` emits `null`
@@ -1117,8 +1113,8 @@ async fn stop_external_handler(
     }
   }
   // SIGTERM first — give the process time to exit cleanly. Goes
-  // through [`ProcessControl`] so Unit 6 picks up the Windows
-  // single-pid path without a second migration here.
+  // through [`ProcessControl`] so the Windows single-pid path stays
+  // in one place rather than a second migration here.
   use crate::util::process_control::SignalTarget;
   let pc = crate::util::process_control::platform_default();
   pc.signal_graceful(SignalTarget::SinglePid(parsed.pid));
@@ -1411,8 +1407,8 @@ async fn start_model_handler(
 }
 
 /// In-process equivalent of [`start_model_handler`] for callers that
-/// already have a parsed [`StartParams`] (the proxy's Unit 4
-/// auto-start path). Performs the same composition pipeline —
+/// already have a parsed [`StartParams`] (the proxy's auto-start
+/// path). Performs the same composition pipeline —
 /// validation → arch resolve → port reservation → layered knob
 /// merge → supervisor spawn → registry insert → last_params recorder
 /// — so the two call sites share one code path. Returns the live

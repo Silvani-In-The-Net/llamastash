@@ -1046,7 +1046,7 @@ impl LaunchMode {
   }
 }
 
-/// `llamastash uat` arguments (Unit 3 / R4 / R5). Only compiled when
+/// `llamastash uat` arguments. Only compiled when
 /// the `uat` Cargo feature is enabled — the release binary on
 /// crates.io and Homebrew bottles never carries this subcommand.
 ///
@@ -1079,8 +1079,8 @@ pub struct UatArgs {
   #[arg(long, value_enum, value_name = "MODE", default_value_t = UatMode::Warm)]
   pub mode: UatMode,
   /// Where to write the structured JSON report. `-` redirects to
-  /// stdout; mutually exclusive with the global `--quiet` (Unit 4
-  /// enforces at handle-time). When omitted, the report is emitted
+  /// stdout; mutually exclusive with the global `--quiet`
+  /// (enforced at handle-time). When omitted, the report is emitted
   /// to stdout in TTY-pretty form only.
   #[arg(long, value_name = "PATH")]
   pub report_out: Option<PathBuf>,
@@ -2288,7 +2288,7 @@ mod tests {
   #[cfg(not(feature = "uat"))]
   #[test]
   fn uat_subcommand_absent_without_feature() {
-    // Build invariant from Unit 3: no UAT entry point when the
+    // Build invariant: no UAT entry point when the
     // feature is off. clap rejects the subcommand at parse time.
     let result = Cli::try_parse_from(["llamastash", "uat", "--host-backend", "nvidia"]);
     assert!(
