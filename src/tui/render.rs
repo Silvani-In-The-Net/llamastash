@@ -268,24 +268,24 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pale
   frame.render_widget(bg, area);
 
   // Reserve the right slot for the global hint strip; the left slot
-  // (brand + daemon dot) flexes into the rest. The slot width is
-  // derived live from the App's `KeyMap` so a user-supplied
-  // `keybindings:` override flows through to the visible hints. On
-  // terminals too narrow to fit both the hint strip and a readable
-  // brand we drop the hints — the user can still press `?` for the
-  // full help overlay, so nothing is lost.
-  let hint_slot = help_bar::global_hint_slot_width(app);
+  // (brand + daemon dot) flexes into the rest. Chips resolve live from
+  // the App's `KeyMap` (so a `keybindings:` override flows through) and
+  // drop one-by-one by rank as the terminal narrows, keeping the brand
+  // at least `min_brand_w` cells. The user can always press `?` for the
+  // full help overlay, so a dropped chip loses nothing.
   let min_brand_w: u16 = 20;
-  let show_hints = area.width >= hint_slot.saturating_add(min_brand_w);
-  if show_hints {
+  let budget = area.width.saturating_sub(min_brand_w) as usize;
+  let chips = help_bar::fit_global_hints(app, budget);
+  if chips.is_empty() {
+    render_title_left(frame, area, app, palette);
+  } else {
+    let hint_slot = help_bar::hints_render_width(&chips);
     let split = Layout::default()
       .direction(Direction::Horizontal)
       .constraints([Constraint::Min(min_brand_w), Constraint::Length(hint_slot)])
       .split(area);
     render_title_left(frame, split[0], app, palette);
-    help_bar::render_global(frame, split[1], app, palette);
-  } else {
-    render_title_left(frame, area, app, palette);
+    help_bar::render_global(frame, split[1], palette, &chips);
   }
 }
 

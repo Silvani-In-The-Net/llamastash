@@ -20,6 +20,7 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
+use crate::tui::hint_picker::RankedChip;
 use crate::tui::keybindings::{Action, Binding, Focus};
 
 /// One global chip — a stable description plus the action(s) whose
@@ -27,22 +28,38 @@ use crate::tui::keybindings::{Action, Binding, Focus};
 /// the resolver should consult (most chips share the same key across
 /// focuses, but `fields` is only registered in `Focus::RightPane`).
 /// Multiple actions are joined with `/` so the `panes` chip can
-/// carry both `NextFocus` and `PrevFocus` keys.
+/// carry both `NextFocus` and `PrevFocus` keys. `rank` is the
+/// drop priority under width pressure — lower wins (kept longest),
+/// independent of the left-to-right display order below.
 struct GlobalChip {
   description: &'static str,
   focus: Focus,
   actions: &'static [Action],
+  rank: u8,
 }
 
-/// Canonical list of global chips. The description is fixed; the key
-/// label is resolved at render time from the App's `KeyMap` so config
-/// overrides reflect here automatically. Adding or reordering an
-/// entry updates every call site (slot width, text, and renderer).
+/// Canonical list of global chips, in left-to-right **display** order.
+/// The description is fixed; the key label is resolved at render time
+/// from the App's `KeyMap` so config overrides reflect here
+/// automatically. Under width pressure chips drop by `rank` (not
+/// display order): `pull` survives longest, then `help`, `quit`,
+/// `panes`, `theme`, and `scroll` drops first.
 const GLOBAL_CHIPS: &[GlobalChip] = &[
+  // surface the HF pull dialog opener first so first-time users see
+  // the affordance without having to open the help overlay. List
+  // focus only — the binding only fires from the model list (the
+  // dialog overlays once open).
+  GlobalChip {
+    description: "pull",
+    focus: Focus::List,
+    actions: &[Action::OpenHfDialog],
+    rank: 10,
+  },
   GlobalChip {
     description: "help",
     focus: Focus::List,
     actions: &[Action::ToggleHelp],
+    rank: 20,
   },
   // Tab cycles panes everywhere now. `panes` surfaces both
   // directions; the picker prefers `Tab` for forward and
@@ -52,15 +69,7 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     description: "panes",
     focus: Focus::List,
     actions: &[Action::NextFocus, Action::PrevFocus],
-  },
-  // surface the HF pull dialog opener right after `panes` so
-  // first-time users see the affordance without having to open the
-  // help overlay. List focus only — the binding only fires from the
-  // model list (the dialog overlays once open).
-  GlobalChip {
-    description: "pull",
-    focus: Focus::List,
-    actions: &[Action::OpenHfDialog],
+    rank: 40,
   },
   // `↑↓:scroll` mirrors the per-pane bottom-border scroll chip
   // (`right_pane::bidirectional_chip`) but surfaces it always-on so
@@ -71,6 +80,7 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     description: "scroll",
     focus: Focus::List,
     actions: &[Action::MoveUp, Action::MoveDown],
+    rank: 60,
   },
   // RestartDaemon (Ctrl+R) and KillDaemon (Ctrl+K) intentionally
   // do NOT appear in the global hint strip. Both are confirmation-
@@ -82,11 +92,13 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     description: "theme",
     focus: Focus::List,
     actions: &[Action::CycleTheme],
+    rank: 50,
   },
   GlobalChip {
     description: "quit",
     focus: Focus::List,
     actions: &[Action::Quit],
+    rank: 30,
   },
 ];
 
@@ -181,75 +193,70 @@ fn pane_chip_labels(bindings: &[Binding]) -> Vec<String> {
   acc
 }
 
-/// Build the (keys, description) pairs for every chip in display
-/// order, skipping chips whose actions have been entirely unbound.
-fn resolved_chips(app: &App) -> Vec<(String, &'static str)> {
+/// Resolve every chip to a [`RankedChip`] (`key:label` text + drop
+/// rank) in display order, skipping chips whose actions are entirely
+/// unbound.
+fn resolved_chips(app: &App) -> Vec<RankedChip> {
   GLOBAL_CHIPS
     .iter()
-    .filter_map(|chip| chip_keys(app, chip).map(|keys| (keys, chip.description)))
+    .filter_map(|chip| {
+      chip_keys(app, chip)
+        .map(|keys| RankedChip::new(chip.rank, format!("{keys}:{}", chip.description)))
+    })
     .collect()
 }
 
-/// Width in columns the title row should reserve for the global hint
-/// strip, including the leading space inside each `key:label` pair and
-/// a single trailing pad column.
-pub fn global_hint_slot_width(app: &App) -> u16 {
-  let chips = resolved_chips(app);
-  let mut w: usize = 0;
-  for (i, (keys, label)) in chips.iter().enumerate() {
-    if i > 0 {
-      w += hint_sep().chars().count();
-    }
-    w += keys.chars().count() + 1 + label.chars().count();
-  }
-  // One-cell trailing pad so the rightmost hint isn't flush against
-  // the terminal edge.
-  w += 1;
-  u16::try_from(w).unwrap_or(u16::MAX)
+/// The chip strings (`key:label`) that fit in `budget` cells, dropping
+/// the lowest-priority chips (highest `rank`) first. Survivors stay in
+/// display order. An empty result means even the top-ranked chip can't
+/// fit, in which case the caller drops the strip entirely.
+pub fn fit_global_hints(app: &App, budget: usize) -> Vec<String> {
+  crate::tui::hint_picker::pick(resolved_chips(app), budget, hint_sep())
 }
 
-/// Format the global hint string. Stable order; resolved live from
-/// the App's KeyMap so config overrides flow through.
+/// Render width (columns) for an already-fitted set of chip strings:
+/// the chips, their `·` separators, and a single trailing pad column so
+/// the rightmost hint isn't flush against the terminal edge. `0` for an
+/// empty set.
+pub fn hints_render_width(chips: &[String]) -> u16 {
+  if chips.is_empty() {
+    return 0;
+  }
+  let sep_w = hint_sep().chars().count();
+  let body = chips.iter().map(|c| c.chars().count()).sum::<usize>() + sep_w * (chips.len() - 1);
+  u16::try_from(body + 1).unwrap_or(u16::MAX)
+}
+
+/// Format the full global hint string — every chip, display order, no
+/// budget pressure. Used by tests and as the canonical "everything
+/// fits" representation.
 pub fn global_hint_text(app: &App) -> String {
-  let mut out = String::new();
-  for (i, (keys, label)) in resolved_chips(app).into_iter().enumerate() {
-    if i > 0 {
-      out.push_str(hint_sep());
-    }
-    out.push_str(&keys);
-    out.push(':');
-    out.push_str(label);
-  }
-  out
+  resolved_chips(app)
+    .into_iter()
+    .map(|c| c.text)
+    .collect::<Vec<_>>()
+    .join(hint_sep())
 }
 
-/// Render the global hint strip into `area`, right-aligned with text
-/// in `palette.on_accent` on the accent background already painted by
-/// the title-row renderer. `on_accent` rather than `bg` here because
-/// `bg` is `Color::Reset` on the mono theme, which would fall through
-/// to the terminal's default fg over a White accent bar.
-pub fn render_global(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  let chips = resolved_chips(app);
+/// Render the supplied (already-fitted) chip strings into `area`,
+/// right-aligned and non-bold, in `palette.on_accent` over the accent
+/// background the title-row renderer already painted. `on_accent`
+/// rather than `bg` because `bg` is `Color::Reset` on the mono theme,
+/// which would fall through to the terminal's default fg over a White
+/// accent bar.
+pub fn render_global(frame: &mut Frame<'_>, area: Rect, palette: &Palette, chips: &[String]) {
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(chips.len() * 2 + 1);
-  for (i, (keys, label)) in chips.into_iter().enumerate() {
+  for (i, chip) in chips.iter().enumerate() {
     if i > 0 {
       spans.push(Span::raw(hint_sep()));
     }
-    spans.push(hint_span(&keys, label));
+    spans.push(Span::raw(chip.clone()));
   }
   spans.push(Span::raw(" "));
   let para = Paragraph::new(Line::from(spans))
     .alignment(Alignment::Right)
     .style(Style::default().bg(palette.accent).fg(palette.on_accent));
   frame.render_widget(para, area);
-}
-
-/// Build a `key:label` span. Non-bold — it inherits the
-/// accent-bg/on-accent-fg style from the parent Paragraph as-is.
-/// `keys` is allocated per render (the runtime-resolved key string);
-/// `label` is `&'static` because the chip descriptions are fixed.
-fn hint_span(keys: &str, label: &'static str) -> Span<'static> {
-  Span::raw([keys, ":", label].concat())
 }
 
 #[cfg(test)]
@@ -309,19 +316,27 @@ mod tests {
     );
     assert!(text.contains("t:theme"), "got: {text}");
     assert!(text.contains("q:quit"), "got: {text}");
-    // The HF pull dialog chip sits immediately after `panes` so the
-    // affordance is discoverable from the top row.
+    // The HF pull dialog chip leads the strip so the affordance is the
+    // first thing discoverable from the top row.
     assert!(text.contains("P:pull"), "got: {text}");
-    // The scroll chip reads `↑↓:scroll` (no slash) and sits between
-    // pull and theme.
+    // The scroll chip reads `↑↓:scroll` (no slash).
     assert!(text.contains("↑↓:scroll"), "got: {text}");
-    let panes_pos = text.find(":panes").expect("panes chip present");
+    // Display order (left to right): pull → help → panes → scroll →
+    // theme → quit. (Drop priority under width pressure is separate —
+    // see `global_hints_drop_lowest_rank_first_under_pressure`.)
     let pull_pos = text.find(":pull").expect("pull chip present");
+    let help_pos = text.find(":help").expect("help chip present");
+    let panes_pos = text.find(":panes").expect("panes chip present");
     let scroll_pos = text.find(":scroll").expect("scroll chip present");
     let theme_pos = text.find(":theme").expect("theme chip present");
+    let quit_pos = text.find(":quit").expect("quit chip present");
     assert!(
-      panes_pos < pull_pos && pull_pos < scroll_pos && scroll_pos < theme_pos,
-      "expected order: panes → pull → scroll → theme, got: {text}"
+      pull_pos < help_pos
+        && help_pos < panes_pos
+        && panes_pos < scroll_pos
+        && scroll_pos < theme_pos
+        && theme_pos < quit_pos,
+      "expected display order pull → help → panes → scroll → theme → quit, got: {text}"
     );
     // `/:filter` is panel-scoped now (lives in the Models block
     // title) — it should not appear in the global strip.
@@ -365,13 +380,54 @@ mod tests {
 
   #[test]
   fn slot_width_matches_rendered_text_plus_pad() {
-    // Slot width should equal the visible text width plus the one
-    // trailing pad column. If the resolver drifts from the renderer,
-    // the title row would either clip the rightmost hint or leave a
-    // gap.
+    // With a generous budget every chip survives, so the rendered slot
+    // width equals the full visible text width plus the one trailing
+    // pad column. If the width helper drifts from the renderer, the
+    // title row would clip the rightmost hint or leave a gap.
     let app = default_app();
     let text_w = global_hint_text(&app).chars().count() as u16;
-    assert_eq!(global_hint_slot_width(&app), text_w + 1);
+    let all = fit_global_hints(&app, 1000);
+    assert_eq!(hints_render_width(&all), text_w + 1);
+  }
+
+  #[test]
+  fn global_hints_drop_lowest_rank_first_under_pressure() {
+    // Under width pressure chips drop by rank, not display order:
+    // `pull` (10) survives longest, `scroll` (60) drops first. Budget
+    // the three top-ranked chips (pull, help, quit) plus two seps and
+    // assert the rest dropped while survivors keep display order.
+    let app = default_app();
+    let sep = hint_sep().chars().count();
+    let chips = resolved_chips(&app);
+    let width_of = |needle: &str| {
+      chips
+        .iter()
+        .find(|c| c.text.contains(needle))
+        .unwrap_or_else(|| panic!("{needle} chip present"))
+        .text
+        .chars()
+        .count()
+    };
+    let budget = width_of(":pull") + width_of(":help") + width_of(":quit") + 2 * sep;
+    let got = fit_global_hints(&app, budget);
+    for keep in [":pull", ":help", ":quit"] {
+      assert!(
+        got.iter().any(|c| c.contains(keep)),
+        "{keep} (top rank) must survive: {got:?}"
+      );
+    }
+    for drop in [":scroll", ":theme", ":panes"] {
+      assert!(
+        !got.iter().any(|c| c.contains(drop)),
+        "{drop} (lower rank) must drop first: {got:?}"
+      );
+    }
+    // Survivors keep left-to-right display order: pull → help → quit.
+    let joined = got.join(" ");
+    let p = joined.find(":pull").unwrap();
+    let h = joined.find(":help").unwrap();
+    let q = joined.find(":quit").unwrap();
+    assert!(p < h && h < q, "display order not preserved: {joined}");
   }
 
   #[test]
