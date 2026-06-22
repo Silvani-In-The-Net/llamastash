@@ -15,7 +15,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph};
+use ratatui::widgets::{Padding, Paragraph};
 use ratatui::Frame;
 
 use crate::theme::Palette;
@@ -48,20 +48,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
   );
   let border_color = palette.focus_border(focused);
 
-  let mut outer = Block::default()
-    .title(title_line)
-    .borders(Borders::ALL)
-    .border_set(crate::tui::glyphs::active().border_set())
-    .border_style(Style::default().fg(border_color))
-    .padding(Padding::horizontal(1));
   // All right-pane key hints live on the bottom border now —
   // contextual to the active tab and the current focus. Keeps the
   // top reserved for the tab strip alone (cleaner mnemonic
   // underlines) and gives the user one stable place to scan for
   // active keys.
-  if !bottom_chips.is_empty() {
-    outer = outer.title_bottom(bottom_hint_line(&bottom_chips, palette));
-  }
+  let footer = (!bottom_chips.is_empty()).then(|| bottom_hint_line(&bottom_chips, palette));
+  let outer = palette
+    .panel()
+    .title(title_line)
+    .footer(footer)
+    .border(border_color)
+    .padding(Padding::horizontal(1))
+    .build();
   let inner = outer.inner(area);
   frame.render_widget(outer, area);
 

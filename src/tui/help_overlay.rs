@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
@@ -46,12 +46,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     .map(|b| b.label.to_string())
     .unwrap_or_else(|| "?".to_string());
 
-  // Compute layout + scroll bounds first so the title can advertise
-  // scrolling only when the content actually overflows the viewport.
-  let block_for_inner = Block::default()
-    .borders(Borders::ALL)
-    .padding(Padding::new(2, 2, 1, 1));
-  let inner = block_for_inner.inner(rect);
+  let block = palette
+    .panel()
+    .title(Line::from(vec![
+      Span::styled(
+        " Help ",
+        Style::default()
+          .fg(palette.panel_title)
+          .add_modifier(Modifier::BOLD),
+      ),
+      Span::styled(format!("· Esc/{toggle_key}:close "), palette.muted_style()),
+    ]))
+    .padding(Padding::horizontal(1))
+    .build();
+  let inner = block.inner(rect);
+
   let sections = build_sections(app);
   // Single-column layout when the overlay is narrow (≤ 80 cells of
   // usable width) — column-balancing on a 25-cell strip just truncates
@@ -63,28 +72,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     .map(|col| column_height(col))
     .max()
     .unwrap_or(0) as u16;
+  // `j`/`k` scroll silently; the title doesn't advertise it. Clamp so
+  // an over-advanced `help_scroll` doesn't scroll past the last row.
   let max_scroll = tallest.saturating_sub(inner.height);
   let scroll_y = app.help_scroll.min(max_scroll);
 
-  let close_chip = if max_scroll > 0 {
-    format!("Esc/{toggle_key}:close · j/k:scroll")
-  } else {
-    format!("Esc/{toggle_key}:close")
-  };
-  let block = Block::default()
-    .title(Line::from(vec![
-      Span::styled(
-        " Help ",
-        Style::default()
-          .fg(palette.panel_title)
-          .add_modifier(Modifier::BOLD),
-      ),
-      Span::styled(format!("· {close_chip} "), palette.muted_style()),
-    ]))
-    .borders(Borders::ALL)
-    .border_set(crate::tui::glyphs::active().border_set())
-    .border_style(palette.accent_style())
-    .padding(Padding::new(2, 2, 1, 1));
   frame.render_widget(block, rect);
 
   let constraints: Vec<Constraint> = (0..n_cols)
@@ -533,11 +525,6 @@ mod tests {
     assert!(
       frame_top.contains("General"),
       "General must be visible at scroll=0:\n{frame_top}"
-    );
-    // Show the scroll affordance in the title chip when overflow exists.
-    assert!(
-      frame_top.contains("j/k:scroll"),
-      "scroll hint missing in close chip:\n{frame_top}"
     );
     app.help_scroll = 30;
     let frame_bottom = render_to_string(80, 14, &app);

@@ -16,10 +16,10 @@
 
 use std::time::Instant;
 
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::discovery::split_gguf::parse_shard_name;
@@ -688,31 +688,39 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let modal = crate::tui::layout::centered_rect(86, 70, area);
   frame.render_widget(Clear, modal);
   crate::tui::render::paint_theme_bg(frame, modal, palette);
-  let title = match state.stage {
-    HfStage::Search => " Pull from HuggingFace — Search ",
-    HfStage::FilePicker => " Pull from HuggingFace — Files ",
-    HfStage::Confirm => " Pull from HuggingFace — Confirm ",
+  let stage = match state.stage {
+    HfStage::Search => "Search",
+    HfStage::FilePicker => "Files",
+    HfStage::Confirm => "Confirm",
   };
-  let block = palette.panel_block(title, true);
-  frame.render_widget(block.clone(), modal);
+  // Stage name + key hints both ride in the title bar (hints muted,
+  // after a `·` separator), the same shape the help overlay uses.
+  let title = Line::from(vec![
+    Span::styled(format!(" HuggingFace — {stage} "), palette.title_style()),
+    Span::styled(
+      format!("· {} ", stage_hints(app, state)),
+      palette.muted_style(),
+    ),
+  ]);
+  let block = palette
+    .panel()
+    .title(title)
+    .padding(Padding::horizontal(1))
+    .build();
   let inner = block.inner(modal);
+  frame.render_widget(block, modal);
 
   let layout = Layout::default()
     .direction(Direction::Vertical)
-    .constraints([
-      Constraint::Length(3),
-      Constraint::Min(0),
-      Constraint::Length(1),
-    ])
+    .constraints([Constraint::Length(2), Constraint::Min(0)])
     .split(inner);
 
-  render_header(frame, layout[0], app, state, palette);
+  render_header(frame, layout[0], state, palette);
   match state.stage {
     HfStage::Search => render_search_body(frame, layout[1], state, palette),
     HfStage::FilePicker => render_picker_body(frame, layout[1], app, state, palette),
     HfStage::Confirm => render_confirm_body(frame, layout[1], app, state, palette),
   }
-  render_footer(frame, layout[2], app, state, palette);
 }
 
 /// Thin shim over [`App::resolve_label`] specialised to
@@ -723,13 +731,7 @@ fn dialog_label(app: &App, action: KeyAction, fallback: &str) -> String {
   app.resolve_label(Focus::HfDialog, action, fallback)
 }
 
-fn render_header(
-  frame: &mut Frame<'_>,
-  area: Rect,
-  app: &App,
-  state: &HfDialogState,
-  palette: &Palette,
-) {
+fn render_header(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette: &Palette) {
   let sort_label = match state.sort {
     HfSortKey::Downloads => "↓ downloads",
     HfSortKey::Likes => "♡ likes",
@@ -779,17 +781,31 @@ fn render_header(
       muted,
     ));
   }
+  let lines = vec![Line::from(spans), Line::from(second)];
+  frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+/// Stage-aware key-hint strip that rides in the dialog's title bar
+/// after the `HuggingFace — <stage>` label, the same shape the help
+/// overlay uses. Bound chords resolve live from the keymap so a
+/// config-side `keybindings:` rebind flows through; the dialog-internal
+/// chords (`o`, `n`, `p`, `e`) aren't actions, so they stay literal.
+fn stage_hints(app: &App, state: &HfDialogState) -> String {
   let submit = dialog_label(app, KeyAction::Submit, crate::tui::keybindings::ENTER_LABEL);
   let cancel = dialog_label(app, KeyAction::Cancel, crate::tui::keybindings::ESC_LABEL);
-  let lines = vec![
-    Line::from(spans),
-    Line::from(second),
-    Line::from(Span::styled(
-      format!("{submit} on a row drills into files. {cancel} walks back."),
-      muted,
-    )),
-  ];
-  frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+  let up = dialog_label(app, KeyAction::MoveUp, "↑");
+  let down = dialog_label(app, KeyAction::MoveDown, "↓");
+  let arrows = format!("{up}/{down}");
+  match state.stage {
+    HfStage::Search if state.input.is_editing() => {
+      format!("type to search · {arrows}:row · {submit}:open · {cancel}:stop edit")
+    }
+    HfStage::Search => {
+      format!("e:edit · {arrows}:row · {submit}:open · o:sort · n/p:page · {cancel}:close")
+    }
+    HfStage::FilePicker => format!("{arrows}:file · {submit}:select · {cancel}:back"),
+    HfStage::Confirm => format!("{submit}:pull · {cancel}:back"),
+  }
 }
 
 fn render_search_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette: &Palette) {
@@ -1122,37 +1138,6 @@ fn render_confirm_body(
     )),
   ];
   frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
-}
-
-fn render_footer(
-  frame: &mut Frame<'_>,
-  area: Rect,
-  app: &App,
-  state: &HfDialogState,
-  palette: &Palette,
-) {
-  // Bound chords come from the keymap so a config-side
-  // `keybindings:` rebind flows through to the chip strip. The
-  // dialog-internal chords (`o`, `n`, `p`, `e`) aren't actions —
-  // they're component-internal or stage-specific routing — so they
-  // stay as literal labels.
-  let submit = dialog_label(app, KeyAction::Submit, crate::tui::keybindings::ENTER_LABEL);
-  let cancel = dialog_label(app, KeyAction::Cancel, crate::tui::keybindings::ESC_LABEL);
-  let up = dialog_label(app, KeyAction::MoveUp, "↑");
-  let down = dialog_label(app, KeyAction::MoveDown, "↓");
-  let arrows = format!("{up}/{down}");
-  let hints = match state.stage {
-    HfStage::Search if state.input.is_editing() => {
-      format!("type to search · {arrows}:row · {submit}:open · {cancel}:stop edit")
-    }
-    HfStage::Search => {
-      format!("e:edit · {arrows}:row · {submit}:open · o:sort · n/p:page · {cancel}:close")
-    }
-    HfStage::FilePicker => format!("{arrows}:file · {submit}:select · {cancel}:back"),
-    HfStage::Confirm => format!("{submit}:pull · {cancel}:back"),
-  };
-  let line = Line::from(Span::styled(hints, palette.muted_style()));
-  frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), area);
 }
 
 /// Short K/M/B counter for download / like totals so the row stays

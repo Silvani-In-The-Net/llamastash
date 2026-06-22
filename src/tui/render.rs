@@ -734,14 +734,13 @@ fn render_empty_state(
   filter_chip: &str,
   focused: bool,
 ) {
-  use ratatui::widgets::{Block, Borders};
   let title_line = list_pane::build_block_title(title, filter_chip, palette, focused);
   let border_color = list_pane::border_color(palette, focused);
-  let block = Block::default()
+  let block = palette
+    .panel()
     .title(title_line)
-    .borders(Borders::ALL)
-    .border_set(crate::tui::glyphs::active().border_set())
-    .border_style(Style::default().fg(border_color));
+    .border(border_color)
+    .build();
   let inner = block.inner(area);
   frame.render_widget(block, area);
   let lines = vec![

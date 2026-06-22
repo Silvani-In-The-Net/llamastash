@@ -219,21 +219,39 @@ impl Palette {
       .add_modifier(ratatui::style::Modifier::BOLD)
   }
 
+  /// Start a [`PanelBlock`] builder for the standard panel frame.
+  /// Centralises the `Borders::ALL` + glyph border-set so every pane
+  /// shares one frame definition — and so a new pane can't silently
+  /// skip the glyph border-set, which would break ASCII mode. The
+  /// caller owns the content (title / footer `Line`s, border colour,
+  /// padding); the builder owns the frame. Border defaults to
+  /// `palette.accent`; override with [`PanelBlock::border`] for a
+  /// focus-aware (`focus_border`) or severity tone.
+  pub fn panel(&self) -> PanelBlock {
+    PanelBlock {
+      title: None,
+      footer: None,
+      border: self.accent,
+      padding: None,
+    }
+  }
+
   /// Build a standard panel block with consistent border + title
   /// styling. `focused` switches the border to `palette.accent`;
   /// otherwise it uses `palette.muted`. The title is painted
-  /// through `fmt::panel_title` for the same `BOLD + panel_title`
-  /// shape every panel uses.
+  /// through `title_style` for the same `BOLD + panel_title` shape
+  /// every panel uses. Thin convenience over [`Palette::panel`] for
+  /// the common single-string-title case.
   pub fn panel_block(&self, title: &str, focused: bool) -> ratatui::widgets::Block<'static> {
     let border = if focused { self.accent } else { self.muted };
-    ratatui::widgets::Block::default()
-      .borders(ratatui::widgets::Borders::ALL)
-      .border_set(crate::tui::glyphs::active().border_set())
-      .border_style(ratatui::style::Style::default().fg(border))
+    self
+      .panel()
+      .border(border)
       .title(ratatui::text::Line::from(ratatui::text::Span::styled(
         title.to_string(),
         self.title_style(),
       )))
+      .build()
   }
 
   /// Border colour for focus-aware panes. Focused panes adopt
@@ -264,6 +282,67 @@ impl Palette {
     } else {
       Some(ratatui::style::Style::default().bg(self.bg).fg(self.fg))
     }
+  }
+}
+
+/// Builder for the standard panel frame, started by [`Palette::panel`].
+/// Every field is optional except the border colour (defaulted to
+/// `accent`): omit the title for a frame-only pane (the logo), pass a
+/// caller-built `Line` for title / footer, set an explicit border for
+/// focus or severity tones, and add padding where a pane needs inner
+/// breathing room. `title` and `footer` accept either a `Line` or an
+/// `Option<Line>`, so a conditionally-present strip can flow straight
+/// in without an `if`.
+pub struct PanelBlock {
+  title: Option<ratatui::text::Line<'static>>,
+  footer: Option<ratatui::text::Line<'static>>,
+  border: ratatui::style::Color,
+  padding: Option<ratatui::widgets::Padding>,
+}
+
+impl PanelBlock {
+  /// Top-border title. Pass a `Line` or an `Option<Line>`.
+  pub fn title(mut self, title: impl Into<Option<ratatui::text::Line<'static>>>) -> Self {
+    self.title = title.into();
+    self
+  }
+
+  /// Bottom-border strip (hint chips / status legend). Pass a `Line`
+  /// or an `Option<Line>` for a conditionally-present footer.
+  pub fn footer(mut self, footer: impl Into<Option<ratatui::text::Line<'static>>>) -> Self {
+    self.footer = footer.into();
+    self
+  }
+
+  /// Override the border colour — `focus_border` for focus-aware
+  /// panes, a severity tone for popups.
+  pub fn border(mut self, color: ratatui::style::Color) -> Self {
+    self.border = color;
+    self
+  }
+
+  /// Inner padding. Default is none (flush to the border).
+  pub fn padding(mut self, padding: ratatui::widgets::Padding) -> Self {
+    self.padding = Some(padding);
+    self
+  }
+
+  /// Materialise the configured frame into a ratatui `Block`.
+  pub fn build(self) -> ratatui::widgets::Block<'static> {
+    let mut block = ratatui::widgets::Block::default()
+      .borders(ratatui::widgets::Borders::ALL)
+      .border_set(crate::tui::glyphs::active().border_set())
+      .border_style(ratatui::style::Style::default().fg(self.border));
+    if let Some(title) = self.title {
+      block = block.title(title);
+    }
+    if let Some(footer) = self.footer {
+      block = block.title_bottom(footer);
+    }
+    if let Some(padding) = self.padding {
+      block = block.padding(padding);
+    }
+    block
   }
 }
 

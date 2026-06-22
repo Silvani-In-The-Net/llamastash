@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::widgets::{List, ListItem, ListState};
 use ratatui::Frame;
 
 use crate::discovery::DiscoveredModel;
@@ -749,12 +749,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, palette: &Palette, input: Rende
   let border_color = border_color(palette, input.focused);
   let list = List::new(items)
     .block(
-      Block::default()
+      palette
+        .panel()
         .title(title_line)
-        .title_bottom(legend)
-        .borders(Borders::ALL)
-        .border_set(crate::tui::glyphs::active().border_set())
-        .border_style(Style::default().fg(border_color)),
+        .footer(legend)
+        .border(border_color)
+        .build(),
     )
     // KDash-style row highlight: paint the focused row with a
     // saturated `highlight` background (gold/amber per theme) and

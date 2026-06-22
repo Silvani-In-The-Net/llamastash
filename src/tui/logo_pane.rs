@@ -8,7 +8,7 @@
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::theme::Palette;
@@ -16,10 +16,7 @@ use crate::tui::app::App;
 
 /// Render the Logo panel.
 pub fn render(frame: &mut Frame<'_>, area: Rect, _app: &App, palette: &Palette) {
-  let block = Block::default()
-    .borders(Borders::ALL)
-    .border_set(crate::tui::glyphs::active().border_set())
-    .border_style(palette.accent_style());
+  let block = palette.panel().build();
   let inner = block.inner(area);
   frame.render_widget(block, area);
 

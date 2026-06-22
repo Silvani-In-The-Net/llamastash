@@ -7,7 +7,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
@@ -28,9 +28,9 @@ pub fn render(
   // Tone the border/title off the action's severity: red for prompts
   // that lose work (stop/kill/delete/cancel), the warning hue for
   // neutral/additive prompts so red stays meaningful.
-  let (tone, tone_style) = match action.severity() {
-    ConfirmSeverity::Destructive => (palette.error, palette.error_style()),
-    ConfirmSeverity::Neutral => (palette.warning, palette.warning_style()),
+  let tone = match action.severity() {
+    ConfirmSeverity::Destructive => palette.error,
+    ConfirmSeverity::Neutral => palette.warning,
   };
 
   let rect = crate::tui::layout::centered_abs(area, 60, 8, 4, 2);
@@ -40,14 +40,14 @@ pub fn render(
   // Mono opts out (`palette.bg == Color::Reset`).
   crate::tui::render::paint_theme_bg(frame, rect, palette);
 
-  let block = Block::default()
+  let block = palette
+    .panel()
     .title(Line::from(Span::styled(
       format!(" {title} "),
       Style::default().fg(tone).add_modifier(Modifier::BOLD),
     )))
-    .borders(Borders::ALL)
-    .border_set(crate::tui::glyphs::active().border_set())
-    .border_style(tone_style);
+    .border(tone)
+    .build();
   let inner = block.inner(rect);
   frame.render_widget(block, rect);
 
