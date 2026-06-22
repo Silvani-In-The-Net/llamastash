@@ -45,10 +45,11 @@ struct GlobalChip {
 /// display order): `pull` survives longest, then `help`, `quit`,
 /// `panes`, `theme`, and `scroll` drops first.
 const GLOBAL_CHIPS: &[GlobalChip] = &[
-  // surface the HF pull dialog opener first so first-time users see
-  // the affordance without having to open the help overlay. List
-  // focus only — the binding only fires from the model list (the
-  // dialog overlays once open).
+  // Surface the HF pull dialog opener first so first-time users see
+  // the affordance without opening the help overlay. `OpenHfDialog`
+  // is a global (`FocusSet::NAV`) binding — it fires from the model
+  // list and the right pane alike; `focus: Focus::List` here just
+  // picks which binding table resolves the key label.
   GlobalChip {
     description: "pull",
     focus: Focus::List,
