@@ -34,8 +34,33 @@ pub const INHERITED_LABEL: &str = "inherited";
 /// order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerField {
+  /// The preset cycle row, shown at the very top when the model has any
+  /// effective presets. Hidden (and skipped in navigation) otherwise, so
+  /// a model without presets sees the form exactly as before.
+  Preset,
   Knob(KnobField),
   Extras,
+}
+
+/// One stop on the picker's preset cycle. The ring is
+/// `[default] → auto → <named presets…>` — `Default` is present only when
+/// the model has a configured default. Selecting a stop re-seeds the
+/// form's user knobs + extras; `Auto` restores the non-preset baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetStop {
+  Default,
+  Auto,
+  Named(usize),
+}
+
+/// A named preset materialised for the picker: the user-knob set to seed
+/// (ctx / reasoning folded into the typed knobs, matching `user_knobs`)
+/// and the extras argv tail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresetChoice {
+  pub name: String,
+  pub knobs: TypedKnobs,
+  pub extras: Vec<std::ffi::OsString>,
 }
 
 /// Lazily-built navigation order — every knob in editor **display**
@@ -44,7 +69,9 @@ pub enum PickerField {
 /// by `Extras`. Built once on first access so per-keypress navigation
 /// does no allocation.
 static ALL_FIELDS: LazyLock<Box<[PickerField]>> = LazyLock::new(|| {
-  let mut v: Vec<PickerField> = Vec::new();
+  // Preset row leads (rendered + navigated first); knob groups follow;
+  // extras last.
+  let mut v: Vec<PickerField> = vec![PickerField::Preset];
   for group in knob_display_groups() {
     for field in group.fields {
       v.push(PickerField::Knob(*field));
@@ -74,6 +101,8 @@ impl PickerField {
   /// on those rows) so the chip and the handler stay in lockstep.
   pub fn is_editable(self) -> bool {
     match self {
+      // Preset is a cycle-only row (←/→), like a boolean knob.
+      PickerField::Preset => false,
       PickerField::Extras => true,
       PickerField::Knob(k) => match k {
         KnobField::Reasoning | KnobField::FlashAttn | KnobField::Mlock | KnobField::NoMmap => false,
@@ -192,6 +221,18 @@ pub struct LaunchPickerState {
   /// same physical card may appear as both `ROCm0` and `Vulkan0`).
   /// `user_knobs.device` stores the chosen selector verbatim.
   pub device_catalog: Vec<crate::launch::list_devices::LaunchDevice>,
+  /// Effective presets for this model (per-model ∪ arch), name-sorted —
+  /// the cycle stops below `auto`. Empty for a model with no presets, in
+  /// which case the Preset row is hidden.
+  pub presets: Vec<PresetChoice>,
+  /// Index into [`Self::presets`] of the configured default, if any.
+  pub preset_default: Option<usize>,
+  /// Current cycle stop. The Preset row's value column renders this.
+  pub preset_stop: PresetStop,
+  /// The non-preset baseline (the build-time `user_knobs` / `extras` seed:
+  /// last-used params, or empty). Restored when cycling back to `auto`.
+  preset_baseline_knobs: TypedKnobs,
+  preset_baseline_extras: Vec<std::ffi::OsString>,
   /// Row offset clipped from the top of the rendered line list so the
   /// focused row stays visible on small viewports. Recomputed on each
   /// render using the actual area height — the `Cell` lets the
@@ -215,7 +256,112 @@ impl LaunchPickerState {
       active_instances: 0,
       prefer_port: None,
       device_catalog: Vec::new(),
+      presets: Vec::new(),
+      preset_default: None,
+      preset_stop: PresetStop::Auto,
+      preset_baseline_knobs: TypedKnobs::default(),
+      preset_baseline_extras: Vec::new(),
       scroll_offset: Cell::new(0),
+    }
+  }
+
+  /// Whether the model has any effective presets — drives the Preset
+  /// row's visibility. No presets means no row (and no navigation stop),
+  /// so a model without presets renders exactly as before.
+  pub fn has_presets(&self) -> bool {
+    !self.presets.is_empty()
+  }
+
+  /// Seed the preset cycle from the model's effective set. Captures the
+  /// current `user_knobs` / `extras` as the `auto` baseline, then opens on
+  /// the configured default (applying it) if one exists, else stays on
+  /// `auto`. When presets exist the cursor opens on the Preset row.
+  pub fn set_presets(&mut self, presets: Vec<PresetChoice>, default: Option<usize>) {
+    self.preset_baseline_knobs = self.user_knobs.clone();
+    self.preset_baseline_extras = self.extras.clone();
+    let any = !presets.is_empty();
+    self.presets = presets;
+    self.preset_default = default.filter(|i| *i < self.presets.len());
+    if self.preset_default.is_some() {
+      self.preset_stop = PresetStop::Default;
+      self.apply_preset_stop();
+    } else {
+      self.preset_stop = PresetStop::Auto;
+    }
+    if any {
+      self.field = PickerField::Preset;
+    }
+  }
+
+  /// The cycle ring in order: `[default] → auto → named…`.
+  fn preset_ring(&self) -> Vec<PresetStop> {
+    let mut ring = Vec::with_capacity(self.presets.len() + 2);
+    if self.preset_default.is_some() {
+      ring.push(PresetStop::Default);
+    }
+    ring.push(PresetStop::Auto);
+    ring.extend((0..self.presets.len()).map(PresetStop::Named));
+    ring
+  }
+
+  /// Re-seed `user_knobs` / `extras` from the current cycle stop.
+  fn apply_preset_stop(&mut self) {
+    match self.preset_stop {
+      PresetStop::Auto => {
+        self.user_knobs = self.preset_baseline_knobs.clone();
+        self.extras = self.preset_baseline_extras.clone();
+      }
+      PresetStop::Default => {
+        if let Some(i) = self.preset_default {
+          self.seed_from_preset(i);
+        }
+      }
+      PresetStop::Named(i) => self.seed_from_preset(i),
+    }
+  }
+
+  fn seed_from_preset(&mut self, i: usize) {
+    if let Some(p) = self.presets.get(i) {
+      self.user_knobs = p.knobs.clone();
+      self.extras = p.extras.clone();
+    }
+  }
+
+  /// Cycle to the next/previous preset stop and re-seed the form.
+  fn cycle_preset(&mut self, forward: bool) {
+    let ring = self.preset_ring();
+    if ring.is_empty() {
+      return;
+    }
+    let cur = ring
+      .iter()
+      .position(|s| *s == self.preset_stop)
+      .unwrap_or(0);
+    let n = ring.len();
+    let next = if forward {
+      (cur + 1) % n
+    } else {
+      (cur + n - 1) % n
+    };
+    self.preset_stop = ring[next];
+    self.apply_preset_stop();
+  }
+
+  /// Value-column label for the Preset row. `default (long-ctx)` on the
+  /// default stop, `auto`, or the bare preset name.
+  pub fn preset_value_label(&self) -> String {
+    match self.preset_stop {
+      PresetStop::Auto => "auto".to_string(),
+      PresetStop::Default => self
+        .preset_default
+        .and_then(|i| self.presets.get(i))
+        .map(|p| format!("default ({})", p.name))
+        .unwrap_or_else(|| "default".to_string()),
+      PresetStop::Named(i) => self
+        .presets
+        .get(i)
+        .map(|p| p.name.clone())
+        .unwrap_or_default(),
     }
   }
 
@@ -230,6 +376,7 @@ impl LaunchPickerState {
   /// Cycle the focused field's value forward (Right arrow).
   pub fn cycle_focused_value_next(&mut self) {
     match self.field {
+      PickerField::Preset => self.cycle_preset(true),
       PickerField::Knob(k) => self.cycle_knob(k, true),
       PickerField::Extras => {}
     }
@@ -238,6 +385,7 @@ impl LaunchPickerState {
   /// Cycle the focused field's value backward (Left arrow).
   pub fn cycle_focused_value_prev(&mut self) {
     match self.field {
+      PickerField::Preset => self.cycle_preset(false),
       PickerField::Knob(k) => self.cycle_knob(k, false),
       PickerField::Extras => {}
     }
@@ -443,6 +591,11 @@ impl LaunchPickerState {
   /// inherit from the resolver chain.
   pub fn reset_focused_row(&mut self) {
     match self.field {
+      // Reset on the Preset row snaps back to the `auto` baseline.
+      PickerField::Preset => {
+        self.preset_stop = PresetStop::Auto;
+        self.apply_preset_stop();
+      }
       PickerField::Knob(k) => self.clear_user(k),
       PickerField::Extras => {
         self.extras.clear();
@@ -466,6 +619,7 @@ impl LaunchPickerState {
   /// rows. Delegates to the single-source group table.
   pub fn field_visible(&self, field: PickerField) -> bool {
     match field {
+      PickerField::Preset => self.has_presets(),
       PickerField::Knob(k) => self.knob_supported(k) && knob_row_visible(k, self.multi_device()),
       PickerField::Extras => true,
     }
@@ -1204,5 +1358,111 @@ mod tests {
     for spec in knob_specs() {
       assert!(!s.user_has(spec.field), "{:?} must start unset", spec.field);
     }
+  }
+
+  // ---- preset cycle ----
+
+  fn choice(name: &str, ctx: u32) -> PresetChoice {
+    PresetChoice {
+      name: name.into(),
+      knobs: TypedKnobs {
+        ctx: Some(KnobValue::Set(ctx)),
+        ..TypedKnobs::default()
+      },
+      extras: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn no_presets_hides_row_and_leaves_form_untouched() {
+    let s = LaunchPickerState::for_model("qwen");
+    assert!(!s.has_presets());
+    assert!(!s.field_visible(PickerField::Preset));
+    // Cursor opens on the first knob, not the (hidden) preset row.
+    assert_eq!(s.field, PickerField::Knob(KnobField::Ctx));
+  }
+
+  #[test]
+  fn set_presets_opens_on_default_and_applies_it() {
+    let mut s = LaunchPickerState::for_model("qwen");
+    // A baseline user knob (e.g. from last-used) that `auto` should restore.
+    s.user_knobs.threads = Some(KnobValue::Set(8));
+    s.set_presets(vec![choice("short", 8192), choice("long", 65536)], Some(1));
+    assert!(s.has_presets());
+    assert!(s.field_visible(PickerField::Preset));
+    assert_eq!(
+      s.field,
+      PickerField::Preset,
+      "cursor opens on the preset row"
+    );
+    assert_eq!(s.preset_stop, PresetStop::Default);
+    assert_eq!(s.preset_value_label(), "default (long)");
+    // Default applied: ctx seeded from the `long` preset; the baseline
+    // threads override is gone (a preset is a complete config).
+    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(65536)));
+    assert_eq!(s.user_knobs.threads, None);
+  }
+
+  #[test]
+  fn cycle_ring_is_default_then_auto_then_named_and_reseeds() {
+    let mut s = LaunchPickerState::for_model("qwen");
+    s.user_knobs.threads = Some(KnobValue::Set(8)); // baseline
+    s.set_presets(vec![choice("short", 8192), choice("long", 65536)], Some(1));
+    // Opens on Default(long).
+    assert_eq!(s.preset_value_label(), "default (long)");
+    // → auto: restores the baseline (threads back, ctx cleared).
+    s.cycle_focused_value_next();
+    assert_eq!(s.preset_stop, PresetStop::Auto);
+    assert_eq!(s.preset_value_label(), "auto");
+    assert_eq!(s.user_knobs.threads, Some(KnobValue::Set(8)));
+    assert_eq!(s.user_knobs.ctx, None);
+    // → short (Named 0): seeds ctx 8192, drops baseline threads.
+    s.cycle_focused_value_next();
+    assert_eq!(s.preset_value_label(), "short");
+    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(8192)));
+    assert_eq!(s.user_knobs.threads, None);
+    // → long (Named 1).
+    s.cycle_focused_value_next();
+    assert_eq!(s.preset_value_label(), "long");
+    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(65536)));
+    // → wraps back to Default.
+    s.cycle_focused_value_next();
+    assert_eq!(s.preset_stop, PresetStop::Default);
+  }
+
+  #[test]
+  fn no_default_opens_on_auto() {
+    let mut s = LaunchPickerState::for_model("qwen");
+    s.set_presets(vec![choice("only", 4096)], None);
+    assert_eq!(s.preset_stop, PresetStop::Auto);
+    assert_eq!(s.preset_value_label(), "auto");
+    // Ring has no Default stop: auto → only → auto.
+    s.cycle_focused_value_next();
+    assert_eq!(s.preset_value_label(), "only");
+    s.cycle_focused_value_next();
+    assert_eq!(s.preset_value_label(), "auto");
+  }
+
+  #[test]
+  fn reset_on_preset_row_snaps_to_auto_baseline() {
+    let mut s = LaunchPickerState::for_model("qwen");
+    s.user_knobs.threads = Some(KnobValue::Set(4));
+    s.set_presets(vec![choice("only", 4096)], Some(0));
+    assert_eq!(s.preset_stop, PresetStop::Default);
+    s.reset_focused_row();
+    assert_eq!(s.preset_stop, PresetStop::Auto);
+    assert_eq!(
+      s.user_knobs.threads,
+      Some(KnobValue::Set(4)),
+      "baseline restored"
+    );
+  }
+
+  #[test]
+  fn out_of_range_default_index_is_ignored() {
+    let mut s = LaunchPickerState::for_model("qwen");
+    s.set_presets(vec![choice("a", 1)], Some(9));
+    assert_eq!(s.preset_default, None);
+    assert_eq!(s.preset_stop, PresetStop::Auto);
   }
 }

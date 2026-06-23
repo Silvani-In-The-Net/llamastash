@@ -18,7 +18,7 @@ use crate::discovery::DiscoveredModel;
 use crate::theme::{palette_for, Palette, ThemeName};
 use crate::tui::filter::rank;
 use crate::tui::keybindings::{Action, Focus, KeyMap};
-use crate::tui::launch_picker::LaunchPickerState;
+use crate::tui::launch_picker::{LaunchPickerState, PresetChoice};
 use crate::tui::list_pane::{build_rows, ListRow, RowInputs, RunningLaunchRow};
 use crate::tui::status_icons::SurfaceState;
 use crate::tui::tabs::{tabs_for_mode, RightTab};
@@ -269,6 +269,11 @@ pub struct App {
   /// Last-known persisted launch params per model path. Keyed off
   /// the canonical `ModelId.path` the daemon emits.
   pub last_params: BTreeMap<PathBuf, LastParamsRow>,
+  /// Raw config `presets:` blocks from `presets_all`, keyed by model
+  /// name / arch id. The launch picker resolves each model's effective
+  /// set against the catalog (see [`crate::launch::presets`]) to build
+  /// its preset cycle. Empty until the first refresh lands.
+  pub config_presets: BTreeMap<String, crate::config::ConfigPresetBlock>,
   /// Top-N recently-launched paths in recency order (most recent
   /// first). Surfaced via the `↺ Recent` section. Populated from
   /// `last_params_list`; see `RECENT_LIST_CAP`.
@@ -499,6 +504,7 @@ impl App {
       managed: Vec::new(),
       external: Vec::new(),
       last_params: BTreeMap::new(),
+      config_presets: BTreeMap::new(),
       recent_paths: Vec::new(),
       right_tab: RightTab::Settings,
       chat: Default::default(),
@@ -934,6 +940,19 @@ impl App {
           self.device_catalog = devices;
         }
       }
+    }
+  }
+
+  /// Apply a `presets_all` IPC response — the raw config `presets:`
+  /// blocks. The launch picker resolves each model's effective set from
+  /// this against the catalog. A malformed body leaves the cache as-is.
+  pub fn ingest_presets(&mut self, body: &Value) {
+    if let Some(map) = body
+      .get("presets")
+      .cloned()
+      .and_then(|v| serde_json::from_value(v).ok())
+    {
+      self.config_presets = map;
     }
   }
 
@@ -1412,7 +1431,59 @@ impl App {
     // accept (sourced from their `--list-devices`). The picker cycles
     // this flat list and stores the chosen selector verbatim.
     state.device_catalog = self.device_catalog.clone();
+    // Seed the preset cycle from the model's effective set (per-model ∪
+    // arch, resolved against the catalog). No-op when the model has no
+    // presets — the Preset row stays hidden.
+    if let Some(p) = &path {
+      let (choices, default) = self.effective_preset_choices(p);
+      if !choices.is_empty() {
+        state.set_presets(choices, default);
+      }
+    }
     Some(state)
+  }
+
+  /// Resolve the focused model's effective presets into picker-ready
+  /// choices (ctx/reasoning folded into the typed knobs) plus the default
+  /// index. Reuses [`crate::launch::presets::effective_presets`] against
+  /// the local catalog, so the TUI and daemon agree on classification.
+  fn effective_preset_choices(&self, path: &Path) -> (Vec<PresetChoice>, Option<usize>) {
+    use crate::launch::presets::{effective_presets, preset_body_from_launch_params};
+    use crate::launch::resolve::CatalogRow;
+    if self.config_presets.is_empty() {
+      return (Vec::new(), None);
+    }
+    let rows: Vec<CatalogRow> = self
+      .models
+      .iter()
+      .map(|m| {
+        CatalogRow::for_resolution(
+          m.path.display().to_string(),
+          m.display_label.clone(),
+          m.metadata.as_ref().and_then(|md| md.arch.clone()),
+        )
+      })
+      .collect();
+    let path_str = path.display().to_string();
+    let arch = rows
+      .iter()
+      .find(|r| r.path == path_str)
+      .and_then(|r| r.arch.clone());
+    let eff = effective_presets(&path_str, arch.as_deref(), &self.config_presets, &rows);
+    let choices: Vec<PresetChoice> = eff
+      .presets
+      .iter()
+      .map(|np| PresetChoice {
+        name: np.name.clone(),
+        knobs: preset_body_from_launch_params(&np.params).knobs,
+        extras: np.params.extras.clone(),
+      })
+      .collect();
+    let default = eff
+      .default
+      .as_ref()
+      .and_then(|d| choices.iter().position(|c| &c.name == d));
+    (choices, default)
   }
 
   /// Drill into the focused model row — the action `Enter` fires on

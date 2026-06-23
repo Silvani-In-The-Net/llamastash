@@ -440,6 +440,8 @@ fn open_focused_inline_edit(app: &mut App) {
       picker.extras_input.set_text(joined);
       picker.extras_input.enter_edit();
     }
+    // Filtered out by the `is_editable` guard above (Preset is cycle-only).
+    PickerField::Preset => {}
   }
 }
 
@@ -569,6 +571,8 @@ fn commit_inline_edit(app: &mut App) -> bool {
       }
     },
     PickerField::Extras => Ok(()),
+    // Preset is cycle-only — never opens an inline edit to commit.
+    PickerField::Preset => Ok(()),
   };
   match result {
     Ok(()) => {
@@ -1847,6 +1851,9 @@ pub enum RefreshTick {
   Status(Value),
   Favorites(Value),
   LastParams(Value),
+  /// Raw config `presets:` map (`presets_all`). The app resolves each
+  /// model's effective set client-side to seed the picker's preset cycle.
+  Presets(Value),
   /// `logs_tail` snapshot for `launch_id`. Triggered by the
   /// dedicated [`spawn_logs_poller`] task — keeps the per-tick
   /// poll cheap when the user moves between launches.
@@ -1890,6 +1897,9 @@ pub fn spawn_refresher(socket: PathBuf, tx: mpsc::Sender<Event>) {
           }
           if let Ok(body) = client.call("last_params_list", None).await {
             let _ = tx.send(Event::Refresh(RefreshTick::LastParams(body))).await;
+          }
+          if let Ok(body) = client.call("presets_all", None).await {
+            let _ = tx.send(Event::Refresh(RefreshTick::Presets(body))).await;
           }
           tokio::time::sleep(REFRESH_INTERVAL).await;
         }
@@ -2348,6 +2358,10 @@ fn apply_refresh(app: &mut App, tick: RefreshTick) {
     RefreshTick::LastParams(body) => {
       mark_daemon_connected(app);
       app.ingest_last_params(&body);
+    }
+    RefreshTick::Presets(body) => {
+      mark_daemon_connected(app);
+      app.ingest_presets(&body);
     }
     RefreshTick::Logs { launch_id, lines } => {
       mark_daemon_connected(app);

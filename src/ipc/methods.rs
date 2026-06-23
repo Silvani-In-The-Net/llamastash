@@ -109,6 +109,7 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
     "presets_save" => respond(id, presets_save_handler(ctx, req.params).await),
     "presets_delete" => respond(id, presets_delete_handler(ctx, req.params).await),
     "presets_show" => respond(id, presets_show_handler(ctx, req.params).await),
+    "presets_all" => Response::ok(id, presets_all_handler(ctx).await),
     "favorite_add" => respond(id, favorite_add_handler(ctx, req.params).await),
     "favorite_remove" => respond(id, favorite_remove_handler(ctx, req.params).await),
     "favorite_list" => respond(id, favorite_list_handler(ctx).await),
@@ -550,6 +551,7 @@ const PUBLIC_METHODS: &[&str] = &[
   "presets_save",
   "presets_delete",
   "presets_show",
+  "presets_all",
   "favorite_add",
   "favorite_remove",
   "favorite_list",
@@ -814,6 +816,14 @@ async fn presets_show_handler(
     "name": parsed.name,
     "preset": preset.map(|np| preset_row(np, default)),
   }))
+}
+
+/// Raw config `presets:` map (every model/arch key → its block). The TUI
+/// fetches this once per refresh and resolves each model's effective set
+/// client-side (it already holds the catalog), so it can populate the
+/// launch picker's preset cycle without a per-model round-trip.
+async fn presets_all_handler(ctx: &MethodContext) -> Value {
+  json!({ "presets": ctx.presets.snapshot().await })
 }
 
 fn is_default(eff: &EffectivePresets, name: &str) -> bool {
