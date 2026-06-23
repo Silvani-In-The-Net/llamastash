@@ -550,6 +550,10 @@ pub(crate) fn build_options(
   opts.port_range = config.port_range;
   opts.probe_timeout_secs = Some(config.probe_timeout_secs);
   opts.arch_defaults = config.arch_defaults.clone();
+  // Config presets seed the daemon's in-memory store; `config_path` is the
+  // file preset writes and the one-time state.json migration land in.
+  opts.presets = config.presets.clone();
+  opts.config_path = crate::config::config_path(cli.config.clone());
 
   // Auto-fit launch options: config layer first, then the
   // `LLAMASTASH_*` env overrides. A bad env value is logged and ignored
