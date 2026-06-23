@@ -3,6 +3,7 @@ title: "feat: Config presets per model"
 type: feat
 status: active
 date: 2026-06-22
+deepened: 2026-06-23
 origin: "PR #18 — docs/brainstorms/2026-06-06-config-presets-per-model.md (external submission, branch config_brainstorm)"
 ---
 
@@ -10,411 +11,477 @@ origin: "PR #18 — docs/brainstorms/2026-06-06-config-presets-per-model.md (ext
 
 ## Overview
 
-Named launch presets already exist — created via `llamastash presets <model> save <name> …`, stored in `state.json` keyed by `ModelIdentity`, resolved client-side and applied as the `User` layer at launch. What is missing is everything around that primitive: a TUI surface, a config-file overlay, a per-model **default**, and agent-glance discoverability.
+Named launch presets already exist — created via `llamastash presets <model> save <name> …`, stored in `state.json`, applied as the `User` layer at launch. What is missing is everything around that primitive: a config-file home, a TUI surface, a per-model **default**, and agent-glance discoverability.
 
-This plan adds those, reinterpreted to fit the current architecture rather than the v0.0.1-era brainstorm verbatim. The shape:
+This plan adds those, reinterpreted to fit the current architecture. The shape (after the 2026-06-23 deepening):
 
-- **`state.json` stays the only writable preset store.** The CLI `presets save/delete` and the new TUI CRUD both write here. Nothing silently writes `config.yaml`.
-- **`config.yaml` gains a read-only `presets:` overlay.** One block; each key is classified at resolution time — if it matches a discovered model (name, path fallback) it is **per-model**, otherwise it is read as an **arch id** and applies to every model of that arch. Config presets **add to or override** `state.json` presets by name.
-- **A per-model `default` preset** is introduced. `start <model>` with no `--preset` auto-applies it (surfaced, never silent); the TUI pre-selects it.
-- **TUI is inline, not modal** — a `◀ preset ▶` cycle row in the existing launch picker plus an inline Settings-style manager pane.
-- **Agents** keep using the existing `presets_list` / `presets_show` IPC; `status` gains only a light per-model hint (`preset_count` + `default`).
-- **`presets export`** materializes `state.json` presets into the `config.yaml` block in place, so machine-local presets can be promoted into the shareable, version-controlled file.
+- **`config.yaml` is the single source of truth for presets, and is writable.** Presets live in a normal `presets:` key, edited surgically (one node at a time) so the rest of the file is untouched. The CLI `presets save/delete` and the TUI `Ctrl+P` both write there. `state.json` presets are **migrated once** on boot, then cleared.
+- **Comment-safe writes via surgical patching.** Preset edits use `yamlpath` + `yamlpatch` (zizmor) to patch only the node being changed; every comment and bit of formatting in `config.yaml` — including inside a hand-authored presets section — is preserved (no whole-file `serde_yaml` re-serialize). Decision grounded in research (see Context).
+- **In-memory store + write-through.** The daemon loads presets from `config.yaml` at start and holds them in memory; a save/delete mutates memory **and** atomically patches the one node in `config.yaml` (via `yamlpatch`), so app-driven changes are live without a restart. Hand-edits to `config.yaml` need a daemon restart.
+- **One `presets:` block, key classified at resolution:** matches a discovered model (name, path fallback) → **per-model**; otherwise read as an **arch id** → every model of that arch. Model wins. CLI/TUI only ever write **per-model** keys; arch-level presets are hand-authored.
+- **A per-model/arch `default`,** chosen **only** by the `default:` key in `config.yaml` (hand-edited). It drives the TUI cycle's opening selection. It does **not** auto-apply on the CLI.
+- **TUI is inline:** a `default → auto → named presets` cycle row at the top of the launch/settings page, plus a `Ctrl+P` "save current knobs as preset" dialog (reusing an extended confirm dialog). No list/delete in the TUI — that stays CLI.
+- **Agents** keep using `presets_list` / `presets_show`; `status` gains only a light per-model hint (`preset_count` + `default`).
 
 ## Problem Frame
 
-A user has one GGUF and wants several launch configs for it — `short-ctx` (`--ctx 8192`), `long-ctx` (`--ctx 65536 --flash-attn`), `coding` (`--ctx 16384 --keep 0`) — and wants to pick one quickly, set a default, share the set across machines, and let agents see them. The capability exists; the UX does not. Today you must drop to the CLI to create a preset, there is no default, the TUI ignores named presets entirely, and presets cannot live in the version-controlled config file.
+A user has one GGUF and wants several launch configs for it — `short-ctx`, `long-ctx`, `coding` — picks one quickly, and wants them shareable/version-controlled in `config.yaml`. The capability exists in `state.json`; the UX does not: creation is CLI-only, there is no default, the TUI ignores named presets, and presets cannot live in the config file.
 
-The originating brainstorm (PR #18) proposed solving this by moving presets into `config.yaml` with TUI write-back, keyed by "the canonical model id (the GGUF's `general.architecture` string)." Research showed three of its premises fight the current architecture, so this plan corrects them (see Key Technical Decisions and origin: PR #18).
+The originating brainstorm (PR #18) proposed moving presets into `config.yaml` with TUI write-back, keyed by "the canonical model id (the GGUF's `general.architecture` string)." Research showed three premises fought the architecture; the user's deepening direction resolved them (see Key Technical Decisions and origin: PR #18).
 
 ## Requirements Trace
 
-Carried from the PR #18 brainstorm's design goals, re-scoped:
+Carried from the PR #18 brainstorm's goals, re-scoped by the 2026-06-23 deepening:
 
-- R1. **TUI selector** — pick a preset for the selected model at launch, default pre-selected. (brainstorm goal 1)
-- R2. **TUI CRUD** — create / edit / delete presets from the TUI, writing to the preset store. (goal 2)
+- R1. **TUI selector** — pick a preset for the selected model at launch; default pre-selected. (brainstorm goal 1)
+- R2. **TUI save** — `Ctrl+P` saves the current knobs as a named preset, writing to `config.yaml`. (re-scoped from goal 2 — TUI is save-only; no list/delete)
 - R3. **TUI discoverability** — show a preset count on the model card. (goal 3)
-- R4. **Config-file authoring** — presets can be authored in `config.yaml`, hand-edited, shareable, version-controllable. (goal 4)
-- R5. **Default per model** — one preset is the default, used when launching without `--preset`. (goal 5)
+- R4. **Config-file authoring** — presets live in `config.yaml`, the single writable source, comment-safe. (goal 4, hardened)
+- R5. **Default per model/arch** — one preset is the default (config `default:`), driving the TUI cycle's opening selection. (goal 5, re-scoped: TUI-only, not CLI auto-apply)
 - R6. **Agent-facing** — agents discover presets and select one by name. (goal 6)
-- R7. **Coexistence of stores** — `config.yaml` presets and `state.json` presets both work; config overrides/adds by name. (re-scoped from goal 7's one-shot "migrate")
-- R8. **Export** — a CLI command materializes `state.json` presets into the `config.yaml` block. (user-added requirement)
+- R7. **One-time migration** — existing `state.json` presets are imported into `config.yaml` once, then `state.json` presets are cleared. (re-scoped from goal 7)
+- R8. **CLI CRUD** — `presets save` (create-or-update) / `list` / `show` / `delete`, now reading/writing `config.yaml`. (user-confirmed)
 
 ## Scope Boundaries
 
-- **No silent `config.yaml` writes.** The only thing that ever writes the config file is the explicit `presets export` command. The TUI and `presets save/delete` write `state.json`.
-- **Config-defined presets are read-only in the TUI/CLI** — shown and selectable, but to change one you edit `config.yaml`. Editing happens in `state.json` only.
-- **No new resolver `LayerLabel`.** Presets (explicit or default) keep collapsing into the `User` layer client-side, exactly as `--preset` does today. The brainstorm's `preset > last_params > …` chain stays an application of the existing baseline-then-overlay flow, not a new daemon layer.
-- **No preset inheritance, no cross-machine sync, no versioning, no live-validation against a running server, no "save running model's live params"** (out of scope in the brainstorm; still out).
-- **Config presets carry no `port`** — port is per-launch and auto-assigned; a shareable preset pinning a port is a footgun.
-- **Config is read at daemon start**, like `arch_defaults`. Editing `config.yaml` presets requires a daemon restart to take effect; `state.json` writes are live. Documented, not worked around.
+- **No `export` command.** Removed — config *is* the store, so there's nothing to export to.
+- **No `presets_set_default` op.** The default is config-only (hand-edited). No CLI/TUI sets it.
+- **No TUI list/delete.** The TUI only *saves* (`Ctrl+P`) and *selects* (cycle row). Listing/deleting is CLI.
+- **CLI/TUI write per-model keys only.** Arch-level presets are hand-authored in `config.yaml`.
+- **No CLI default auto-apply.** `start <model>` with no `--preset` launches "auto" (pure resolver/fit defaults), exactly as today. `--preset <name>` applies one. (No `--no-preset` flag — there's nothing to opt out of.)
+- **No new resolver `LayerLabel`.** A selected/explicit preset keeps collapsing into the `User` layer client-side, as `--preset` does today.
+- **No preset inheritance, cross-machine sync beyond the config file, versioning, or live-validation against a running server.**
+- **Config presets carry no `port`** (per-launch, auto-assigned).
+- **`serde_yaml` migration is out of scope.** Research flagged it archived/deprecated; reads still work. Tracked as a deferred follow-up (Unit 8 / TODO), not part of this feature.
 
 ## Context & Research
 
-External research skipped: this is entirely internal architecture (config, state, resolver, IPC, CLI, TUI) with no new dependency.
+### Comment-preserving YAML (decision input — 2026-06-23)
+
+Two research passes (best-practices-researcher web-verified, then a targeted look at a user-supplied article) concluded:
+
+- **`serde_yaml` 0.9.34+deprecated** — repo archived 2024-03-25 by dtolnay, comment-blind by design (parses to a comment-less `Value`, re-emits canonical YAML). The repo pins `serde_yaml = "0.9"` (`Cargo.toml:135`). It can never preserve comments. (Reads still work; replacing it is a separate deferred follow-up.)
+- **`yaml_edit`** (jelmer, rowan-based, lossless) is the only general CST editor but is v0.2.2, ~6 stars, single maintainer, born Feb 2026 — too young to be load-bearing. `yaml-rust2`/`saphyr` are parsers without comment round-trip; `marked-yaml` is read-only.
+- **Adopted: `yamlpath` + `yamlpatch`** (zizmorcore/zizmor, MIT, both `1.26.1` released 2026-06-21, ~156k/82k recent downloads). `yamlpatch`'s purpose is literally "comment and format-preserving YAML patch operations" — it patches the located node and leaves all other comments/formatting intact. Battle-tested inside zizmor (which surgically rewrites users' GitHub workflow YAML). Source: the "Respectful YAML patching in Rust" article (verrchu.github.io) pairs `yamlpath` (route to a node) with `yamlpatch` (apply `Op::Append`/`Remove`/`Replace`).
+- **Caveats** (from the article, designed around): `Op::Replace` fails on *sequences* → we key preset entries by **name as a map**, so create/update/delete are map-key `Append`/`Replace`/`Remove` (no sequence replace). No flow-style list support → we always emit/expect block style. A standalone comment can shift to inline when a key is removed → cosmetic, only on delete.
+- **Read path unchanged** — `config.yaml` is still parsed whole via `serde_yaml`; `yamlpatch` is used only on the **write** path, routed through the existing atomic `write_secure`.
+- Rejected: the managed-block sentinel (zero-dep but machine-owns the whole presets region, wiping user comments inside it — less respectful of a hand-authored config) and a separate `presets.yaml` file (violates "presets live in config.yaml").
 
 ### Relevant Code and Patterns
 
 - **Preset primitive** — `src/launch/presets.rs`: `NamedPreset { name, params: LaunchParams }`, `Presets` (`#[serde(transparent)]` `Vec<NamedPreset>`, `upsert`/`remove`/`get`), `PresetStore = BTreeMap<ModelIdentity, Presets>`.
-- **State store** — `src/daemon/state_store.rs`: `DaemonState.presets: Vec<PresetsEntry>`, `PresetsEntry { id: ModelIdentity, presets: Presets }`, `presets_map()`, `upsert_presets()`. On-disk is a `Vec<(id, value)>` because serde can't key a map by a struct — reuse this exact pattern for any new per-model field. `schema_version: u32 = 1`; comment confirms "no migration code pre-1.0" (crate is `0.0.4`).
-- **Identity** — `src/gguf/identity.rs` `ModelId { path, header_blake3 }`; `src/backend/identity.rs` `ModelIdentity` (`#[serde(untagged)]` `Gguf | Backend`). `resolve_model` / `resolve_model_id` map a user ref → id; `src/cli/resolve.rs` `fetch_catalog` + `resolve_model` is the name/path/id resolver to reuse for config-key classification.
-- **Config** — `src/config/loader.rs`: `Config` (`#[serde(default, rename_all="snake_case")]`), `arch_defaults: BTreeMap<String, TypedKnobs>` (key = arch string), factory `Default`, `load_config_from_path` (`serde_yaml`, unknown keys ignored). `TypedKnobs` (19 `Option<KnobValue<T>>` fields; `Set(v)` ⇆ bare scalar, `Auto` ⇆ `{auto:true}`). **`ctx` and `reasoning` are siblings of `knobs` in `LaunchParams`, not inside `TypedKnobs`.** Route all per-knob read/write through the `KnobField` accessor guarded by the `apply_knob_handles_every_spec_in_the_alias_table` exhaustiveness test — the documented silent-edit-loss bug class.
-- **Config writer** — `src/config/writer.rs`: `merge_and_write(path, serde_yaml::Value)` (recursive merge + atomic `write_secure`, 0600). **Re-serializes the whole file via `serde_yaml`, dropping user comments.** Only existing caller is the init wizard's `ManagedKey` digest path (`src/init/snapshot.rs`).
-- **Resolver** — `src/daemon/launch_service.rs:~300-322` builds the four-layer `resolve_layered(&[(User,…),(LastUsed,…),(ArchDefault,yaml),(ArchDefault,builtin)])` then `seed_layerless`. `src/launch/params.rs`: `LayerLabel`, `resolve_layered`, `Resolved.sources`.
-- **`--preset` flow** — `src/cli/start.rs`: `fetch_preset_params` → IPC `presets_show` → preset `LaunchParams` baseline → CLI flags `TypedKnobs::overlay` on top → ships as `User` layer. `emit_response` surfaces `(preset: NAME)` / `"preset": NAME`.
-- **IPC** — `src/ipc/methods.rs`: `presets_list/save/delete/show` handlers (resolve `ModelIdentity::Gguf(resolve_model_id(path))`, read/mutate via `presets_map`/`upsert_presets`), `preset_row()` formatter, `PUBLIC_METHODS` (advertised by `capabilities`).
-- **CLI presets** — `src/cli/cli_args.rs` `PresetsArgs`/`PresetsAction`, `src/cli/presets.rs` `handle` + `render_presets_human` (byte-stable TSV branch under non-TTY).
-- **TUI launch picker** — `src/tui/launch_picker.rs` (`LaunchPickerState`, `PickerField::Knob | Extras`, `InlineEdit`); rendered inline in `src/tui/tabs/settings.rs`. `src/tui/app.rs::build_default_picker` seeds from `last_params[path]` (does **not** read named presets today). Value selection is `←/→` cycling (`cycle_device`), no dropdown widget. Shared widget helpers: `panel_block` (`src/theme/palette.rs`), `kv_row`/`caret` (`src/tui/fmt.rs`), `centered_rect` (`src/tui/layout.rs`), `InputField` (`src/tui/input_field.rs`). Confirm dialogs: `ConfirmAction` (`src/tui/app.rs`). Model card render: `src/tui/tabs/` models list.
-- **Keybindings** — `src/tui/keybindings.rs`: `Action` enum, `Binding` (`label`/`description`), `Focus` + `FocusSet`, `DEFAULT_BINDINGS` via `binds!`, `KeyMap`. **Hard rule (AGENTS.md): every UI key label derives from the keymap** (`App::hint`/`resolve_label`), never a string literal.
-- **status** — `src/ipc/status.rs::status_response` (top-level key set pinned by `status_top_level_key_set_is_stable`; model rows built at `models.push(...)` ~L84/L129). CLI mirror `src/cli/output.rs::status_json` must reproduce IPC byte-for-byte.
+- **State store** — `src/daemon/state_store.rs`: `DaemonState.presets: Vec<PresetsEntry>`, `PresetsEntry { id: ModelIdentity, presets: Presets }`, `presets_map()`, `upsert_presets()`. `schema_version: u32` (pre-1.0, no migration code; crate `0.0.4`). **This `presets` field becomes migration-only and is slated for removal** (Unit 3, Unit 8 TODO).
+- **Identity** — `src/gguf/identity.rs` `ModelId { path, header_blake3 }`; `src/backend/identity.rs` `ModelIdentity`. `src/cli/resolve.rs` `fetch_catalog` + `resolve_model` (name/path/id) is the resolver to reuse for config-key classification.
+- **Config** — `src/config/loader.rs`: `Config` (`#[serde(default, rename_all="snake_case")]`), `arch_defaults: BTreeMap<String, TypedKnobs>`, `load_config_from_path` (`serde_yaml`, unknown keys ignored). `TypedKnobs` (19 `Option<KnobValue<T>>`; `Set(v)` ⇆ bare scalar, `Auto` ⇆ `{auto:true}`). **`ctx`/`reasoning` are siblings of `knobs` in `LaunchParams`, not inside `TypedKnobs`.** Route per-knob read/write through the `KnobField` accessor guarded by `apply_knob_handles_every_spec_in_the_alias_table` — the documented silent-edit-loss bug class.
+- **Config writer** — `src/config/writer.rs`: `merge_and_write(path, Value)` (recursive `merge`, **whole-file `serde_yaml` re-serialize**, atomic `write_secure`, 0600, symlink/parent-mode guards). Used by the init wizard. **Comment-blind** — the new `yamlpatch`-based presets writer is a separate path that does NOT re-serialize the whole file.
+- **Resolver** — `src/daemon/launch_service.rs:~300-322`: four-layer `resolve_layered(&[(User,…),(LastUsed,…),(ArchDefault,yaml),(ArchDefault,builtin)])` + `seed_layerless`. `src/launch/params.rs`: `LayerLabel`, `resolve_layered`. **Unchanged by this plan.**
+- **`--preset` flow** — `src/cli/start.rs`: `fetch_preset_params` → IPC `presets_show` → preset `LaunchParams` baseline → CLI flags `TypedKnobs::overlay` → ships as `User`. `emit_response` surfaces `(preset: NAME)`.
+- **IPC** — `src/ipc/methods.rs`: `presets_list/save/delete/show` handlers, `preset_row()`, `PUBLIC_METHODS` (advertised by `capabilities`).
+- **CLI presets** — `src/cli/cli_args.rs` `PresetsArgs`/`PresetsAction`; `src/cli/presets.rs` `handle` + `render_presets_human` (byte-stable TSV branch).
+- **TUI launch picker** — `src/tui/launch_picker.rs` (`LaunchPickerState`, `PickerField::Knob | Extras`, `InlineEdit`), rendered inline in `src/tui/tabs/settings.rs`. `src/tui/app.rs::build_default_picker` seeds from `last_params[path]` (ignores named presets today). Value selection is `←/→` cycling (`cycle_device`); no dropdown. Helpers: `panel_block`/`Palette::panel` (`src/theme/palette.rs`), `kv_row`/`caret` (`src/tui/fmt.rs`), `centered_rect` (`src/tui/layout.rs`), `InputField` (`src/tui/input_field.rs`). Confirm dialog: `ConfirmAction` (`src/tui/app.rs`) — **to be extended with a text-input variant for the `Ctrl+P` name prompt.** Model-card render: `src/tui/tabs/` models list.
+- **Keybindings** — `src/tui/keybindings.rs`: `Action`, `Binding` (`label`/`description`), `Focus` + `FocusSet`, `DEFAULT_BINDINGS` via `binds!`, `KeyMap`. **Hard rule (AGENTS.md): every UI key label derives from the keymap**, never a literal.
+- **status** — `src/ipc/status.rs::status_response` (top-level key set pinned by `status_top_level_key_set_is_stable`; model rows at `models.push(...)` ~L84/L129). CLI mirror `src/cli/output.rs::status_json` must reproduce IPC byte-for-byte.
+- **Atomic write** — `util::atomic_write::write_secure` (`*.tmp.<rand>` + fsync + atomic rename + parent fsync, 0600). The presets writer hands it the patched document string from `yamlpatch`.
 
 ### Institutional Learnings
 
-(No `docs/solutions/` memos exist yet; these come from prior plans/reviews — a `ce:compound` memo on the config-write stance is a good follow-up after this ships.)
+(No `docs/solutions/` memos exist yet; a `ce:compound` memo on the `yamlpatch` comment-safe-write decision is a good follow-up after this ships.)
 
-- **`config.yaml` is deliberately author-owned.** The arch-defaults work (R107, `docs/plans/2026-05-20-003-feat-arch-defaults-typed-editor-plan.md`) made the init wizard *stop* writing config; YAML is the hand-edited escape hatch. This plan honors that — config presets are read-only except the explicit `export`, which warns about comment loss.
-- **Presets are not a daemon resolver layer.** `LayerLabel` has no `Preset` variant; presets are applied client-side on `User`. Keep it that way; a new layer would also interact badly with `LLAMASTASH_BENCH_DISABLE_DEFAULTS=1` (collapses to User-only) and `seed_layerless`.
-- **Silent-edit-loss bug class.** Per-knob `_ => None` wildcards silently dropped edits with no test failure; fixed by a `KnobField`-keyed accessor + exhaustiveness test. Any new knob read/write (config-preset parsing, partial→params materialization, CRUD form) must go through it.
-- **`status` + CLI `--json` are frozen byte-stable contracts.** Additive only; extend the golden test; mirror into `cli/output.rs::status_json`; use explicit `#[serde]` shaping (watch the past `{state:{state:…}}` double-nest). IPC validation errors travel as `InvalidParams` → CLI exit `64`; invent no new exit code.
-- **TUI house style is inline, not modal; dropdowns are `◀ value ▶` cycles.** Toast on selection/toggle (silent toggles were a fixed bug). Delete-confirm uses the `ConfirmAction` severity field, not hardcoded red.
-- **Launch-param field set is re-spelled across 5-6 sites** (`StartParams`, `PresetsSaveParams`, `start.rs::PartialParams`, `WriterCmd::StartModel`, `ConfirmAction::LaunchDuplicate`). Presets add more sites — consider the proposed `LaunchParamsWire` consolidation while here, or at minimum do not add a 7th divergent copy.
+- **`config.yaml` was made author-owned** (R107, `docs/plans/2026-05-20-003-feat-arch-defaults-typed-editor-plan.md`) — the wizard stopped writing it. This plan deliberately reintroduces a *narrow, comment-safe* machine-write surface (presets edits via `yamlpatch` only) per the user's decision that config is the source of truth.
+- **Wizard interaction risk:** the init wizard's `merge_and_write` re-serializes the *whole* file via comment-blind `serde_yaml`. A wizard run after presets exist preserves the preset *data* but strips *all* comments (including in the presets section), undoing `yamlpatch`'s preservation. Out of scope here; tracked as a deferred follow-up to move the wizard onto `yamlpatch`. Flagged in Risks.
+- **Presets are not a daemon resolver layer.** `LayerLabel` has no `Preset` variant; presets apply client-side on `User`. Keep it that way (also avoids the `LLAMASTASH_BENCH_DISABLE_DEFAULTS=1` + `seed_layerless` interaction).
+- **Silent-edit-loss bug class** — route every knob read/write through the `KnobField` accessor + exhaustiveness test.
+- **`status` + CLI `--json` are frozen byte-stable contracts** — additive only; extend the golden test; mirror into `cli/output.rs::status_json`; `InvalidParams` → CLI exit 64.
+- **TUI house style is inline, not modal; dropdowns are `◀ value ▶` cycles; toast on selection.** Delete/overwrite confirms use the `ConfirmAction` severity field.
 
 ### External References
 
-- llama.cpp `llama-server` flags (verbatim `TypedKnobs` field names) — already documented in `config.example.yaml`; no new external doc needed.
+- `yamlpath` / `yamlpatch` (zizmorcore/zizmor) and the "Respectful YAML patching in Rust" article (verrchu.github.io). llama.cpp `llama-server` flag names already documented in `config.example.yaml`.
 
 ## Key Technical Decisions
 
-- **Hybrid storage, `state.json` writable + `config.yaml` read overlay.** Resolves the brainstorm's core tension (it wanted config authoring *and* TUI write-back, which fights "config is author-owned" and wipes comments). Writers touch `state.json`; config is read-only except `export`. (corrects origin goals 2+4)
-- **One `presets:` block, key classified at resolution: model (name, path fallback) else arch.** Corrects the brainstorm's conflation of `ModelId` (path + BLAKE3, per-model, not hand-typeable) with the arch string (`arch_defaults`'s key, per-arch). The friendly key is the **model name** the user already types as `<model-ref>` and sees in `list`; unmatched keys fall through to arch semantics. No separate `arch_presets:` block (it would near-duplicate `arch_defaults`). (corrects origin "why model id" section)
-- **Effective preset set = per-model config ∪ arch config ∪ state, union by name, most-specific wins** (`per-model > arch > state`). The `default` resolves by the same precedence.
-- **Default auto-applies client-side, same path as `--preset`.** No new `LayerLabel`; `start.rs` resolves the default → baseline `LaunchParams` → overlay → `User` layer. `--no-preset` opts out. Surfaced as `(preset: X (default))`. (corrects origin goal 5's vagueness)
-- **Config presets are minimal partials** (`name` + `ctx`/`reasoning`/flattened `TypedKnobs`/`extras`), materialized into a `NamedPreset` at load. Matches the brainstorm's small-and-composable intent and hand-author ergonomics; `state.json` presets stay full snapshots (unchanged).
-- **`default` stored as a new `Option<String>` on `PresetsEntry`** (additive, `#[serde(default)]`, deserializes from existing `state.json`; pre-1.0, no migration). Config `default:` overrides it.
-- **Agent surface stays lean:** existing `presets_list`/`presets_show` carry detail; `status` gets only `preset_count` + `default` per model row. (corrects origin goal 6's full-`status`-block proposal)
-- **TUI inline,** reusing the launch picker + a Settings-style manager pane; all key labels from `KeyMap`. (corrects origin's modal/dropdown mockups)
-- **`export` writes in place by default** (user decision), with a `--dry-run` preview and an explicit comment-loss warning, via `config::writer::merge_and_write`.
+- **`config.yaml` is the single writable source of truth for presets** (user, 2026-06-23). Reverses the earlier hybrid; `state.json` presets migrate once then clear.
+- **Comment-safe via `yamlpath` + `yamlpatch`** (research-backed; user-selected) — surgical node patching preserves all comments/formatting including inside the presets section, no whole-file re-serialize. Adds two MIT zizmor crates. Preset entries are keyed by name as a map to avoid `yamlpatch`'s Replace-on-sequence caveat. (resolves origin's comment-loss problem)
+- **In-memory store + write-through** (user) — daemon holds presets in memory, mutations update memory and atomically rewrite the block; app changes live without restart.
+- **One `presets:` block; key = model name (path fallback) else arch id; model wins** (user). CLI/TUI write per-model only; arch presets hand-authored. (corrects origin's ModelId/arch conflation)
+- **Effective preset set = per-model config ∪ arch config, union by name, model wins.** `default` resolves the same way. (Post-migration, `state.json` is no longer a source.)
+- **`default` is config-only** (user) — set by the `default:` key, hand-edited. Drives the TUI cycle's opening selection; **does not** auto-apply on the CLI. (re-scoped origin goal 5)
+- **TUI:** inline `default → auto → named presets` cycle row + a `Ctrl+P` save dialog reusing an extended `ConfirmAction` (text-input + overwrite-confirm). No list/delete. (corrects origin's modal/dropdown mockups)
+- **`Ctrl+P` capture preserves auto/default markers** from the settings form (e.g. `ctx: auto`), and captures a running model's actual launch params. (user)
+- **CLI verbs unchanged in shape** — `save` is create-or-update; `list`/`show`/`delete` stay; they now target `config.yaml`. (user)
+- **One-time migration is marked removable** (`// ONE-TIME MIGRATION (remove after …)`) with a TODO.md entry to delete it and the now-dead `state.json` `presets` field in a later version. (user)
+- **Agent surface stays lean** — existing `presets_list`/`presets_show` + `preset_count`/`default` hint in `status`. (corrects origin's full-`status`-block proposal)
 
 ## Open Questions
 
 ### Resolved During Planning
 
-- **Storage location?** Hybrid — `state.json` writable, `config.yaml` read overlay. (user)
-- **Config key?** Single `presets:` block; model-name (path fallback) else arch id. (user)
-- **Per-model vs per-arch?** Both, unified under one block + the classification rule. (user)
-- **Default behavior on no-`--preset`?** Auto-apply, surfaced, `--no-preset` to skip. (user)
-- **TUI surface?** Inline selector + inline manager pane. (user)
-- **Agent surface?** Existing IPC + light `status` hint. (user)
-- **Export default?** In-place write, with `--dry-run` and comment-loss warning. (user)
-- **Migration of existing `state.json` presets?** None needed — both stores coexist; `export` is the opt-in promotion path. (re-scoped from brainstorm goal 7)
+- Storage / source of truth → `config.yaml`, writable, comment-safe via `yamlpatch`. (user)
+- Comment handling → `yamlpath` + `yamlpatch` surgical patching, entries keyed by name as a map (research + user-selected; managed-block and separate-file rejected, `yaml_edit` too immature). (user "research first")
+- Migration → config wins on collision, clear `state.json` after; key by basename even if the file is gone. (user)
+- Write-key granularity → per-model only via CLI/TUI; arch hand-authored. (user)
+- Live propagation → in-memory write-through. (user)
+- `Ctrl+P` scope → settings form **and** running-model row. (user)
+- `Ctrl+P` capture → preserve auto/default markers (form); actual params (running). (user)
+- CLI verbs → keep `save`(upsert)/`list`/`show`/`delete`; no new verb. (user)
+- Cycle field → `default → auto → named presets`; opens on default else auto. (user)
+- Default set → config-only, hand-edited; no set-default op. (user)
+- CLI `start` no-`--preset` → pure auto; default is TUI-only. (user)
 
 ### Deferred to Implementation
 
-- **Exact merge helper signature/placement** — likely `src/launch/presets.rs` (`effective_presets(...)`) consumed by daemon launch + IPC; finalize once the config types land.
-- **Config-key classification timing** — per-resolution against the live catalog (a model key only classifies as "model" while that model is discovered; otherwise it reads as arch and harmlessly matches nothing). Confirm the daemon has a catalog handle at the IPC/launch call sites or thread one.
-- **Whether to land the `LaunchParamsWire` consolidation** here or note it as a follow-up — decide when touching the IPC param structs in Unit 2.
-- **`export` partial minimization** — which fields count as "non-default" worth emitting; tune against real `state.json` data during implementation.
-- **Model-card hint placement/format** — exact column vs badge; settle against the live render.
+- **`yamlpatch` op mapping** — confirm the exact `Op` + `yamlpath::route!` for each store mutation (create entry, update entry by name, delete entry, create the model/arch key when absent, set the daemon-written `default`). Validate `Replace` works on a map *value* (not a sequence). Specified at a contract level in Unit 1; finalize against the crate API during implementation.
+- **`effective_presets` signature/placement** — likely `src/launch/presets.rs`, consuming the in-memory store + the live catalog for classification.
+- **Config-key classification timing** — per-resolution against the live catalog (a model key classifies as "model" only while discovered; else read as arch).
+- **`Ctrl+P` overwrite-confirm threading** — how the extended `ConfirmAction` carries the pending preset payload between the name prompt and the overwrite confirm.
+- **Migration removal version** — pick the concrete target (e.g. `v0.2.0`) when the migration lands.
+- **`serde_yaml` → maintained parser** (reads) — separate follow-up; not blocking.
 
 ## High-Level Technical Design
 
 > *This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce.*
 
-### Where presets come from, and how they merge
+### Storage, store, and write-through
 
 ```
-                         config.yaml  presets:                 state.json
-                         ┌───────────────────────────┐         ┌──────────────────┐
-  key classified at  →   │  "Qwen3.6-27B-Q4_K_M":     │         │ PresetsEntry {   │
-  resolution time        │     matches a model        │         │   id, presets,   │
-                         │     → PER-MODEL            │         │   default        │  ← new field
-                         │  "qwen2":                  │         │ }                │
-                         │     no model match         │         └──────────────────┘
-                         │     → ARCH id              │
-                         └───────────────────────────┘
-                                      │                                  │
-                                      ▼                                  ▼
-        effective_presets(model)  =  per-model config  ∪  arch config  ∪  state
-                                     (union by name; on collision  per-model > arch > state)
-                                     default = per-model.default ?? arch.default ?? state.default
+                 ┌────────────────── config.yaml ──────────────────┐
+   reads ───────►│  …user comments + hand-authored keys (untouched) │
+ (serde_yaml,    │  presets:                                        │
+  whole file)    │    Qwen3.6-27B-Q4_K_M:                           │
+                 │      default: long-ctx     # user comment kept   │◄── writes patch
+                 │      entries: { short-ctx: {…}, long-ctx: {…} }  │    ONLY the touched
+                 │    qwen2: { entries: { coding: {…} } }           │    node (yamlpatch)
+                 └──────────────────────────────────────────────────┘
+                          ▲                         │
+       load at start ─────┘                         ▼  save/delete
+                 ┌──────────── daemon in-memory preset store ────────┐
+                 │  mutate memory  ──►  yamlpatch the one node + atomic write │
+                 └────────────────────────────────────────────────────┘
+                          │ reads (presets_list/show, launch, status)
+                          ▼
+   effective_presets(model) = per-model config ∪ arch config   (union by name; model wins)
+   default = per-model.default ?? arch.default                 (config-only)
 ```
 
 ### Key classification (decision matrix)
 
-| Config key string | Matches a discovered model? | Classified as | Applies to |
+| Config key | Matches a discovered model? | Classified as | Applies to |
 |---|---|---|---|
 | `Qwen3.6-27B-Q4_K_M` | yes (unique name) | per-model | that model only |
 | `~/models/foo.gguf` | yes (path fallback) | per-model | that model only |
 | `qwen2` | no | arch id | every qwen2 model |
-| `qwen2` *(a model is literally named `qwen2`)* | yes | per-model | that model only (model wins) |
-| `llama` | no model, no discovered llama-arch model | arch id | nothing (harmless) |
-| `Qwen…` | matches >1 model | unresolved | skipped + `doctor` warning |
+| `qwen2` *(a model is named `qwen2`)* | yes | per-model | that model only (model wins) |
+| `Qwen…` | matches >1 model | unresolved | skipped + `doctor`/load warning |
 
-### Launch-time application (no new resolver layer)
+### Preset selection (launch) — no new resolver layer, no CLI default auto-apply
 
 ```
-start <model>                    resolve_target_preset(model, --preset?/--no-preset?)
-  │                                 ├─ --preset NAME → effective_presets[NAME]   (config wins)
-  │                                 ├─ (none)        → effective default          (auto-apply)
-  │                                 └─ --no-preset   → None
-  ▼
-preset.params (LaunchParams baseline)  ──overlay CLI/TUI knobs──►  user_knobs
-  ▼
-[ daemon ]  resolve_layered([ User(user_knobs), LastUsed, ArchDefault(yaml), ArchDefault(builtin) ])
-            → seed_layerless → compose argv          # unchanged four-layer resolver
+CLI  start <model>            --preset NAME → effective_presets[NAME] (baseline)
+                              (none)        → no preset  (pure resolver/fit "auto")
+TUI  cycle row selection      default → effective default preset
+                              auto    → no preset
+                              <name>  → that preset
+        ▼ (any chosen preset)
+  preset.params (LaunchParams baseline)  ──overlay CLI/TUI knobs──►  user_knobs
+        ▼
+[ daemon ] resolve_layered([ User(user_knobs), LastUsed, ArchDefault(yaml), ArchDefault(builtin) ])
+           → seed_layerless → compose argv          # unchanged
 ```
+
+### Surgical write contract (Unit 1) — name-keyed entries + yamlpatch
+
+Entries are a **map keyed by preset name**, which makes every mutation a map-key op (no sequence Replace):
+
+```yaml
+presets:
+  Qwen3.6-27B-Q4_K_M:        # model key (name, path fallback) — or an arch id
+    default: long-ctx        # daemon-written only when a set-default path exists; else hand-edited
+    entries:
+      short-ctx: { ctx: 8192 }
+      long-ctx:  { ctx: 65536, flash_attn: true }
+```
+
+```
+store mutation                       yamlpath route                         yamlpatch Op
+──────────────────────────────────────────────────────────────────────────────────────────
+create entry (name absent)           presets → <model> → entries            Append { name: body }
+update entry (name present)          presets → <model> → entries → <name>    Replace { body }     # map value, not a sequence
+delete entry                         presets → <model> → entries → <name>    Remove
+create model/arch key (absent)       presets                                 Append { <key>: {entries:{…}} }
+delete last entry of a key           presets → <model>                       Remove               # prune the now-empty key
+```
+
+- `yamlpatch` preserves every comment/format outside the patched node. The read path stays a whole-file `serde_yaml` parse.
+- If the `presets:` top-level key is absent entirely, the first write creates it (Append at root).
+- All writes route the patched document string through `util::atomic_write::write_secure` (atomic, 0600, symlink/parent-mode guards).
 
 ## Implementation Units
 
 ```
-Unit 1 (resolution core) ──┬──► Unit 2 (IPC merged view + set_default)
-                           │        │
-                           │        ├──► Unit 3 (launch: --preset/default apply)
-                           │        │        │
-                           │        │        └──► Unit 4 (TUI selector) ──► Unit 5 (TUI manager + card hint)
-                           │        └──────────────────────────────────────► Unit 7 (status hint + docs sweep)
-                           └──► Unit 6 (presets export CLI)
+Unit 1 (yamlpatch presets writer) ──► Unit 2 (schema + store + resolution)
+                                          ├──► Unit 3 (one-time migration, removable)
+                                          └──► Unit 4 (IPC CRUD + status hint)
+                                                  ├──► Unit 5 (CLI verbs; start=auto)
+                                                  ├──► Unit 6 (TUI cycle field)
+                                                  └──► Unit 7 (TUI Ctrl+P save dialog)
+Unit 8 (docs + TODO tracking + deferred serde_yaml note)  ◄── lands docs for all
 ```
 
-- [ ] **Unit 1: Preset resolution core — config schema, default field, merged effective view**
+- [ ] **Unit 1: Presets config writer via `yamlpath` + `yamlpatch` (comment-preserving)**
 
-**Goal:** Add the `config.yaml` `presets:` schema and the single merge function that produces a model's effective preset set + default. The DRY heart everything else consumes.
+**Goal:** A writer that applies a single store mutation (create/update/delete a named preset, create/prune a model/arch key) to `config.yaml` by patching only the touched node, preserving every other comment and bit of formatting, atomically.
 
-**Requirements:** R4, R5, R7
+**Requirements:** R4
 
 **Dependencies:** None
 
 **Files:**
-- Modify: `src/config/loader.rs` — add `presets: BTreeMap<String, ConfigPresetBlock>` to `Config` (`#[serde(default)]`); define `ConfigPresetBlock { default: Option<String>, entries: Vec<ConfigPreset> }` and `ConfigPreset { name, ctx: Option<u32>, reasoning: Option<bool>, #[serde(flatten)] knobs: TypedKnobs, extras: Option<Vec<String>> }`.
-- Modify: `src/daemon/state_store.rs` — add `default: Option<String>` to `PresetsEntry` (`#[serde(default)]`); helper to read/set it.
-- Modify: `src/launch/presets.rs` — `ConfigPreset → NamedPreset` materialization (build `LaunchParams` partial via the `KnobField` accessor); `effective_presets(model_id, model_name, arch, &config, &state) -> (Presets, Option<String> /*default*/)`; key-classification helper.
-- Modify: `config.example.yaml` — document the `presets:` block (model + arch keys, `default`, partial entries) next to `arch_defaults`.
-- Test: `src/config/loader.rs` (inline `#[cfg(test)]`), `src/launch/presets.rs` (inline).
+- Modify: `Cargo.toml` — add `yamlpath` and `yamlpatch` (zizmor, MIT, `1.26.1`).
+- Create: `src/config/presets_writer.rs` — map each store mutation to a `yamlpath::route!` + `yamlpatch::Op` (per the write-contract table); build the patched document; hand the final string to `util::atomic_write::write_secure`.
+- Modify: `src/config/mod.rs` — wire the module.
+- Test: `src/config/presets_writer.rs` inline.
 
-**Approach:**
-- `ConfigPreset` flattens `TypedKnobs` so `flash_attn: true` / `keep: 0` sit flat under the entry (matches the brainstorm YAML); `ctx`/`reasoning` are explicit siblings (they live outside `TypedKnobs`).
-- Classification (see matrix): exact name match → path fallback → else arch id. Needs the discovery catalog; thread it or accept a `&[CatalogRow]`.
-- Merge: union by name with `per-model > arch > state`; default resolved by the same precedence.
+**Approach:** Read path unchanged (whole-file `serde_yaml`). Writes patch the named node only. Entries are a name-keyed map so update = `Replace` on a map value (avoids `yamlpatch`'s Replace-on-sequence caveat); create = `Append`, delete = `Remove`. Always emit block style (no flow sequences). Create the top-level `presets:` key on first write; prune a model/arch key when its last entry is removed. Route through `write_secure` for atomicity + symlink/parent-mode guards.
 
-**Patterns to follow:** `arch_defaults` map shape + `config.example.yaml:500-551` doc style; `TypedKnobs`/`KnobValue` serde; `KnobField` accessor + `apply_knob_handles_every_spec_in_the_alias_table` exhaustiveness test; `Vec<Entry>` on-disk pattern for the new `default` field.
+**Patterns to follow:** `src/config/writer.rs` hardening (symlink refusal, parent-mode, atomic write) — reuse the guards, not the whole-file re-serialize; the "Respectful YAML patching in Rust" article's `Document` + `Patch`/`Op::Append`/`Remove`/`Replace` usage.
 
 **Test scenarios:**
-- Happy path: a `presets:` block with a model-name key and an arch key deserializes; entries with `ctx`/`reasoning`/`flash_attn`/`extras` materialize into correct `NamedPreset`s.
-- Happy path: `effective_presets` returns union by name; a config preset and a state preset with distinct names both appear.
-- Edge: name collision across all three sources → `per-model > arch > state` wins, exactly one entry survives.
-- Edge: key matches a model → per-model only (not also serving as that arch's preset for siblings); same string when a model is named `qwen2` → per-model wins.
-- Edge: key matches zero models and is not a real arch → classified arch, matches nothing, no error.
-- Edge: key matches >1 model → returns an unresolved marker the caller can warn on (no panic).
-- Edge: `default` names a preset absent from the effective set → treated as "no default" (caller may warn).
-- Edge: existing `state.json` with no `default` field deserializes (serde default `None`).
-- Error: `ConfigPreset` with an unknown flat key → ignored (forward-compat), known knob with a bad value → surfaced as a deserialize error, not a silent drop.
+- Happy path: create a preset under a new model key → `presets:` + the key + entry appear; re-read parses it.
+- Happy path: update an existing entry by name (`Replace` on the map value) → only that value changes; **all surrounding comments/formatting are byte-identical** (assert exact bytes, incl. a user comment on a sibling preset).
+- Happy path: delete an entry (`Remove`) → entry gone, sibling comments preserved; deleting the last entry prunes the now-empty model/arch key.
+- Edge: a config with a hand-authored arch preset + inline comments → an app write to a *different* model leaves the arch preset and its comments untouched.
+- Edge: arbitrary scalar/map values (int ctx, bool flash_attn, string name, `extras` list, `Auto` as `{auto:true}`) round-trip faithfully.
+- Edge: `presets:` key absent entirely → first write creates it at root.
+- Known caveat (documented, asserted): deleting a preset that has a standalone leading comment may move that comment inline — assert the data is still correct even if the comment attaches differently.
+- Error: target is a symlink / parent dir group-writable → refused (reused guards).
 
-**Verification:** Config with model + arch preset keys round-trips; `effective_presets` precedence holds in tests; an existing `state.json` loads unchanged.
+**Verification:** Unit tests prove byte-exact preservation of unrelated content and faithful round-trip; a manual write against a commented `config.yaml` leaves all unrelated comments intact.
 
-- [ ] **Unit 2: IPC presets surface — merged read view, source/default flags, set-default, write-to-state-only**
+- [ ] **Unit 2: Presets schema + in-memory store + resolution/merge**
 
-**Goal:** Make `presets_list`/`presets_show` return the merged effective view (state ∪ config) with `source` and `is_default` flags; keep `presets_save`/`presets_delete` writing `state.json` only; add `presets_set_default`.
+**Goal:** Parse the `config.yaml` `presets:` block into typed config presets, hold them in an in-memory store loaded at daemon start, and resolve a model's effective preset set + default.
 
-**Requirements:** R6, R7, R5
+**Requirements:** R4, R5, R6
 
 **Dependencies:** Unit 1
 
 **Files:**
-- Modify: `src/ipc/methods.rs` — `presets_list_handler`/`presets_show_handler` call `effective_presets`; `preset_row()` gains `source: "config" | "state"` and `is_default: bool`; add `presets_set_default_handler` (writes the `PresetsEntry.default`); guard `presets_save`/`presets_delete` against config-defined names with an `InvalidParams` "defined in config.yaml; edit the file" error; register `presets_set_default` in dispatch + `PUBLIC_METHODS`.
-- Modify: `src/daemon/state_store.rs` — `set_default_preset(id, Option<String>)` mutator (validates name exists in state presets).
-- Test: `src/ipc/methods.rs` inline; an integration test under `tests/` for the daemon round-trip.
+- Modify: `src/config/loader.rs` — add `presets: BTreeMap<String, ConfigPresetBlock>` to `Config` (`#[serde(default)]`); `ConfigPresetBlock { default: Option<String>, entries: BTreeMap<String, PresetBody> }` (entries keyed by preset **name**); `PresetBody { ctx: Option<u32>, reasoning: Option<bool>, #[serde(flatten)] knobs: TypedKnobs, extras: Option<Vec<String>> }` (the name is the map key, not a body field — matches the name-keyed layout `yamlpatch` edits).
+- Create/Modify: `src/launch/presets.rs` — `(name, PresetBody) → NamedPreset` materialization (build `LaunchParams` via the `KnobField` accessor, preserving `Auto`); `effective_presets(model_id, name, arch, &store, &catalog) -> (Presets, Option<String> /*default*/)`; key-classification helper.
+- Create: in-memory store (e.g. `src/daemon/preset_store.rs` or fold into the daemon context) — loaded from `Config.presets` at start; `save`/`delete`/`list`/`get` over per-model keys; `save`/`delete` call the Unit 1 writer (write-through).
+- Modify: `config.example.yaml` — documented `presets:` example (model + arch keys, `default`, name-keyed `entries`).
+- Test: `src/config/loader.rs`, `src/launch/presets.rs`, the store module (all inline).
 
-**Approach:**
-- `presets_list` merges config; rows carry `source`/`is_default` so the TUI/CLI can mark provenance. Detail stays here (not in `status`).
-- Writes are state-only: deleting/overwriting a config-only preset returns a clear error rather than silently editing the config file.
-- `capabilities` auto-advertises `presets_set_default` via `PUBLIC_METHODS`.
+**Approach:** `PresetBody` flattens `TypedKnobs` so `flash_attn: true` sits flat under the named entry; `ctx`/`reasoning` are explicit siblings. Classification (matrix) reuses `resolve_model` against the live catalog. Merge: union by name, `per-model > arch`. The store is the single read/write surface the IPC layer calls; mutations go through the Unit 1 `yamlpatch` writer.
 
-**Patterns to follow:** existing `presets_*` handler bodies; wrapped-object JSON convention (`{"presets":[…]}`, `presets show` → `{"action","preset",…}`); `InvalidParams` → exit 64; explicit serde shaping; reuse `LaunchParamsWire` consolidation if landing it here.
+**Patterns to follow:** `arch_defaults` map shape + `config.example.yaml` doc style; `TypedKnobs`/`KnobValue` serde; `KnobField` accessor + exhaustiveness test; `Presets`/`NamedPreset` reuse.
 
 **Test scenarios:**
-- Happy path: `presets_list` returns state + config presets; config-only and state-only each carry the right `source`; the default row has `is_default: true`.
-- Happy path: `presets_set_default` sets the state default; `presets_list` reflects it; clearing with `null` works.
-- Edge: `presets_show` of a config-overridden name returns the config version (config wins).
-- Error: `presets_save`/`presets_delete` targeting a config-only preset → `InvalidParams` with the "edit config.yaml" message, state untouched.
-- Error: `presets_set_default` naming a non-existent preset → `InvalidParams`.
-- Integration: save → set-default → list over a real daemon shows the default; restart reads it back from `state.json`.
+- Happy path: a `presets:` block with a model-name key and an arch key deserializes; entries with `ctx`/`reasoning`/`flash_attn`/`extras` materialize correctly, `Auto` preserved.
+- Happy path: `effective_presets` returns per-model ∪ arch; on a name collision, the per-model entry wins.
+- Edge: key matches a model → per-model only (does not also serve siblings as arch); model named `qwen2` → per-model wins.
+- Edge: key matches zero models and isn't a real arch → classified arch, matches nothing, no error.
+- Edge: key matches >1 model → unresolved marker for the caller to warn on (no panic).
+- Edge: `default` names an absent preset → treated as no default (caller may warn).
+- Store: `save` then `get` returns it; `delete` removes it; both call the Unit 1 `yamlpatch` writer (assert `config.yaml` updated).
+- Error: a known knob with a bad value → deserialize error (not a silent drop); unknown flat key → ignored (forward-compat).
 
-**Verification:** `capabilities` lists `presets_set_default`; merged list shows correct provenance + default; config presets are immutable via IPC.
+**Verification:** Config round-trips; `effective_presets` precedence holds; the store reads back what it wrote via Unit 1.
 
-- [ ] **Unit 3: Launch path — `--preset` resolves merged set, default auto-applies, `--no-preset`**
+- [ ] **Unit 3: One-time `state.json` → `config.yaml` migration (marked removable)**
 
-**Goal:** `start <model>` resolves `--preset` from the merged set (config wins), auto-applies the model's default when no `--preset` is given, supports `--no-preset`, and surfaces the applied preset.
+**Goal:** On daemon start, import any `state.json` presets into `config.yaml` (via the Unit 1 writer) under model-name keys (config wins on collision), then clear `state.json` presets so it never re-runs. The code is clearly marked temporary with a TODO to remove it later.
 
-**Requirements:** R5, R6, R7
+**Requirements:** R7
 
 **Dependencies:** Unit 1, Unit 2
 
 **Files:**
-- Modify: `src/cli/cli_args.rs` — add `--no-preset` to `StartModelArgs`.
-- Modify: `src/cli/start.rs` — `fetch_preset_params` resolves from the merged set; when no `--preset` and not `--no-preset`, resolve+apply the effective default; `emit_response` shows `(preset: X)` and `(preset: X (default))` and the `--json` `preset`/`preset_default` fields.
-- Modify: `src/tui/app.rs` — `build_default_picker` seeds from the effective default preset, falling back to `last_params` when none.
-- Test: `src/cli/start.rs` inline; `src/tui/app.rs` inline.
+- Modify: `src/daemon/mod.rs` (or the daemon boot path) — the one-time migration step, wrapped in a clearly marked, self-contained function (e.g. `migrate_state_presets_to_config`) with a banner comment: `// ONE-TIME MIGRATION (remove after vX.Y.Z) — see TODO.md`.
+- Modify: `src/daemon/state_store.rs` — read `presets` for migration; after a successful migration, set `presets` to empty and persist. Mark the field `// migration-only; remove with the migration (TODO.md)`.
+- Modify: `TODO.md` — entry to remove the migration code **and** the dead `state.json` `presets` field in a later version (also done in Unit 8's sweep; whichever lands first owns it).
+- Test: `tests/` integration (daemon boot) + inline unit for the import/merge mapping.
 
-**Approach:** Default application reuses the existing baseline-then-overlay flow — resolve default → `preset.params` baseline → overlay CLI/TUI knobs → ship as `User`. No daemon change, no new `LayerLabel`. `--no-preset` short-circuits to "no baseline."
+**Approach:** For each `PresetsEntry`, derive the model name from `ModelId.path`'s basename (works even if the file is gone). If the config block already has that key → keep config (don't clobber). Write via the Unit 1 writer. Then clear `state.json` presets atomically. Idempotent: after the clear, a second boot finds nothing to migrate.
+
+**Execution note:** Start with a failing integration test that seeds `state.json` presets, boots the daemon, and asserts they land in `config.yaml` and `state.json` is cleared.
 
 **Test scenarios:**
-- Happy path: `--preset coding` (config) applies the config preset; `--preset short-ctx` (state) applies the state preset.
-- Happy path: no `--preset`, model has a default → default applied, output reads `(preset: X (default))`, `--json` carries `preset_default: true`.
-- Happy path: no `--preset`, no default → behaves exactly as today (last_params + arch_defaults + builtin).
-- Edge: `--no-preset` with a default set → no preset applied; `--preset` + `--no-preset` together → usage error (mutually exclusive).
-- Edge: CLI knob overlay on top of a preset preserves untouched preset fields (existing `cli_knobs_overlay_onto_preset_keeps_untouched_preset_fields` extended).
-- Edge: `--preset` names a preset absent from the merged set → `MODEL_NOT_FOUND`-style "preset not found" error (existing exit path).
-- Integration (TUI): opening the picker for a model with a default pre-seeds that preset's knobs.
+- Happy path: `state.json` with two models' presets → both appear in `config.yaml` under basename keys; `state.json` presets cleared.
+- Edge: a config key already exists for a model → config kept, that `state.json` entry dropped (config wins).
+- Edge: a preset's model file no longer exists → still keyed by stored basename (no data dropped).
+- Edge: second boot after migration → no-op (nothing to migrate; config untouched).
+- Edge: empty `state.json` presets → no block created, no write.
+- Integration: boot → migrate → `presets list` shows the migrated presets from config; restart → still present, `state.json` still empty.
 
-**Verification:** Manual E2E — `start <model>` with a default shows `(preset: … (default))`; `--no-preset` skips; `--preset` picks config over state on a name collision.
+**Verification:** Integration test green; the migration function and dead field carry the removal marker; the TODO.md entry exists.
 
-- [ ] **Unit 4: TUI preset selector in the launch picker (inline cycle row)**
+- [ ] **Unit 4: IPC — presets CRUD on the in-memory store + `status` hint**
 
-**Goal:** A `◀ preset ▶` cycle row at the top of the inline launch picker; cycling re-seeds the form (ctx/reasoning/knobs/extras) from the selected preset; default pre-selected; a "Custom" entry leaves the form user-driven.
+**Goal:** Point `presets_list/show/save/delete` at the in-memory store (config-backed, write-through); add `source`/`is_default` to rows; add a light `preset_count` + `default` hint to `status` model rows.
 
-**Requirements:** R1
+**Requirements:** R6, R8, R3
 
 **Dependencies:** Unit 2, Unit 3
 
 **Files:**
-- Modify: `src/tui/launch_picker.rs` — add a `Preset` picker field (cycle, like `device`); hold the merged preset list + selected index; re-seed knobs on change; mark default and `(config)` provenance in the row label.
-- Modify: `src/tui/tabs/settings.rs` — render the selector row.
-- Modify: `src/tui/keybindings.rs` — any new `Action`/label needed (cycling reuses `←/→` on the focused row; add a label if a distinct binding is wanted).
-- Modify: `src/tui/app.rs` — wire selection → re-seed; toast on change.
-- Test: `src/tui/launch_picker.rs` inline; a golden render via `llamastash --render`; a driver script under `scripts/tui/`.
-
-**Approach:** Reuse the `←/→` cycle pattern (`cycle_device`), `kv_row`/`caret`, and origin chips (selecting a preset shows the `User`/preset source on the affected knobs). No dropdown widget. Toast feedback on selection per the fixed silent-toggle rule.
-
-**Patterns to follow:** `cycle_device` + `PickerField`; `kv_row`/`caret`; toast helper; key labels from `KeyMap`.
-
-**Test scenarios:**
-- Happy path: picker for a model with presets shows the selector; the default is pre-selected and marked.
-- Happy path: cycling to `long-ctx` updates the ctx/flash-attn display fields live.
-- Edge: model with no presets → selector hidden or shows only "Custom"; form behaves as today.
-- Edge: a config-defined preset shows a `(config)` marker; selecting it re-seeds correctly.
-- Edge: selecting "Custom" leaves prior user edits intact (no clobber).
-- Integration: golden render at a representative size matches; driver script confirms cycle → field update.
-
-**Verification:** `make render` snapshot + a `scripts/tui/tui_drive.py` run show the selector, default-first, live field updates on cycle.
-
-- [ ] **Unit 5: TUI preset manager pane (inline CRUD) + model-card hint**
-
-**Goal:** An inline Settings-style pane to create / edit / delete (state-only) and set-default presets for a model; config-defined presets shown read-only; a preset-count hint on the Models list.
-
-**Requirements:** R2, R3
-
-**Dependencies:** Unit 2, Unit 4
-
-**Files:**
-- Create: `src/tui/preset_manager.rs` — pane state + render + key router (list rows, Add/Edit/Delete/Set-Default).
-- Modify: `src/tui/keybindings.rs` — `Action` variants (`OpenPresetManager`, `AddPreset`, `EditPreset`, `DeletePreset`, `SetDefaultPreset`), `Focus::PresetManager` + `FocusSet` bit, `DEFAULT_BINDINGS` entries with labels/descriptions.
-- Modify: `src/tui/app.rs` — `Option<PresetManagerState>`; `ConfirmAction::PresetDelete{…}` (destructive severity); wire IPC `presets_save`/`presets_delete`/`presets_set_default`; toast on each.
-- Modify: `src/tui/tabs/` (models list) — render `● N presets` hint from `status`/list data.
-- Test: `src/tui/preset_manager.rs` inline; `scripts/tui/harness.py` program for the CRUD flow; golden render for the card hint.
-
-**Approach:** Inline pane with `↑↓` rows, `←→` value-cycle within the edit form, `e` edit, `Enter` commit, `Esc` cancel, delete via `ConfirmAction` (red severity from the payload, not hardcoded). Config-defined rows render with a `(config)` tag and reject edit/delete with a toast ("edit config.yaml"). Validation at commit, inline warning. All labels from `KeyMap`.
-
-**Patterns to follow:** HF-dialog scaffolding (`src/tui/hf_dialog.rs` / `hf_pull.rs`) as the multi-stage template; `InputField` for name entry; `panel_block`/`centered_rect`; `ConfirmAction` severity field; `KeyMap` label rule.
-
-**Test scenarios:**
-- Happy path: open manager → Add a preset (name + ctx + a knob) → it appears in the list and via `presets_list`.
-- Happy path: Edit a state preset's ctx → persists; Set Default → marked, toast shown.
-- Happy path: Delete a state preset → confirm → removed; cancel → retained.
-- Edge: a config-defined preset shows `(config)`, and Edit/Delete are refused with a toast (state untouched).
-- Edge: empty/duplicate preset name at commit → inline validation warning, no write.
-- Edge: model card shows the correct `● N presets` count; zero presets → no badge.
-- Integration: `scripts/tui/harness.py` drives add→set-default→delete and asserts the screen + a follow-up `presets list` reflects the change.
-
-**Verification:** Harness program passes; live TUI run shows CRUD round-tripping into `state.json` and config presets immutable; card badge counts correctly.
-
-- [ ] **Unit 6: `presets export` CLI — materialize state.json presets into config.yaml**
-
-**Goal:** A CLI command that writes `state.json` presets (all, or one model) into the `config.yaml` `presets:` block in place, keyed by model name, with a `--dry-run` preview and a comment-loss warning.
-
-**Requirements:** R8, R4
-
-**Dependencies:** Unit 1
-
-**Files:**
-- Modify: `src/cli/cli_args.rs` — `PresetsAction::Export { model: Option<String>, dry_run: bool, json: bool }` (or a top-level `presets export`); default writes in place.
-- Create: `src/cli/presets_export.rs` — read presets (via IPC `presets_list` or state), resolve `ModelIdentity → model name`, serialize each preset down to a minimal partial, build the `presets:` `serde_yaml::Value`, write via `config::writer::merge_and_write`; print the comment-loss warning; `--dry-run` prints the block to stdout without writing.
-- Modify: `src/cli/presets.rs` or dispatcher — route `Export`.
-- Test: `src/cli/presets_export.rs` inline; integration test for the merge write.
-
-**Approach:** Minimal-partial serialization keeps the emitted block clean (drop default/Auto fields; emit `ctx`/`reasoning` only when meaningfully set; flatten set knobs; include `extras`; carry the per-model `default`). `merge_and_write` re-serializes the whole file (comments lost) — warn explicitly; `--dry-run` is the safe preview. Omit `port` from exported presets.
-
-**Patterns to follow:** `config::writer::merge_and_write` + `read_or_default`; `parse_tail_args`/`TypedKnobs` serde for round-trip fidelity; wrapped-object `--json` convention; CLI color/TTY policy.
-
-**Test scenarios:**
-- Happy path: export with two models' presets writes a correct `presets:` block keyed by model name, with `default` and minimal partial entries.
-- Happy path: `--dry-run` prints the YAML block to stdout and does not touch `config.yaml`.
-- Edge: `--model <ref>` exports only that model; unknown ref → `MODEL_NOT_FOUND`.
-- Edge: a preset whose params are all defaults → emits just `name` (no noise).
-- Edge: existing `config.yaml` with unrelated keys → recursive merge preserves them (comments still lost — warning asserted).
-- Edge: no presets in state → no-op with a clear message, file untouched.
-- Error: `merge_and_write` on a through-symlink/world-writable config → refused (existing writer guard), surfaced as a CLI error.
-
-**Verification:** Manual E2E — `presets save` a couple, `presets export --dry-run` previews, `presets export` writes; a daemon restart reads the config presets back through `presets_list` with `source: config`.
-
-- [ ] **Unit 7: status light hint + docs sync sweep**
-
-**Goal:** Add `preset_count` + `default` to each `status` models[] row (mirrored in CLI), extend the golden test, and bring all affected docs in sync.
-
-**Requirements:** R6, R3 + project docs-sync rule
-
-**Dependencies:** Unit 1, Unit 2 (and lands the cross-cutting docs for Units 1-6)
-
-**Files:**
-- Modify: `src/ipc/status.rs` — add `preset_count: u32` + `default: Option<String>` to model rows (from `effective_presets`); extend `status_top_level_key_set_is_stable` / row-shape assertions.
+- Modify: `src/ipc/methods.rs` — handlers read/write the store; `presets_save`/`presets_delete` write per-model keys (write-through via Unit 1); `preset_row()` gains `source: "config"` and `is_default: bool`. (No `presets_set_default` — default is config-only.)
+- Modify: `src/ipc/status.rs` — add `preset_count: u32` + `default: Option<String>` to each model row from `effective_presets`; extend `status_top_level_key_set_is_stable` / row-shape assertions.
 - Modify: `src/cli/output.rs::status_json` — mirror the two fields byte-for-byte.
-- Modify docs (same change): `README.md` (presets feature + config block + export + default), `docs/usage.md` (CLI: `presets` incl. `export`/`set-default`/`--no-preset`/`--preset` precedence; config `presets:` keys + classification; keybindings for the selector/manager; `status` fields), `docs/architecture.md` (effective-preset merge + precedence), `config.example.yaml` (covered in Unit 1; verify), `CHANGELOG.md` `[Unreleased]` (one-liner), `CLAUDE.md`/`AGENTS.md` (scope-boundary bullet for presets + new `status` fields + `presets_set_default` in CLI/IPC surface), `TODO.md` (entries for any deferred follow-ups: `LaunchParamsWire` consolidation, AMD/HIP note unaffected), and tick this plan's checkboxes.
-- Test: `src/ipc/status.rs` inline; `src/cli/output.rs` inline (mirror parity).
+- Test: `src/ipc/methods.rs`, `src/ipc/status.rs`, `src/cli/output.rs` inline; a `tests/` daemon round-trip.
 
-**Approach:** Additive-only `status` change; values come from the same `effective_presets` helper so IPC and CLI agree. Keep detail in `presets_list` — `status` is a hint, not the catalog.
+**Approach:** Detail stays in `presets_list`/`show`; `status` is a hint, not the catalog. Same `effective_presets` helper feeds IPC and CLI so they agree. Saves/deletes through the store keep memory and `config.yaml` in lockstep (write-through).
+
+**Patterns to follow:** existing `presets_*` handlers; wrapped-object JSON convention; explicit serde shaping; additive-only `status`; `InvalidParams` → exit 64.
 
 **Test scenarios:**
-- Happy path: a model with 3 presets and a default surfaces `preset_count: 3` + `default: "long-ctx"` in both IPC `status` and CLI `status --json`.
-- Edge: model with no presets → `preset_count: 0`, `default: null`.
-- Edge: the golden top-level-key-set test still passes (additive, no reorder); model-row shape test updated.
-- Integration: `status --json | jq .models` matches raw IPC byte-for-byte (parity test).
+- Happy path: `presets_save` writes a config preset (visible in `presets_list` with `source:"config"`); restart reads it back.
+- Happy path: a model with 3 presets + a default surfaces `preset_count:3` + `default:"long-ctx"` in IPC `status` and CLI `status --json` (parity).
+- Edge: `presets_delete` removes it (node patched); deleting the last entry prunes the model key (Unit 1).
+- Edge: model with no presets → `preset_count:0`, `default:null`; golden top-level key set unchanged.
+- Edge: `presets_show` of a name present in both per-model and arch returns the per-model (model wins).
+- Integration: save → list → restart → list over a real daemon; `status --json | jq .models` matches raw IPC byte-for-byte.
 
-**Verification:** `status --json` shows the hint; golden + parity tests pass; a docs grep finds no stale "presets are CLI-only / state.json-only" statements.
+**Verification:** CRUD round-trips through config; `status` hint present and mirrored; golden + parity tests pass.
+
+- [ ] **Unit 5: CLI — presets verbs target config; `start` no-`--preset` = auto**
+
+**Goal:** `presets save/list/show/delete` operate on the config-backed store; `start <model>` with no `--preset` launches pure auto (unchanged), `--preset <name>` resolves from the effective set.
+
+**Requirements:** R8
+
+**Dependencies:** Unit 4
+
+**Files:**
+- Modify: `src/cli/presets.rs` — verbs go through the store-backed IPC (already do; confirm `save` upsert messaging "saved/replaced" still holds against config).
+- Modify: `src/cli/start.rs` — `fetch_preset_params` resolves from the effective set; **no default auto-apply**; `emit_response` shows `(preset: NAME)` only when one was passed.
+- Modify: `src/cli/cli_args.rs` — confirm no `--no-preset` is added (not needed); no new verb.
+- Test: `src/cli/start.rs`, `src/cli/presets.rs` inline.
+
+**Approach:** Minimal CLI change — the store swap is behind IPC. The behavioral change is `start.rs` no longer considering a default when `--preset` is absent.
+
+**Test scenarios:**
+- Happy path: `presets save coding …` then `presets list` shows it (`source: config`); `presets show coding` prints it; `presets delete coding` removes it.
+- Happy path: `--preset coding` applies the config preset; `--json` carries `"preset":"coding"`.
+- Edge: `start <model>` with no `--preset` and a configured default → default is **not** applied (pure auto); output shows no `(preset: …)`.
+- Edge: `--preset` names an absent preset → "preset not found" (existing exit path).
+- Edge: `save` over an existing name → "replaced" semantics preserved against config.
+
+**Verification:** Manual E2E — save/list/show/delete against config; `start` with no `--preset` ignores the default; `--preset` applies it.
+
+- [ ] **Unit 6: TUI cycle field — `default → auto → named presets` (settings top row)**
+
+**Goal:** A cycle row at the top of the inline launch/settings page that cycles `default → auto → named presets` (model first, then arch); selecting re-seeds the form; opens on `default` if one exists, else `auto`.
+
+**Requirements:** R1, R5
+
+**Dependencies:** Unit 4
+
+**Files:**
+- Modify: `src/tui/launch_picker.rs` — add a `Preset` cycle field (like `device`); hold the effective preset list + selection (incl. synthetic `default`/`auto`); re-seed knobs on change; mark default and `(config)` provenance in the label.
+- Modify: `src/tui/tabs/settings.rs` — render the row first.
+- Modify: `src/tui/app.rs` — `build_default_picker` opens on `default` (else `auto`); wire selection → re-seed; toast on change.
+- Modify: `src/tui/keybindings.rs` — label only if a distinct binding is wanted (cycling reuses `←/→`).
+- Test: `src/tui/launch_picker.rs` inline; golden render via `llamastash --render`; a `scripts/tui/tui_drive.py` flow.
+
+**Approach:** Reuse the `←/→` cycle pattern + `kv_row`/`caret`; `auto` = no preset (today's behavior), `default` = the config default. Toast on selection. Origin chips reflect the preset source on affected knobs.
+
+**Test scenarios:**
+- Happy path: a model with presets + a default opens on `default`, marked; cycling to `auto` clears preset-seeded knobs; cycling to `long-ctx` seeds its ctx/flash-attn live.
+- Edge: model with no default opens on `auto`; model with no presets shows only `default`(absent)→`auto` (or just `auto`).
+- Edge: a `(config)` arch preset shows after model presets; selecting it re-seeds.
+- Integration: golden render matches; driver confirms cycle → field updates.
+
+**Verification:** `make render` snapshot + a driver run show the row, correct opening selection, and live re-seed on cycle.
+
+- [ ] **Unit 7: TUI `Ctrl+P` — save current knobs as a preset (extended confirm dialog)**
+
+**Goal:** `Ctrl+P` on the settings form (preserving auto/default markers) and on a running-model row (capturing actual launch params) opens a dialog asking for a name; an existing name prompts an overwrite confirm; saves to `config.yaml` via the store.
+
+**Requirements:** R2
+
+**Dependencies:** Unit 4
+
+**Files:**
+- Modify: `src/tui/app.rs` — extend `ConfirmAction` (or add a sibling) to carry a **text-input** name prompt + the pending preset payload + an overwrite-confirm follow-up; `Ctrl+P` handler builds the payload from the current context (form knobs with markers / running model's params) and opens the dialog; calls `presets_save` (store write-through); toast on save.
+- Modify: `src/tui/keybindings.rs` — `Action::SavePreset` + binding (`Ctrl+P`) with label/description; active on settings + running scopes (`Focus`/`FocusSet`).
+- Modify: the confirm-dialog renderer — render the text-input variant (reuse `InputField`).
+- Test: `src/tui/app.rs` inline; `scripts/tui/harness.py` program for the save flow; golden render of the dialog.
+
+**Approach:** Reuse the existing confirm dialog component, extended with a text-input mode (per the user's "update and reuse existing confirm dialog component"). `Ctrl+P` capture: settings form → `TypedKnobs` with `Auto` preserved + `ctx`/`reasoning` as shown; running row → that model's launch `LaunchParams`. Name collision → second-stage overwrite confirm (severity from the payload). All key labels from `KeyMap`.
+
+**Patterns to follow:** `ConfirmAction` + severity; `InputField` + `InputOutcome`; HF-dialog multi-stage routing as the template; toast helper; `KeyMap` label rule.
+
+**Test scenarios:**
+- Happy path: `Ctrl+P` on the settings form → name `coding` → saved to config (preserves `ctx: auto`); `presets list` shows it.
+- Happy path: `Ctrl+P` on a running model → captures its actual params under the entered name.
+- Edge: entering an existing name → overwrite confirm; confirm replaces, cancel keeps the original.
+- Edge: empty name → inline validation, no save; Esc at the name prompt cancels cleanly.
+- Edge: `Ctrl+P` where it isn't active (other focus) → no-op (binding scope).
+- Integration: `scripts/tui/harness.py` drives form→Ctrl+P→name→save and asserts a follow-up `presets list` (CLI) reflects it.
+
+**Verification:** Harness program passes; live TUI run shows `Ctrl+P` saving into `config.yaml` with markers/auto preserved and overwrite-confirm working.
+
+- [ ] **Unit 8: Docs sync + TODO tracking + deferred `serde_yaml` note**
+
+**Goal:** Bring all affected docs in sync, record the migration-removal and `serde_yaml`-follow-up TODOs, and tie off the plan checkboxes.
+
+**Requirements:** project docs-sync rule, R7 (tracking)
+
+**Dependencies:** Units 1-7 (lands their cross-cutting docs)
+
+**Files:**
+- Modify: `README.md` (presets feature + config `presets:` + default + `Ctrl+P` + cycle), `docs/usage.md` (CLI `presets` verbs now config-backed; `start --preset` / no-`--preset`=auto; config `presets:` keys + classification + name-keyed entries + restart-for-hand-edits; keybindings for cycle + `Ctrl+P`; `status` fields), `docs/architecture.md` (`yamlpatch` presets writer, in-memory store + write-through, effective-preset merge, migration), `config.example.yaml` (verify the Unit 2 example), `CHANGELOG.md` `[Unreleased]`, `CLAUDE.md`/`AGENTS.md` (scope-boundary bullet: config is the writable preset source, edited via `yamlpatch`; new `status` fields; CLI surface; the removed `export`/`set_default`).
+- Modify: `TODO.md` — (a) link the "Presets feature from PR #18" line to this plan; (b) **add a one-time-migration removal entry** ("remove `migrate_state_presets_to_config` + the dead `state.json` `presets` field in vX.Y.Z — see this plan"); (c) add a deferred entry to migrate config **reads** off archived `serde_yaml` onto a maintained parser; (d) add a deferred entry to move the init wizard's config **writes** onto `yamlpatch` so wizard runs stop stripping comments.
+- Test: `src/ipc/status.rs` / `src/cli/output.rs` parity (covered in Unit 4); a docs-grep sanity check (no stale "presets are state.json-only / CLI-only / export" statements).
+
+**Approach:** Additive, accurate docs in the same change as the code (project rule). Remove statements the feature falsifies (e.g. AGENTS.md's "presets live in `state.json`" / "TUI-only pull dialog is the only authoring surface" if contradicted).
+
+**Test scenarios:** Test expectation: none — documentation + TODO tracking. (Parity/golden tests live in Unit 4.)
+
+**Verification:** Docs grep finds no contradictions; `TODO.md` carries the migration-removal and `serde_yaml` entries and links the plan; all plan checkboxes accurate.
 
 ## System-Wide Impact
 
-- **Interaction graph:** the new `effective_presets` helper is consumed by the daemon launch path (Unit 3), the IPC `presets_*` handlers (Unit 2), and `status` (Unit 7) — one source of truth, no parallel merge logic. The TUI selector/manager (Units 4-5) go through the IPC, not the helper directly.
-- **Error propagation:** config write failures and config-immutability violations surface as `InvalidParams` → CLI exit 64; preset-not-found keeps its existing exit path; `export` write-guard failures bubble as CLI errors. No new exit code.
-- **State lifecycle risks:** the new `PresetsEntry.default` is additive and `#[serde(default)]` — existing `state.json` loads unchanged; parse-failure quarantine is unaffected. `export` is the only config writer and goes through atomic `write_secure`.
-- **API surface parity:** `status` hint must be mirrored in `cli/output.rs::status_json`; `presets_list`/`show` provenance/default flags appear identically to IPC and CLI consumers; `capabilities` advertises `presets_set_default`.
-- **Integration coverage:** daemon round-trips (save → set-default → restart → list), config-overlay-on-restart, TUI harness CRUD, and `status` parity are the cross-layer behaviors unit tests alone won't prove.
-- **Unchanged invariants:** the four-layer daemon resolver, `LayerLabel` set, `seed_layerless`, `arch_defaults`, `TypedKnobs` serde, and the `presets list --json` wrapped-object shape are **not** changed. Presets stay a `User`-layer baseline-then-overlay; config stays author-owned (only `export` writes it).
+- **Interaction graph:** the in-memory store + `effective_presets` is the single source consumed by launch (`start.rs`), IPC (`presets_*`, `status`), and the TUI (via IPC). The Unit 1 `yamlpatch` writer is the single write path. No parallel merge/write logic.
+- **Wizard ↔ presets:** the init wizard's whole-file `merge_and_write` is comment-blind and would strip comments (incl. in the presets section) on its next run; preset *data* survives. Deferred follow-up to move the wizard onto `yamlpatch` (Unit 8 / TODO). Flagged, not fixed here.
+- **Error propagation:** `yamlpatch`/route failures, symlink / parent-mode failures bubble as clear errors; preset-not-found keeps its exit path; IPC validation → `InvalidParams` → exit 64. No new exit code.
+- **State lifecycle:** the migration is one-time, idempotent, marked removable; the `state.json` `presets` field becomes dead (cleared post-migration) and is slated for removal. `schema_version` stays (pre-1.0, no migration framework needed beyond this one-shot).
+- **API surface parity:** `status` hint mirrored in `cli/output.rs::status_json`; `presets_list`/`show` provenance/default flags identical IPC ↔ CLI; `capabilities` unchanged (no new method; `presets_set_default` deliberately absent).
+- **Integration coverage:** daemon boot migration, config write-through round-trip (save → restart → list), `yamlpatch` comment-preservation on a real commented config, TUI harness `Ctrl+P` save, `status` parity — the cross-layer behaviors unit tests alone won't prove.
+- **Unchanged invariants:** the four-layer daemon resolver, `LayerLabel` set, `seed_layerless`, `arch_defaults`, `TypedKnobs` serde, the `presets list --json` wrapped-object shape, and CLI `start` no-`--preset` behavior (still pure auto) are **not** changed.
 
 ## Risks & Dependencies
 
 | Risk | Mitigation |
 |------|------------|
-| `export` re-serializes `config.yaml` and drops user comments (`serde_yaml` limitation) | Explicit warning on write; `--dry-run` safe preview default-adjacent; documented in usage.md + the command's help text. Only an explicit user command ever writes config. |
-| Key-classification ambiguity (model vs arch; renamed/removed models) | Deterministic model-wins rule + the decision matrix; unresolved keys skipped with a `doctor`/load warning, never a boot crash. |
-| Silent-edit-loss bug class re-entered via new knob read/write paths | Route all knob access through the `KnobField` accessor; extend the exhaustiveness test to cover config-preset materialization. |
-| `status` byte-stability regression | Additive-only fields; extend the golden + row-shape tests; CLI parity test against raw IPC. |
-| Config presets only apply after daemon restart (read at start, like `arch_defaults`) — user confusion | Documented in usage.md + the `export` success message ("restart the daemon to pick up config presets"). |
-| Field-set duplication grows (presets add more `LaunchParams` spelling sites) | Evaluate the `LaunchParamsWire` consolidation in Unit 2; at minimum avoid adding a divergent copy. |
-| TUI scope creep (manager pane is the largest new surface) | Reuse HF-dialog scaffolding + shared widgets; inline (no new modal/dropdown framework); gate with a `scripts/tui/harness.py` program. |
+| Init wizard's whole-file `merge_and_write` is comment-blind — a wizard run after presets exist re-serializes the file and strips **all** comments (incl. inside the presets section), undoing `yamlpatch`'s preservation | Preset **data** survives (it's re-serialized as data); only comments are lost, and only on the infrequent wizard/doctor-fix write. Tracked as a deferred follow-up to move the wizard onto `yamlpatch` too (Unit 8 / TODO, alongside the `serde_yaml` reads migration). Not fixed here. |
+| `yamlpatch` caveats (Replace-on-sequence, no flow-style lists, comment displacement on delete) | Name-keyed entries map → updates are `Replace` on a map value, never a sequence; we always emit block style; delete-displacement is cosmetic and asserted in Unit 1. |
+| Two new dependencies (`yamlpath`/`yamlpatch`) maturity | MIT, zizmorcore/trail-of-bits, actively released (2026-06-21), ~82k recent downloads, battle-tested inside the zizmor linter. Pin exact versions; revisit if the crates stall. |
+| Key-classification ambiguity (model vs arch; renamed/removed models) | Deterministic model-wins rule + matrix; unresolved keys skipped with a `doctor`/load warning, never a boot crash. |
+| Migration data loss or double-run | Idempotent (clear after success); config-wins on collision; basename key even if the file is gone; integration test for re-boot no-op. |
+| Migration code lingering past its usefulness | Marked `// ONE-TIME MIGRATION (remove after vX.Y.Z)` + a `TODO.md` removal entry (Unit 3 / Unit 8). |
+| `serde_yaml` archived/deprecated (reads) | Out of scope here; tracked as a deferred `TODO.md` follow-up to move reads onto a maintained parser. The `yamlpatch` write path is independent of `serde_yaml`. |
+| Silent-edit-loss bug class via new knob read/write paths | Route through the `KnobField` accessor; extend the exhaustiveness test to cover config-preset materialization and `Ctrl+P` capture. |
+| `status` byte-stability regression | Additive-only fields; extend golden + row-shape tests; CLI parity test. |
+| Config hand-edits need a daemon restart (in-memory store loaded at start) | Documented in usage.md + a daemon-status/doctor hint; app-driven writes are live, only hand-edits need restart. |
+| TUI scope (cycle row + Ctrl+P dialog) | Reuse inline picker + extended `ConfirmAction` + `InputField`; gate with `scripts/tui/harness.py`. |
 
 ## Phased Delivery
 
-- **Phase 1 (foundation + headless): Units 1-3, 6-7.** Config schema, merge core, IPC, launch-time default, `export`, `status` hint, docs. Fully usable from the CLI/agents without any TUI work — ships the new capability.
-- **Phase 2 (TUI): Units 4-5.** Inline selector then the manager pane + card hint. Pure UX on top of Phase 1's primitives.
+- **Phase 1 (foundation + headless): Units 1-5, 8.** `yamlpatch` presets writer, schema + store + resolution, one-time migration, IPC CRUD + `status` hint, CLI, docs. Fully usable from CLI/agents with config as the live source.
+- **Phase 2 (TUI): Units 6-7.** Cycle selector, then the `Ctrl+P` save dialog.
 
 ## Documentation / Operational Notes
 
-- Docs ship in the same change as each unit (project rule); Unit 7 carries the cross-cutting sweep + the `status`/architecture updates.
-- No migration, no new dependency, no new exit code. Crate is `0.0.4` (pre-1.0) — additive state field needs no shim.
-- Post-ship: a `docs/solutions/` memo on the "config is author-owned; presets overlay read-only + explicit export" decision is a good `ce:compound` candidate (no such memo exists yet).
+- Docs ship with each unit; Unit 8 carries the cross-cutting sweep + the two deferred TODOs (migration removal, `serde_yaml` reads).
+- Two new MIT deps (`yamlpath`/`yamlpatch`), no new exit code. The one schema impact is the soon-dead `state.json` `presets` field (cleared post-migration, removal tracked).
+- Post-ship: a `docs/solutions/` memo on "comment-safe config writes via `yamlpatch` + config-as-source-of-truth presets" is a good `ce:compound` candidate.
 
 ## Sources & References
 
-- **Origin document:** PR #18 — `docs/brainstorms/2026-06-06-config-presets-per-model.md` (branch `config_brainstorm`, external submission by @damiensawyer). This plan reinterprets it against current architecture (see Key Technical Decisions for the three corrected premises).
-- Related plans: `docs/plans/2026-05-20-003-feat-arch-defaults-typed-editor-plan.md` (config-author-owned stance, `KnobField` accessor, inline-not-modal direction), `docs/plans/2026-06-13-001-feat-auto-fit-launch-mode-and-hardware-truth-plan.md` (resolver/seed_layerless).
-- Related code: `src/launch/presets.rs`, `src/daemon/state_store.rs`, `src/config/loader.rs`, `src/config/writer.rs`, `src/daemon/launch_service.rs`, `src/cli/start.rs`, `src/cli/presets.rs`, `src/ipc/methods.rs`, `src/ipc/status.rs`, `src/tui/launch_picker.rs`, `src/tui/keybindings.rs`.
+- **Origin document:** PR #18 — `docs/brainstorms/2026-06-06-config-presets-per-model.md` (branch `config_brainstorm`, @damiensawyer). Reinterpreted against current architecture; the 2026-06-23 deepening flipped storage to config-as-source-of-truth and resolved comment handling, migration, default, and TUI shape (see Key Technical Decisions).
+- Research (2026-06-23): comment-preserving YAML in Rust → `yamlpath` + `yamlpatch` (zizmor, MIT, `1.26.1`) adopted, entries name-keyed (`serde_yaml` archived; `yaml_edit` too immature; managed-block / separate-file rejected). Source: ["Respectful YAML patching in Rust" (verrchu.github.io)](https://verrchu.github.io/blog/2-respectful-yaml-patching-in-rust/).
+- Related plans: `docs/plans/2026-05-20-003-feat-arch-defaults-typed-editor-plan.md` (config-author-owned stance, `KnobField` accessor, inline-not-modal), `docs/plans/2026-06-13-001-feat-auto-fit-launch-mode-and-hardware-truth-plan.md` (resolver/seed_layerless).
+- Related code: `src/launch/presets.rs`, `src/daemon/state_store.rs`, `src/config/loader.rs`, `src/config/writer.rs`, `src/daemon/launch_service.rs`, `src/cli/start.rs`, `src/cli/presets.rs`, `src/ipc/methods.rs`, `src/ipc/status.rs`, `src/tui/launch_picker.rs`, `src/tui/app.rs`, `src/tui/keybindings.rs`.
 - Related PR/issue: #18.
