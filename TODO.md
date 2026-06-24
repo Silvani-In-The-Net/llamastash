@@ -165,14 +165,6 @@ places.
 
 ## R5 (v0.0.5 checklist)
 
-- [ ] MLX as a native peer backend (the generic `ModelIdentity` seam already supports it; would drop in alongside llama.cpp/Lemonade). Planned in two parts:
-  - [x] ~~**(1)** shared safetensors/HF-repo discovery substrate (Linux, first)~~ — landed (Units 1-4). [`docs/plans/2026-06-24-001-feat-shared-safetensors-discovery-substrate-plan.md`](docs/plans/2026-06-24-001-feat-shared-safetensors-discovery-substrate-plan.md): `discovery::hf_repos` enumerator + `config_to_metadata` + `ModelMetadata.quant_label`, the `launch::native_knobs` channel (`Backend::native_knobs()` + `LaunchParams.backend_knobs`), and the prefer-safetensors pull guard. Backend-neutral / stub-tested; no consumer yet. Deferred substrate follow-ups (all for the MLX leaf, plan 002):
-    - [ ] Native-knob resolver-layering depth — MVP is user-set-or-nothing; full preset > last-used > descriptor-default layering is deferred (`docs/plans/2026-06-24-001-...md` §"Deferred to Implementation"; resolver in `src/launch/native_knobs.rs::translate`).
-    - [ ] Exact safetensors param count — MVP uses a config-dim estimate / repo-name label (`src/discovery/hf_repos.rs::estimate_params`); de-packing quantized tensors for an exact count is deferred.
-    - [ ] `quant_label` JSON/TUI rendering — the field exists but is not surfaced in `list`/`status` output yet; the MLX leaf (plan 002 Unit 7) wires the display when it first populates it.
-    - [ ] Hand-edited unquoted numeric `backend_knobs` value (`kv_bits: 8` vs `kv_bits: "8"`) fails to deserialize as `KnobValue<String>` — app writes always quote, so only hand-edits are affected. When MLX introduces real native knobs, either document quoting in `config.example.yaml` or add a scalar→String coercion for the `backend_knobs` map (`src/config/loader.rs::PresetBody`).
-    - [ ] `discovery::hf_repos::read_json` slurps `config.json` / `tokenizer_config.json` with no size cap — harmless today (no production caller), but the MLX rescan wiring should cap the read so a crafted/corrupt multi-GB config can't be fully RAM-read each scan.
-  - [ ] **(2)** the MLX backend on top (needs a Mac) — [`docs/plans/2026-06-24-002-feat-mlx-backend-plan.md`](docs/plans/2026-06-24-002-feat-mlx-backend-plan.md).
 - [x] ~~Fix "unable to follow symlinks" issue~~ — config writes now follow a symlinked `config.yaml` to its canonical target (the link is preserved) instead of refusing with `TargetIsSymlink`. `config::writer::preflight` resolves the link chain and the security check runs on the resolved parent; `state.json` keeps its non-following behavior. (the presets writer, init wizard, and `daemon` proxy-key/server-path persistence all go through this)
 - [x] help legends as new row with 1 column
 - [x] ~~Presets feature from PR #18~~ — shipped. Plan: `docs/plans/2026-06-22-001-feat-config-presets-per-model-plan.md` (config.yaml as the writable source of truth, `yamlpath`+`yamlpatch` comment-safe writes, per-model/arch keys, in-memory store + write-through, one-time `state.json`→config migration, TUI preset cycle row + `Ctrl+P` save). Remaining follow-ups below.
@@ -206,7 +198,14 @@ places.
 
 ## R6 (v0.0.6 checklist)
 
-- [ ] MLX as a native peer backend (the generic `ModelIdentity` seam already supports it; would drop in alongside llama.cpp/Lemonade).
+- [ ] MLX as a native peer backend (the generic `ModelIdentity` seam already supports it; would drop in alongside llama.cpp/Lemonade). Planned in two parts:
+  - [x] ~~**(1)** shared safetensors/HF-repo discovery substrate (Linux, first)~~ — landed (Units 1-4). [`docs/plans/2026-06-24-001-feat-shared-safetensors-discovery-substrate-plan.md`](docs/plans/2026-06-24-001-feat-shared-safetensors-discovery-substrate-plan.md): `discovery::hf_repos` enumerator + `config_to_metadata` + `ModelMetadata.quant_label`, the `launch::native_knobs` channel (`Backend::native_knobs()` + `LaunchParams.backend_knobs`), and the prefer-safetensors pull guard. Backend-neutral / stub-tested; no consumer yet. Deferred substrate follow-ups (all for the MLX leaf, plan 002):
+    - [ ] Native-knob resolver-layering depth — MVP is user-set-or-nothing; full preset > last-used > descriptor-default layering is deferred (`docs/plans/2026-06-24-001-...md` §"Deferred to Implementation"; resolver in `src/launch/native_knobs.rs::translate`).
+    - [ ] Exact safetensors param count — MVP uses a config-dim estimate / repo-name label (`src/discovery/hf_repos.rs::estimate_params`); de-packing quantized tensors for an exact count is deferred.
+    - [ ] `quant_label` JSON/TUI rendering — the field exists but is not surfaced in `list`/`status` output yet; the MLX leaf (plan 002 Unit 7) wires the display when it first populates it.
+    - [ ] Hand-edited unquoted numeric `backend_knobs` value (`kv_bits: 8` vs `kv_bits: "8"`) fails to deserialize as `KnobValue<String>` — app writes always quote, so only hand-edits are affected. When MLX introduces real native knobs, either document quoting in `config.example.yaml` or add a scalar→String coercion for the `backend_knobs` map (`src/config/loader.rs::PresetBody`).
+    - [ ] `discovery::hf_repos::read_json` slurps `config.json` / `tokenizer_config.json` with no size cap — harmless today (no production caller), but the MLX rescan wiring should cap the read so a crafted/corrupt multi-GB config can't be fully RAM-read each scan.
+  - [ ] **(2)** the MLX backend on top (needs a Mac) — [`docs/plans/2026-06-24-002-feat-mlx-backend-plan.md`](docs/plans/2026-06-24-002-feat-mlx-backend-plan.md).
 - [ ] a keybinding (shift+l) to switch left/right pane ratio (configurable in config.yaml. 4 slots with defaults current/50/70/90)
 - [x] ~~The (model/server default) label for setting knobs should not wrap; cut off what doesn't fit and show `…`.~~ — Settings rows clip to the pane width with `…` (no `Wrap`); the running view and editable form now share one render path (`fmt::clip_line` is the shared primitive), so both truncate identically. (821c26b)
 - [ ] show a label (N) near the prest knob in settings to indicate how many presets are available for the current model. (N=0 if none)
