@@ -4167,12 +4167,11 @@ mod tests {
 
     pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::RightPane);
-    // A plain GGUF row hides the Backend chooser (Auto == llama.cpp, no
-    // cross-backend choice), so Ctx is the first row and Up from it wraps to
-    // the last row (Extras).
+    // The Preset row always leads the form, so the cursor opens on Ctx
+    // (first knob) and Up from it lands on the Preset row above.
     assert_eq!(
       app.launch_picker.as_ref().expect("picker").field,
-      PickerField::Extras
+      PickerField::Preset
     );
   }
 

@@ -1422,6 +1422,11 @@ impl App {
         // they ride along inside `last.knobs` without dedicated
         // seeding paths.
         state.user_knobs = last.knobs.clone();
+        // Seed extras here (before `set_presets`) so the preset cycle's
+        // `last used` stop captures them as part of its baseline.
+        if !last.extras.is_empty() {
+          state.extras = last.extras.iter().map(std::ffi::OsString::from).collect();
+        }
       }
     }
     state.active_instances = active_count;
@@ -1440,13 +1445,12 @@ impl App {
     // this flat list and stores the chosen selector verbatim.
     state.device_catalog = self.device_catalog.clone();
     // Seed the preset cycle from the model's effective set (per-model ∪
-    // arch, resolved against the catalog). No-op when the model has no
-    // presets — the Preset row stays hidden.
+    // arch, resolved against the catalog). Always called — the Preset row
+    // is always shown (it offers `last used` ↔ `auto` even with no named
+    // presets), and it captures the seeds above as its `last used` baseline.
     if let Some(p) = &path {
       let (choices, default) = self.effective_preset_choices(p);
-      if !choices.is_empty() {
-        state.set_presets(choices, default);
-      }
+      state.set_presets(choices, default);
     }
     Some(state)
   }
@@ -1593,21 +1597,12 @@ impl App {
   /// gate) and by `Enter`-on-list for idle rows via
   /// [`drill_into_focused_model`](Self::drill_into_focused_model).
   pub fn open_launch_picker(&mut self) {
-    let mut picker = match self.build_default_picker() {
+    let picker = match self.build_default_picker() {
       Some(p) => p,
       None => return,
     };
-    // Seed the extras buffer too when persisted extras exist for
-    // the focused path. This side effect is owned by
-    // `open_launch_picker` — `build_default_picker` stays pure so
-    // render paths can call it freely.
-    if let Some(path) = self.focused_path() {
-      if let Some(last) = self.last_params.get(&path) {
-        if !last.extras.is_empty() {
-          picker.extras = last.extras.iter().map(std::ffi::OsString::from).collect();
-        }
-      }
-    }
+    // (Extras are seeded inside `build_default_picker`, before the preset
+    // cycle captures its `last used` baseline.)
     self.launch_picker = Some(picker);
     self.running_view_scroll.set(0);
     self.right_tab = RightTab::Settings;
@@ -2275,8 +2270,8 @@ mod tests {
       .filter(|f| picker.field_visible(*f))
       .collect();
     assert!(
-      visible.len() == 2,
-      "lemonade picker is ctx + extras only, got {visible:?}"
+      visible.len() == 3,
+      "lemonade picker is preset + ctx + extras only, got {visible:?}"
     );
   }
 

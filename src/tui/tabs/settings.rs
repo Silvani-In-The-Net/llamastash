@@ -167,11 +167,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   // short ones the focused row stays visible with ≥1 row of context.
   let mut focused_line: Option<u16> = None;
 
-  // Preset cycle row — leads the form when the model has any effective
-  // presets. ←/→ cycles `default → auto → named presets`, re-seeding the
-  // knobs below. Hidden (and skipped in navigation) for models with no
-  // presets, so the form is unchanged for them.
-  if picker_view.has_presets() {
+  // Preset cycle row — always leads the form. ←/→ cycles
+  // `last used → auto → [default] → named presets`, rewriting every knob
+  // row below live. No source chip: it's a selector, not an inherited value.
+  {
     let focused = row_for(PickerField::Preset);
     if focused {
       focused_line = Some(lines.len() as u16);
@@ -179,7 +178,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     lines.push(crate::tui::fmt::kv_row_focused(
       "preset",
       picker_view.preset_value_label(),
-      Some("config"),
+      None,
       focused,
       true,
       palette,

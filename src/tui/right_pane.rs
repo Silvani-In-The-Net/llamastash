@@ -328,13 +328,6 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
             app.hint_with(Focus::RightPane, Action::EnterEdit, "edit"),
           );
         }
-        // Save the form as a preset — ranked above `↑↓:cycle fields` (40)
-        // and `p:path` (60) so it survives width pressure longer.
-        push(
-          &mut chips,
-          35,
-          app.hint_with(Focus::RightPane, Action::SavePreset, "save preset"),
-        );
         if let (Some(down), Some(up)) = (
           app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields"),
           app.hint_with(Focus::RightPane, Action::MoveUp, "cycle fields"),
@@ -353,6 +346,14 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
             bidirectional_chip(&prev, &next, "cycle value"),
           ));
         }
+        // Save the form as a preset — displayed after the cycle chips, but
+        // ranked above `↑↓:cycle fields` (40) and `p:path` (60) so it
+        // survives width pressure longer.
+        push(
+          &mut chips,
+          35,
+          app.hint_with(Focus::RightPane, Action::SavePreset, "save preset"),
+        );
         push(&mut chips, 60, app.hint(Focus::RightPane, Action::YankPath));
       }
     }
