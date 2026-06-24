@@ -56,6 +56,7 @@ use crate::backend::lemonade::{LemonadeBackend, LEMONADE_BACKEND_ID};
 use crate::backend::llama_cpp::LlamaCppBackend;
 use crate::daemon::probe::ProbeOptions;
 use crate::launch::flag_aliases::{knob_specs, KnobField};
+use crate::launch::native_knobs::NativeKnobDescriptor;
 use crate::launch::params::{BackendChoice, LaunchParams};
 
 /// How a backend manages the lifecycle of the models it runs.
@@ -284,6 +285,20 @@ pub trait Backend {
   /// Which knob IR fields this backend honors.
   fn capabilities(&self) -> &KnobCapability;
 
+  /// The backend's own tunables, declared **outside** the llama.cpp
+  /// [`KnobField`] IR (R4) — rendered by the launch picker as native cycle
+  /// /edit rows and translated to flags in [`Self::prepare_launch`] via
+  /// [`crate::launch::native_knobs::translate`]. Orthogonal to
+  /// [`Self::capabilities`]: a backend can honor no `KnobField` and still
+  /// declare a native-knob set.
+  ///
+  /// Defaults to empty: llama.cpp and Lemonade surface no native knobs, so
+  /// the picker + persistence are byte-identical for them. A backend opts in
+  /// by overriding this with a `&'static` descriptor slice.
+  fn native_knobs(&self) -> &'static [NativeKnobDescriptor] {
+    &[]
+  }
+
   /// The accelerator classes this backend can run models on.
   ///
   /// A *static, backend-intrinsic* floor — llama.cpp always runs CPU (GPU
@@ -351,6 +366,13 @@ impl Backend for Backends {
     match self {
       Backends::LlamaCpp(b) => b.capabilities(),
       Backends::Lemonade(b) => b.capabilities(),
+    }
+  }
+
+  fn native_knobs(&self) -> &'static [NativeKnobDescriptor] {
+    match self {
+      Backends::LlamaCpp(b) => b.native_knobs(),
+      Backends::Lemonade(b) => b.native_knobs(),
     }
   }
 
@@ -520,6 +542,19 @@ mod tests {
     for spec in knob_specs() {
       assert!(b.capabilities().supports(spec.field));
     }
+  }
+
+  #[test]
+  fn shipping_backends_declare_no_native_knobs() {
+    // The native-knob channel is empty for every backend in this plan, so
+    // the picker + persistence stay byte-identical. A backend opts in by
+    // overriding `native_knobs()`; MLX is the first (follow-up plan).
+    assert!(Backends::LlamaCpp(LlamaCppBackend::new())
+      .native_knobs()
+      .is_empty());
+    assert!(Backends::Lemonade(LemonadeBackend::new())
+      .native_knobs()
+      .is_empty());
   }
 
   #[test]

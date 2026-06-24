@@ -71,6 +71,13 @@ pub(crate) struct StartParams {
   /// doesn't model. Appended after the resolved knobs.
   #[serde(default)]
   pub(crate) extras: Vec<String>,
+  /// Per-backend native-knob values, keyed by descriptor id (see
+  /// [`crate::launch::native_knobs`]). Passed through verbatim to the
+  /// backend's `prepare_launch`; not layered by the typed-knob resolver.
+  /// Empty for every shipping backend (`#[serde(default)]` keeps existing
+  /// clients' payloads byte-stable).
+  #[serde(default)]
+  pub(crate) backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
   /// Optional path to a multimodal projector (mmproj) file. When
   /// `None`, the daemon auto-detects by scanning the parent
   /// directory of the model for a `mmproj-<stem>.gguf` companion.
@@ -259,6 +266,11 @@ pub(crate) async fn compose_and_spawn(
   // picker overrides it. Resolved into a backend at the selection seam below.
   launch_params.backend = parsed.backend.unwrap_or_default();
   launch_params.extras = parsed.extras.into_iter().map(OsString::from).collect();
+  // Native knobs pass through verbatim (not layered by the typed-knob
+  // resolver). The `persist_params.clone()` below carries them into
+  // last-params so a saved native value is reapplied next launch. Empty for
+  // every shipping backend.
+  launch_params.backend_knobs = parsed.backend_knobs.clone();
   // Resolve the multimodal projector: an explicit `mmproj_path` wins;
   // otherwise auto-detect a companion next to the model — unless the
   // caller is already managing the projector through `extras`

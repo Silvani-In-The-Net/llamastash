@@ -871,7 +871,7 @@ fn preset_row(p: &NamedPreset, is_default: bool) -> Value {
 }
 
 fn launch_params_row(p: &LaunchParams) -> Value {
-  json!({
+  let mut row = json!({
     "model_path": p.model_path,
     "mode": p.mode.label(),
     "ctx": p.ctx,
@@ -880,7 +880,15 @@ fn launch_params_row(p: &LaunchParams) -> Value {
     "jinja": p.jinja,
     "knobs": &p.knobs,
     "extras": p.extras.iter().map(|s| s.to_string_lossy().into_owned()).collect::<Vec<_>>(),
-  })
+  });
+  // Native knobs are additive and omitted when empty, so the row stays
+  // byte-stable for every shipping backend (none declare native knobs).
+  if !p.backend_knobs.is_empty() {
+    if let Ok(v) = serde_json::to_value(&p.backend_knobs) {
+      row["backend_knobs"] = v;
+    }
+  }
+  row
 }
 
 #[derive(Deserialize)]

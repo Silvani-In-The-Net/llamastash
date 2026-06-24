@@ -201,6 +201,7 @@ mod tests {
         mode: None,
         prefer_port: None,
         backend: Default::default(),
+        backend_knobs: Default::default(),
       }),
     };
     assert_eq!(dup.severity(), ConfirmSeverity::Neutral);

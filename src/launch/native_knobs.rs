@@ -1,0 +1,250 @@
+//! Per-backend **native knobs** — a generic, string-id-keyed tuning channel
+//! parallel to the llama.cpp [`KnobField`](crate::launch::flag_aliases::KnobField)
+//! IR.
+//!
+//! A backend's real tunables may live *outside* the shared llama.cpp-keyed
+//! IR (R4). This channel lets a backend declare its own knobs
+//! ([`Backend::native_knobs`](crate::backend::Backend::native_knobs), default
+//! empty), which the launch picker renders as backend-filtered cycle/edit
+//! rows, persists in [`LaunchParams.backend_knobs`](crate::launch::params::LaunchParams)
+//! / presets, and translates to flags in the backend's `prepare_launch` via
+//! [`translate`].
+//!
+//! It is `capabilities()`-orthogonal: a backend can honor no
+//! [`KnobField`](crate::launch::flag_aliases::KnobField) and
+//! still declare a non-empty native-knob set. No shipping backend returns
+//! knobs in this plan — the channel is proven generic against a test-only
+//! descriptor slice, so it carries no backend-shaped assumptions before the
+//! first real consumer (MLX) wires its set.
+
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+
+use crate::config::KnobValue;
+use crate::launch::params::is_forbidden_head;
+
+/// How a native knob is surfaced in the picker and how its value behaves.
+///
+/// Stored values are always `String` (the backend interprets them); the kind
+/// only drives the picker affordance + the value-vs-bare-flag emission shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeKnobKind {
+  /// `←/→` cycles a closed preset ring (`inherited → presets… → wrap`).
+  Cycle { presets: &'static [&'static str] },
+  /// `e`-edit a free-text value.
+  FreeText,
+  /// `←/→` toggles `inherited → on → off`. Emits a bare flag when on.
+  Bool,
+}
+
+/// One backend-declared native knob. Mirrors
+/// [`KnobSpec`](crate::launch::flag_aliases::KnobSpec)'s shape but lives
+/// outside the llama.cpp IR. `id` is the stable persistence/wire key (the
+/// `backend_knobs` map key); `label` / `description` drive the picker row.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeKnobDescriptor {
+  pub id: &'static str,
+  pub label: &'static str,
+  pub description: &'static str,
+  pub kind: NativeKnobKind,
+}
+
+impl NativeKnobDescriptor {
+  /// Whether `e`-edit opens an inline buffer (free-text only). Cycle / bool
+  /// rows are `←/→`-only, matching the typed-knob picker's rule.
+  pub fn is_editable(&self) -> bool {
+    matches!(self.kind, NativeKnobKind::FreeText)
+  }
+
+  /// Whether this is a boolean toggle (emits a bare flag, no value).
+  pub fn is_bool(&self) -> bool {
+    matches!(self.kind, NativeKnobKind::Bool)
+  }
+
+  /// The cycle ring for a `Cycle` knob; empty for the other kinds.
+  pub fn cycle_presets(&self) -> &'static [&'static str] {
+    match self.kind {
+      NativeKnobKind::Cycle { presets } => presets,
+      _ => &[],
+    }
+  }
+}
+
+/// Translate a backend's set native-knob values into `llama-server`-style
+/// argv tokens, applying the **same** loopback/credential strip `compose`
+/// enforces on extras.
+///
+/// - `descriptors` declares each knob's id + kind (a `Bool` emits a bare
+///   flag when on; the others emit `flag value`).
+/// - `flag_map` is the backend's `id → flag-head` mapping (built in its
+///   `prepare_launch`); a knob with no mapping is skipped.
+/// - `values` is the resolved per-knob state. Only `Set(v)` emits; `Auto` /
+///   unset / `None` emit nothing (the deferred resolver layering would seed
+///   these — MVP is user-set-or-nothing).
+///
+/// A knob whose flag head **or** value head hits the denylist (the same
+/// `is_forbidden_head` guard `compose` applies to extras) is dropped and
+/// logged, so no backend's free-text value can rebind the listener off
+/// loopback.
+pub fn translate(
+  descriptors: &[NativeKnobDescriptor],
+  flag_map: &[(&str, &str)],
+  values: &BTreeMap<String, KnobValue<String>>,
+) -> Vec<OsString> {
+  let mut out: Vec<OsString> = Vec::new();
+  for d in descriptors {
+    let Some(flag) = flag_map.iter().find(|(id, _)| *id == d.id).map(|(_, f)| *f) else {
+      continue;
+    };
+    // Only an explicitly-Set value emits (Auto / unset / None → nothing).
+    let Some(KnobValue::Set(value)) = values.get(d.id) else {
+      continue;
+    };
+    if d.is_bool() {
+      // A bool emits a bare flag when on; "false" / anything else emits
+      // nothing (no `--no-flag` form, matching the typed-knob bools).
+      if value == "true" {
+        push_checked(&mut out, flag, None);
+      }
+    } else if !value.is_empty() {
+      push_checked(&mut out, flag, Some(value));
+    }
+  }
+  out
+}
+
+/// Push `flag` (+ optional `value`) unless either would rebind off loopback.
+fn push_checked(out: &mut Vec<OsString>, flag: &str, value: Option<&str>) {
+  if is_forbidden_head(flag) {
+    log::warn!("native_knobs: stripping forbidden flag {flag:?}");
+    return;
+  }
+  if let Some(v) = value {
+    // A free-text value could itself smuggle a forbidden flag head.
+    let head = v.split_whitespace().next().unwrap_or(v);
+    if is_forbidden_head(head) {
+      log::warn!("native_knobs: stripping forbidden value head in {v:?}");
+      return;
+    }
+  }
+  out.push(OsString::from(flag));
+  if let Some(v) = value {
+    out.push(OsString::from(v));
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// A representative stub descriptor slice: one Cycle + one FreeText + one
+  /// Bool. The mechanism is proven against this — no real backend returns
+  /// knobs in this plan.
+  pub(crate) const STUB: &[NativeKnobDescriptor] = &[
+    NativeKnobDescriptor {
+      id: "kv_bits",
+      label: "KV cache bits",
+      description: "quantization width for the KV cache",
+      kind: NativeKnobKind::Cycle {
+        presets: &["4", "8", "16"],
+      },
+    },
+    NativeKnobDescriptor {
+      id: "adapter_path",
+      label: "Adapter path",
+      description: "path to a LoRA adapter",
+      kind: NativeKnobKind::FreeText,
+    },
+    NativeKnobDescriptor {
+      id: "trust_remote",
+      label: "Trust remote code",
+      description: "allow custom model code",
+      kind: NativeKnobKind::Bool,
+    },
+  ];
+
+  fn set(v: &str) -> KnobValue<String> {
+    KnobValue::Set(v.to_string())
+  }
+
+  #[test]
+  fn translate_emits_flag_value_pairs_in_descriptor_order() {
+    let flags = &[("kv_bits", "--kv-bits"), ("adapter_path", "--adapter")];
+    let mut values = BTreeMap::new();
+    values.insert("kv_bits".to_string(), set("8"));
+    values.insert("adapter_path".to_string(), set("./x"));
+    let argv = translate(STUB, flags, &values);
+    let got: Vec<String> = argv
+      .iter()
+      .map(|s| s.to_string_lossy().into_owned())
+      .collect();
+    assert_eq!(got, vec!["--kv-bits", "8", "--adapter", "./x"]);
+  }
+
+  #[test]
+  fn translate_bool_emits_bare_flag_when_on_and_nothing_when_off() {
+    let flags = &[("trust_remote", "--trust-remote-code")];
+    let mut on = BTreeMap::new();
+    on.insert("trust_remote".to_string(), set("true"));
+    let argv = translate(STUB, flags, &on);
+    let got: Vec<String> = argv
+      .iter()
+      .map(|s| s.to_string_lossy().into_owned())
+      .collect();
+    assert_eq!(got, vec!["--trust-remote-code"]);
+
+    let mut off = BTreeMap::new();
+    off.insert("trust_remote".to_string(), set("false"));
+    assert!(translate(STUB, flags, &off).is_empty(), "off → no flag");
+  }
+
+  #[test]
+  fn translate_unset_or_auto_knob_emits_nothing() {
+    let flags = &[("kv_bits", "--kv-bits")];
+    // Unset.
+    assert!(translate(STUB, flags, &BTreeMap::new()).is_empty());
+    // Auto.
+    let mut auto = BTreeMap::new();
+    auto.insert("kv_bits".to_string(), KnobValue::Auto);
+    assert!(translate(STUB, flags, &auto).is_empty(), "Auto → no flag");
+  }
+
+  #[test]
+  fn translate_strips_value_smuggling_a_forbidden_flag() {
+    // A free-text value that tries to rebind off loopback is dropped.
+    let flags = &[("adapter_path", "--adapter")];
+    let mut values = BTreeMap::new();
+    values.insert("adapter_path".to_string(), set("--host 0.0.0.0"));
+    assert!(
+      translate(STUB, flags, &values).is_empty(),
+      "value with a forbidden head must be stripped"
+    );
+  }
+
+  #[test]
+  fn translate_strips_flag_head_on_denylist() {
+    // A backend that maps a knob directly onto a forbidden flag is refused.
+    let flags = &[("adapter_path", "--api-key")];
+    let mut values = BTreeMap::new();
+    values.insert("adapter_path".to_string(), set("secret"));
+    assert!(translate(STUB, flags, &values).is_empty());
+  }
+
+  #[test]
+  fn translate_skips_knob_with_no_flag_mapping() {
+    let mut values = BTreeMap::new();
+    values.insert("kv_bits".to_string(), set("8"));
+    // Empty flag map → nothing to emit, no panic.
+    assert!(translate(STUB, &[], &values).is_empty());
+  }
+
+  #[test]
+  fn descriptor_affordances_track_kind() {
+    assert!(STUB[1].is_editable(), "FreeText is editable");
+    assert!(!STUB[0].is_editable(), "Cycle is cycle-only");
+    assert!(!STUB[2].is_editable(), "Bool is cycle-only");
+    assert!(STUB[2].is_bool());
+    assert_eq!(STUB[0].cycle_presets(), &["4", "8", "16"]);
+    assert!(STUB[1].cycle_presets().is_empty());
+  }
+}

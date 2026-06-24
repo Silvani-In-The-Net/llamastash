@@ -35,7 +35,11 @@ use crate::launch::mode::LaunchMode;
 pub const FORBIDDEN_ADVANCED_PREFIXES: &[&str] =
   &["--host", "--listen", "--bind", "--api-key", "--ssl-"];
 
-fn is_forbidden_head(head: &str) -> bool {
+/// Whether `head` hits the loopback/credential denylist. Shared with the
+/// native-knob translation entry point ([`crate::launch::native_knobs`]) so a
+/// backend's free-text knob value can't smuggle `--host`/`--api-key` past the
+/// same guard `compose` applies to extras.
+pub(crate) fn is_forbidden_head(head: &str) -> bool {
   let lower = head.to_ascii_lowercase();
   FORBIDDEN_ADVANCED_PREFIXES
     .iter()
@@ -234,6 +238,14 @@ pub struct LaunchParams {
   /// pre-Phase-2b `state.json` rows loading as `Auto`.
   #[serde(default)]
   pub backend: BackendChoice,
+  /// Per-backend native-knob values, keyed by descriptor id (see
+  /// [`crate::launch::native_knobs`]). Parallel to `knobs` (the llama.cpp
+  /// IR): a backend whose tunables live outside the IR stores them here and
+  /// translates them in `prepare_launch`. Empty for every shipping backend,
+  /// so `skip_serializing_if` keeps the persisted shape byte-stable when no
+  /// native knob is set.
+  #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+  pub backend_knobs: BTreeMap<String, KnobValue<String>>,
 }
 
 /// Serde default for [`LaunchParams::jinja`] — factory `true`, mirroring
@@ -258,6 +270,7 @@ impl LaunchParams {
       extras: Vec::new(),
       mmproj_path: None,
       backend: BackendChoice::default(),
+      backend_knobs: BTreeMap::new(),
     }
   }
 }
@@ -1511,6 +1524,38 @@ mod tests {
     let json = serde_json::to_string(&p).unwrap();
     let back: LaunchParams = serde_json::from_str(&json).unwrap();
     assert_eq!(back, p);
+  }
+
+  #[test]
+  fn empty_backend_knobs_is_omitted_from_serialized_shape() {
+    // `skip_serializing_if` keeps the persisted shape byte-stable for every
+    // shipping backend (none declare native knobs): no `backend_knobs` key.
+    let p = base_params();
+    assert!(p.backend_knobs.is_empty());
+    let json = serde_json::to_string(&p).unwrap();
+    assert!(
+      !json.contains("backend_knobs"),
+      "empty backend_knobs must not appear in the wire shape, got {json}"
+    );
+  }
+
+  #[test]
+  fn backend_knobs_round_trip_through_state_json() {
+    let mut p = base_params();
+    p.backend_knobs
+      .insert("kv_bits".to_string(), KnobValue::Set("8".to_string()));
+    p.backend_knobs
+      .insert("trust_remote".to_string(), KnobValue::Auto);
+    let json = serde_json::to_string(&p).unwrap();
+    assert!(json.contains("backend_knobs"));
+    let back: LaunchParams = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, p);
+    // Auto rides the bare `auto` token; Set rides the bare scalar.
+    assert_eq!(
+      back.backend_knobs["kv_bits"],
+      KnobValue::Set("8".to_string())
+    );
+    assert_eq!(back.backend_knobs["trust_remote"], KnobValue::Auto);
   }
 
   // ---- Device selector tests ----

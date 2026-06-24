@@ -124,6 +124,10 @@ pub struct LastParamsRow {
   /// user lands on the same overrides; rows the user never touched
   /// re-resolve from yaml / built-in / model default.
   pub knobs: crate::config::TypedKnobs,
+  /// Per-backend native-knob deltas (see [`crate::launch::native_knobs`]),
+  /// keyed by descriptor id. Empty for every shipping backend. Seeds the
+  /// picker's `backend_knobs` so a returning user keeps their native values.
+  pub backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
   /// Free-form argv tail that landed on `--`. Surfaces back in the
   /// editor's `extras` row.
   pub extras: Vec<String>,
@@ -427,6 +431,9 @@ pub struct StartModelArgs {
   /// Per-model backend choice from the Launch picker. `Auto` runs
   /// the identity rule on the daemon side.
   pub backend: crate::launch::params::BackendChoice,
+  /// Per-backend native-knob values from the picker (see
+  /// [`crate::launch::native_knobs`]). Empty for every shipping backend.
+  pub backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
 }
 
 /// How alarming a confirm prompt is, so the overlay can tone its
@@ -993,6 +1000,12 @@ impl App {
           .get("knobs")
           .and_then(|v| serde_json::from_value(v.clone()).ok())
           .unwrap_or_default();
+        // Native knobs (omitted when empty by the daemon) — seed the picker
+        // so a saved native value is reapplied next launch.
+        let backend_knobs = params
+          .get("backend_knobs")
+          .and_then(|v| serde_json::from_value(v.clone()).ok())
+          .unwrap_or_default();
         let extras = params
           .get("extras")
           .and_then(Value::as_array)
@@ -1016,6 +1029,7 @@ impl App {
             ctx,
             reasoning,
             knobs,
+            backend_knobs,
             extras,
             port,
           },
@@ -1422,6 +1436,9 @@ impl App {
         // they ride along inside `last.knobs` without dedicated
         // seeding paths.
         state.user_knobs = last.knobs.clone();
+        // Native knobs ride the same "remember the user's last deltas" path —
+        // a saved native value is reapplied next launch unless overridden.
+        state.backend_knobs = last.backend_knobs.clone();
         // Seed extras here (before `set_presets`) so the preset cycle's
         // `last used` stop captures them as part of its baseline.
         if !last.extras.is_empty() {
@@ -1439,6 +1456,9 @@ impl App {
       .filter(|m| m.source.backend_id() == crate::backend::lemonade::LEMONADE_BACKEND_ID)
       .map(|_| crate::launch::params::BackendChoice::Lemonade)
       .unwrap_or(crate::launch::params::BackendChoice::LlamaCpp);
+    // Surface the model's backend native knobs (empty for every shipping
+    // backend, so no native rows render today).
+    state.seed_native_descriptors();
     // Populate the Device row from the launch device catalog — the
     // exact `--device` selectors the daemon's configured binaries
     // accept (sourced from their `--list-devices`). The picker cycles
@@ -1486,6 +1506,7 @@ impl App {
         name: np.name.clone(),
         knobs: preset_body_from_launch_params(&np.params).knobs,
         extras: np.params.extras.clone(),
+        backend_knobs: np.params.backend_knobs.clone(),
       })
       .collect();
     let default = eff
@@ -2778,6 +2799,7 @@ mod tests {
           reasoning: Some(KnobValue::Set(true)),
           ..Default::default()
         },
+        backend_knobs: Default::default(),
         extras: vec!["--rope-freq-base".into(), "10000".into()],
         port: Some(41105),
       },
