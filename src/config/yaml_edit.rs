@@ -41,10 +41,35 @@ const STEP: usize = 2;
 /// on the path holds real data a block insert would corrupt — a non-empty flow
 /// mapping, a scalar, or a sequence.
 pub(crate) fn upsert(source: &str, path: &[&str], value_flow: &str) -> Result<String, WriteError> {
+  upsert_leaf(source, path, &Leaf::Flow(value_flow))
+}
+
+/// Like [`upsert`], but the leaf's value is a multi-line **block** rendered
+/// from `body` (a mapping) — used for comment-readable preset entries. Parent
+/// creation, vacant-node building, and the flow/scalar refusal all match
+/// [`upsert`]; the only differences are that the leaf renders as a nested
+/// block, and an *update* (the leaf already exists) replaces the whole entry
+/// node — so a trailing comment on the entry's key line is not preserved,
+/// since the value moves onto the lines below the key.
+pub(crate) fn upsert_block(
+  source: &str,
+  path: &[&str],
+  body: &YamlValue,
+) -> Result<String, WriteError> {
+  upsert_leaf(source, path, &Leaf::Block(body))
+}
+
+/// A leaf value to splice: a one-line flow token, or a multi-line block body.
+enum Leaf<'a> {
+  Flow(&'a str),
+  Block(&'a YamlValue),
+}
+
+fn upsert_leaf(source: &str, path: &[&str], leaf: &Leaf<'_>) -> Result<String, WriteError> {
   debug_assert!(!path.is_empty(), "upsert needs a non-empty key path");
   if source.trim().is_empty() {
     // Fresh document: render the whole chain from the root.
-    return Ok(format!("{}\n", render_chain(path, value_flow, 0)));
+    return Ok(format!("{}\n", render_chain(path, leaf, 0)?));
   }
 
   let doc = Document::new(source.to_string()).map_err(|e| WriteError::Patch(e.to_string()))?;
@@ -71,10 +96,8 @@ pub(crate) fn upsert(source: &str, path: &[&str], value_flow: &str) -> Result<St
   guard_ancestors_block(&doc, path, i)?;
 
   if i == path.len() {
-    // Full path exists → replace just the leaf's value span (key,
-    // indentation, and any trailing comment on the line survive).
-    let span = value_span(&doc, &key_route(path))?;
-    return Ok(replace_span(source, span, value_flow));
+    // Full path exists → update the leaf in place.
+    return update_leaf(source, &doc, path, leaf);
   }
 
   if i > 0 {
@@ -96,7 +119,7 @@ pub(crate) fn upsert(source: &str, path: &[&str], value_flow: &str) -> Result<St
         .query_pretty(&key_route(&path[..i]))
         .map_err(|e| WriteError::Patch(e.to_string()))?;
       let keycol = f.location.point_span.0 .1;
-      let block = render_keyed_chain(path[i - 1], &path[i..], value_flow, keycol);
+      let block = render_keyed_chain(path[i - 1], &path[i..], leaf, keycol)?;
       return Ok(replace_span(source, f.location.byte_span, &block));
     } else {
       // The node holds a scalar or a sequence — real data a nested write would
@@ -115,8 +138,41 @@ pub(crate) fn upsert(source: &str, path: &[&str], value_flow: &str) -> Result<St
   };
   let last = last_key(resolve(&root, &path[..i]));
   let at = append_point(source, &doc, &container, last)?;
-  let block = render_chain(&path[i..], value_flow, indent);
+  let block = render_chain(&path[i..], leaf, indent)?;
   Ok(insert_at(source, at, &block))
+}
+
+/// Update the leaf at the (fully resolved) `path`. A flow leaf replaces just
+/// the value span, so the key, its indentation, and any trailing comment on
+/// the line survive. A block leaf replaces the whole entry node with a freshly
+/// rendered block (the value moves below the key, so a key-line comment is not
+/// kept) while preserving the entry's position.
+fn update_leaf(
+  source: &str,
+  doc: &Document,
+  path: &[&str],
+  leaf: &Leaf<'_>,
+) -> Result<String, WriteError> {
+  match leaf {
+    Leaf::Flow(token) => {
+      let span = value_span(doc, &key_route(path))?;
+      Ok(replace_span(source, span, token))
+    }
+    Leaf::Block(body) => {
+      let f = doc
+        .query_pretty(&key_route(path))
+        .map_err(|e| WriteError::Patch(e.to_string()))?;
+      let keycol = f.location.point_span.0 .1;
+      let block = render_keyed_block(path[path.len() - 1], body, keycol)?;
+      let mut out = replace_span(source, f.location.byte_span, &block);
+      // `query_pretty`'s span for the document's *last* node includes its
+      // trailing newline; the rendered block omits it, so restore EOF parity.
+      if source.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+      }
+      Ok(out)
+    }
+  }
 }
 
 /// Remove the node at `path`, pruning now-empty parent blocks up the chain
@@ -205,20 +261,26 @@ fn render_scalar(value: &YamlValue) -> Result<String, WriteError> {
 
 // --- text rendering -------------------------------------------------------
 
-/// Render `segs` as a nested block, the first key at column `indent`, the
-/// last carrying `value_flow`. Keys are quoted when a bare token wouldn't be
-/// a plain string.
-fn render_chain(segs: &[&str], value_flow: &str, indent: usize) -> String {
+/// Render `segs` as a nested block, the first key at column `indent`, the last
+/// carrying `leaf` (a one-line token or a nested block body). Keys are quoted
+/// when a bare token wouldn't be a plain string.
+fn render_chain(segs: &[&str], leaf: &Leaf<'_>, indent: usize) -> Result<String, WriteError> {
   let mut out = String::new();
   for (d, seg) in segs.iter().enumerate() {
     let col = indent + d * STEP;
     if d + 1 == segs.len() {
-      out.push_str(&format!("{}{}: {value_flow}", pad(col), yaml_key(seg)));
+      match leaf {
+        Leaf::Flow(token) => out.push_str(&format!("{}{}: {token}", pad(col), yaml_key(seg))),
+        Leaf::Block(body) => {
+          out.push_str(&format!("{}{}:\n", pad(col), yaml_key(seg)));
+          out.push_str(&render_block(body, col + STEP)?);
+        }
+      }
     } else {
       out.push_str(&format!("{}{}:\n", pad(col), yaml_key(seg)));
     }
   }
-  out
+  Ok(out)
 }
 
 /// Render a fresh `container_key:` re-emission followed by the `rest` chain
@@ -226,12 +288,65 @@ fn render_chain(segs: &[&str], value_flow: &str, indent: usize) -> String {
 fn render_keyed_chain(
   container_key: &str,
   rest: &[&str],
-  value_flow: &str,
+  leaf: &Leaf<'_>,
   keycol: usize,
-) -> String {
+) -> Result<String, WriteError> {
   let mut out = format!("{}:\n", yaml_key(container_key));
-  out.push_str(&render_chain(rest, value_flow, keycol + STEP));
-  out
+  out.push_str(&render_chain(rest, leaf, keycol + STEP)?);
+  Ok(out)
+}
+
+/// Render `key:` followed by `body` as a nested block one step under it — the
+/// block-leaf form for an in-place entry update.
+fn render_keyed_block(key: &str, body: &YamlValue, keycol: usize) -> Result<String, WriteError> {
+  let mut out = format!("{}:\n", yaml_key(key));
+  out.push_str(&render_block(body, keycol + STEP)?);
+  Ok(out)
+}
+
+/// Render a mapping `value` as block-style `key: val` lines at column `indent`
+/// (no trailing newline). Nested maps recurse; non-empty sequences render as
+/// block items; scalars use the type-faithful token. An empty sequence renders
+/// as inline `[]` so it isn't read back as null.
+fn render_block(value: &YamlValue, indent: usize) -> Result<String, WriteError> {
+  let map = value
+    .as_mapping()
+    .ok_or_else(|| WriteError::Serialise("block body must be a mapping".to_string()))?;
+  let mut out = String::new();
+  for (idx, (k, v)) in map.iter().enumerate() {
+    let key = k
+      .as_str()
+      .ok_or_else(|| WriteError::Serialise("block body key is not a string".to_string()))?;
+    if idx > 0 {
+      out.push('\n');
+    }
+    match v {
+      YamlValue::Mapping(_) => {
+        out.push_str(&format!("{}{}:\n", pad(indent), yaml_key(key)));
+        out.push_str(&render_block(v, indent + STEP)?);
+      }
+      YamlValue::Sequence(seq) if !seq.is_empty() => {
+        out.push_str(&format!("{}{}:", pad(indent), yaml_key(key)));
+        for item in seq {
+          out.push_str(&format!(
+            "\n{}- {}",
+            pad(indent + STEP),
+            render_scalar(item)?
+          ));
+        }
+      }
+      YamlValue::Sequence(_) => {
+        out.push_str(&format!("{}{}: []", pad(indent), yaml_key(key)));
+      }
+      _ => out.push_str(&format!(
+        "{}{}: {}",
+        pad(indent),
+        yaml_key(key),
+        render_scalar(v)?
+      )),
+    }
+  }
+  Ok(out)
 }
 
 /// Render `key` as a YAML mapping key, quoting it when a bare token would
@@ -598,6 +713,152 @@ mod tests {
     let err = upsert("proxy: {port: 11500}\n", &["proxy", "api_key"], "x").unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("flow"), "error names flow style: {msg}");
+  }
+
+  // Deep lookup helper for the block tests: `entry(&y, &["presets","m",…])`.
+  fn dig<'a>(y: &'a YamlValue, path: &[&str]) -> Option<&'a YamlValue> {
+    let mut cur = y;
+    for k in path {
+      cur = cur.get(k)?;
+    }
+    Some(cur)
+  }
+
+  #[test]
+  fn upsert_block_creates_nested_block_entry() {
+    let body = parse_ok("ctx: 4096\nflash_attn: true\n");
+    let out = upsert_block("", &["presets", "m", "entries", "fast"], &body).unwrap();
+    // Block style, not flow: entry key on its own line, no `{`.
+    assert!(out.contains("entries:\n"), "block entries:\n{out}");
+    assert!(
+      out.contains("      fast:\n"),
+      "entry key on its own line:\n{out}"
+    );
+    assert!(out.contains("ctx: 4096"), "{out}");
+    assert!(!out.contains('{'), "no flow braces:\n{out}");
+    assert_eq!(
+      dig(&parse_ok(&out), &["presets", "m", "entries", "fast", "ctx"]).and_then(YamlValue::as_u64),
+      Some(4096)
+    );
+  }
+
+  #[test]
+  fn upsert_block_appends_sibling_keeping_comment() {
+    let src = "presets:\n  m:\n    entries:\n      a: { ctx: 1 }  # hand-authored\n";
+    let body = parse_ok("ctx: 2\n");
+    let out = upsert_block(src, &["presets", "m", "entries", "b"], &body).unwrap();
+    assert!(
+      out.contains("a: { ctx: 1 }  # hand-authored"),
+      "untouched sibling + its comment survive:\n{out}"
+    );
+    let y = parse_ok(&out);
+    assert_eq!(
+      dig(&y, &["presets", "m", "entries", "b", "ctx"]).and_then(YamlValue::as_u64),
+      Some(2)
+    );
+    assert_eq!(
+      dig(&y, &["presets", "m", "entries", "a", "ctx"]).and_then(YamlValue::as_u64),
+      Some(1)
+    );
+  }
+
+  #[test]
+  fn upsert_block_updates_entry_in_place_keeping_siblings() {
+    let src = "presets:\n  m:\n    entries:\n      a: { ctx: 1 }\n      b: { ctx: 2 }  # keep\n";
+    let body = parse_ok("ctx: 999\nthreads: 8\n");
+    let out = upsert_block(src, &["presets", "m", "entries", "a"], &body).unwrap();
+    assert!(
+      out.contains("ctx: 999") && out.contains("threads: 8"),
+      "{out}"
+    );
+    assert!(
+      out.contains("b: { ctx: 2 }  # keep"),
+      "sibling b + comment untouched:\n{out}"
+    );
+    let y = parse_ok(&out);
+    assert_eq!(
+      dig(&y, &["presets", "m", "entries", "a", "threads"]).and_then(YamlValue::as_u64),
+      Some(8)
+    );
+    assert_eq!(
+      dig(&y, &["presets", "m", "entries", "b", "ctx"]).and_then(YamlValue::as_u64),
+      Some(2)
+    );
+  }
+
+  #[test]
+  fn upsert_block_update_last_entry_keeps_trailing_newline() {
+    // Updating the file's last entry must not strip the EOF newline.
+    let src = "presets:\n  m:\n    entries:\n      a:\n        ctx: 1\n";
+    let body = parse_ok("ctx: 2\n");
+    let out = upsert_block(src, &["presets", "m", "entries", "a"], &body).unwrap();
+    assert!(out.ends_with('\n'), "EOF newline preserved:\n{out:?}");
+    assert_eq!(
+      dig(&parse_ok(&out), &["presets", "m", "entries", "a", "ctx"]).and_then(YamlValue::as_u64),
+      Some(2)
+    );
+  }
+
+  #[test]
+  fn upsert_block_update_middle_block_entry_does_not_merge_into_next() {
+    // Updating a block entry that has a block sibling *after* it must not run
+    // the next entry onto the updated value's last line.
+    let src = "presets:\n  m:\n    entries:\n      a:\n        ctx: 1\n      b:\n        ctx: 2\n";
+    let body = parse_ok("ctx: 99\nthreads: 4\n");
+    let out = upsert_block(src, &["presets", "m", "entries", "a"], &body).unwrap();
+    let y = parse_ok(&out); // must still parse — no `9...b:` merge
+    assert_eq!(
+      dig(&y, &["presets", "m", "entries", "a", "threads"]).and_then(YamlValue::as_u64),
+      Some(4)
+    );
+    assert_eq!(
+      dig(&y, &["presets", "m", "entries", "b", "ctx"]).and_then(YamlValue::as_u64),
+      Some(2),
+      "sibling b intact, not merged"
+    );
+  }
+
+  #[test]
+  fn upsert_block_renders_auto_token_and_value_escape() {
+    // `auto` (string) renders as the bare token; the `{value: …}` escape stays
+    // a nested map so it round-trips as the literal value.
+    let body = parse_ok("ngl: auto\nsplit_mode:\n  value: auto\n");
+    let out = upsert_block("", &["presets", "m", "entries", "p"], &body).unwrap();
+    assert!(out.contains("ngl: auto"), "auto is a bare token:\n{out}");
+    assert!(out.contains("value: auto"), "escape map preserved:\n{out}");
+    let y = parse_ok(&out);
+    assert_eq!(
+      dig(&y, &["presets", "m", "entries", "p", "ngl"]).and_then(YamlValue::as_str),
+      Some("auto")
+    );
+    assert_eq!(
+      dig(&y, &["presets", "m", "entries", "p", "split_mode", "value"]).and_then(YamlValue::as_str),
+      Some("auto"),
+      "escape round-trips as {{value: auto}}"
+    );
+  }
+
+  #[test]
+  fn upsert_block_renders_block_sequence_for_extras() {
+    let body = parse_ok("extras:\n  - --rope-freq-base\n  - \"10000\"\n");
+    let out = upsert_block("", &["presets", "m", "entries", "p"], &body).unwrap();
+    assert!(
+      out.contains("extras:") && out.contains("- --rope-freq-base"),
+      "extras as a block list:\n{out}"
+    );
+    assert!(
+      out.contains("'10000'"),
+      "numeric-looking item stays quoted:\n{out}"
+    );
+    let y = parse_ok(&out);
+    let extras =
+      dig(&y, &["presets", "m", "entries", "p", "extras"]).and_then(YamlValue::as_sequence);
+    assert_eq!(extras.map(|s| s.len()), Some(2));
+    assert_eq!(
+      extras.and_then(|s| s[1].as_str()),
+      Some("10000"),
+      "stays a string, not int 10000"
+    );
   }
 
   #[test]

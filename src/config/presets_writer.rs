@@ -1,15 +1,17 @@
 //! Comment-preserving writer for the `presets:` block of `config.yaml`.
 //!
 //! Presets are keyed by name under `presets: <model>: entries: <name>`. This
-//! module renders a preset body to a one-line YAML flow value and delegates
-//! the actual comment-safe splice to [`crate::config::yaml_edit`] — the
-//! single mutation primitive shared with the init / cli config writer, so
-//! every other comment and bit of formatting (including a hand-authored arch
-//! preset) survives byte-for-byte.
+//! module serialises a preset body to a `yaml_serde::Value`, prunes its null
+//! fields, and delegates the actual comment-safe splice to
+//! [`crate::config::yaml_edit`]'s `upsert_block` — which writes the entry in
+//! readable block style (multi-line, unquoted keys) and shares its mutation
+//! primitive with the init / cli config writer, so every other comment and bit
+//! of formatting (including a hand-authored arch preset) survives byte-for-byte.
 
 use std::path::Path;
 
 use serde::Serialize;
+use yaml_serde::Value as YamlValue;
 
 use crate::config::writer::{preflight, WriteError};
 use crate::config::yaml_edit;
@@ -21,7 +23,8 @@ const ENTRIES_KEY: &str = "entries";
 /// `config_path`, preserving every unrelated comment and bit of formatting.
 /// `body` serialises to a flat YAML mapping (the preset's `ctx` / `reasoning`
 /// / `extras` plus the flattened typed knobs); `null` fields are dropped so
-/// the written entry only carries set values.
+/// the written entry only carries set values. The entry is written in
+/// block style (multi-line, unquoted keys) to match a hand-authored config.
 pub fn upsert_preset(
   config_path: &Path,
   model_key: &str,
@@ -32,10 +35,11 @@ pub fn upsert_preset(
   let target = preflight(config_path)?;
   let source = yaml_edit::read_source(config_path)?;
   let pruned = prune_nulls(serialise(body)?);
-  // The body collapses to one line via the shared compact-JSON-as-flow
-  // encoder, so the splice is a trivial one-line insert.
-  let flow = yaml_edit::render_flow_json(&pruned)?;
-  let new_source = yaml_edit::upsert(&source, &[PRESETS_KEY, model_key, ENTRIES_KEY, name], &flow)?;
+  let new_source = yaml_edit::upsert_block(
+    &source,
+    &[PRESETS_KEY, model_key, ENTRIES_KEY, name],
+    &pruned,
+  )?;
   yaml_edit::write_config(&target, &new_source)
 }
 
@@ -55,18 +59,19 @@ pub fn remove_preset(config_path: &Path, model_key: &str, name: &str) -> Result<
   }
 }
 
-fn serialise(body: &impl Serialize) -> Result<serde_json::Value, WriteError> {
-  serde_json::to_value(body).map_err(|e| WriteError::Serialise(e.to_string()))
+fn serialise(body: &impl Serialize) -> Result<YamlValue, WriteError> {
+  yaml_serde::to_value(body).map_err(|e| WriteError::Serialise(e.to_string()))
 }
 
 /// Drop top-level `null` values so an entry only carries set fields (a
 /// default [`crate::config::TypedKnobs`] serialises all knobs, most as
-/// `null`). The body is flat, so a single-level prune suffices; the
-/// `{auto: true}` Auto sentinel is an object, never `null`, and survives.
-fn prune_nulls(value: serde_json::Value) -> serde_json::Value {
+/// `null`). The body is flat, so a single-level prune suffices; an `Auto`
+/// knob serialises as the non-null `auto` token (and a literal-`auto` `Set`
+/// as the `{ value: … }` escape), so both survive the prune.
+fn prune_nulls(value: YamlValue) -> YamlValue {
   match value {
-    serde_json::Value::Object(map) => {
-      serde_json::Value::Object(map.into_iter().filter(|(_, v)| !v.is_null()).collect())
+    YamlValue::Mapping(map) => {
+      YamlValue::Mapping(map.into_iter().filter(|(_, v)| !v.is_null()).collect())
     }
     other => other,
   }
@@ -84,9 +89,9 @@ mod tests {
     crate::util::test_temp::unique_temp_dir(&format!("presets-writer-{label}"))
   }
 
-  /// A minimal flat preset body for tests — mirrors the real
-  /// `PresetBody` shape (scalars + a nested `{auto: true}` + an extras
-  /// list) without depending on its definition.
+  /// A minimal flat preset body for tests — mirrors the real `PresetBody`
+  /// shape (scalars + the `auto` token + an extras list) without depending on
+  /// its definition.
   fn body(pairs: &[(&str, serde_json::Value)]) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (k, v) in pairs {
@@ -233,24 +238,41 @@ presets:
   }
 
   #[test]
-  fn round_trips_scalar_bool_auto_and_numeric_string_extras() {
+  fn round_trips_block_scalar_bool_auto_and_numeric_string_extras() {
     let dir = temp_dir("round-trip");
     let path = dir.join("config.yaml");
     let b = body(&[
       ("ctx", 32768.into()),
       ("flash_attn", true.into()),
-      ("n_gpu_layers", serde_json::json!({ "auto": true })),
+      ("n_gpu_layers", serde_json::json!("auto")), // the bare auto token
       ("extras", serde_json::json!(["--rope-freq-base", "10000"])),
       ("dropped", serde_json::Value::Null),
     ]);
     upsert_preset(&path, "m", "p", &b).unwrap();
-    let yaml: YamlValue = yaml_serde::from_str(&read(&path)).unwrap();
+    let text = read(&path);
+    // Block style on disk: multiline, unquoted keys, `auto` bare, block list —
+    // no JSON flow braces / quoted keys.
+    assert!(
+      text.contains("n_gpu_layers: auto"),
+      "Auto is the bare token in block style:\n{text}"
+    );
+    assert!(
+      text.contains("extras:") && text.contains("- --rope-freq-base"),
+      "extras render as a block list:\n{text}"
+    );
+    assert!(
+      !text.contains("{\""),
+      "no JSON flow braces / quoted keys:\n{text}"
+    );
+    // Values round-trip.
+    let yaml: YamlValue = yaml_serde::from_str(&text).unwrap();
     let entry = entries_of(&yaml, "m").get("p").unwrap();
     assert_eq!(entry.get("ctx").unwrap().as_u64(), Some(32768));
     assert_eq!(entry.get("flash_attn").unwrap().as_bool(), Some(true));
-    assert!(
-      entry.get("n_gpu_layers").unwrap().get("auto").is_some(),
-      "Auto sentinel survives"
+    assert_eq!(
+      entry.get("n_gpu_layers").unwrap().as_str(),
+      Some("auto"),
+      "Auto round-trips as the bare token"
     );
     let extras = entry.get("extras").unwrap().as_sequence().unwrap();
     assert_eq!(extras.len(), 2, "extras list round-trips");

@@ -573,6 +573,12 @@ keybindings: {}
 # …) plus an optional `mode` (chat | embedding | rerank) and an `extras`
 # argv tail. Apply one with `llamastash start <model> --preset <name>`.
 #
+# A knob set to `auto` delegates that knob to llama-server's `--fit`
+# (e.g. `n_gpu_layers: auto`). `auto` is a reserved token, so to set a
+# knob to the *literal* string value `auto`, use the escape
+# `{ value: auto }`. The app writes entries in block style (shown below);
+# flow style (`{ ctx: 8192 }`) is also accepted when you hand-author.
+#
 # `default:` is one stop in the TUI's preset cycle (which itself opens on
 # `last used`, not on `default`). It is hand-edited only (there is no
 # set-default command) and is ignored if it names an entry that doesn't
@@ -585,13 +591,23 @@ keybindings: {}
 # presets:
 #   # per-model preset, keyed by the GGUF file's basename
 #   Qwen3-Coder-30B-Q4_K_M.gguf:
-#     default: long-ctx               # TUI cycle opens here
+#     default: long-ctx               # a stop in the TUI cycle (not auto-applied)
 #     entries:
-#       short-ctx: { ctx: 8192 }
-#       long-ctx:  { ctx: 65536, flash_attn: true }
-#       embed:     { mode: embedding, ctx: 4096 }
+#       short-ctx:
+#         ctx: 8192
+#       long-ctx:
+#         ctx: 65536
+#         flash_attn: true
+#         n_gpu_layers: auto          # delegate this knob to --fit
+#       embed:
+#         mode: embedding
+#         ctx: 4096
+#         extras:
+#           - --rope-freq-base
+#           - "10000"
 #   # arch preset, keyed by `general.architecture` — applies to every
 #   # qwen3 model that has no per-model entry of the same name
 #   qwen3:
 #     entries:
-#       balanced: { ctx: 16384, extras: [--rope-freq-base, "10000"] }
+#       balanced:
+#         ctx: 16384
