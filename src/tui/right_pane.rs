@@ -952,7 +952,9 @@ mod tests {
     app.focus = Focus::RightPane;
     app.right_tab = RightTab::Settings;
     app.open_launch_picker();
-    // Default focus lands on Ctx (editable) — baseline chip visible.
+    // Focus the Ctx row (editable) — the cursor opens on the Preset row.
+    app.launch_picker.as_mut().unwrap().field =
+      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
     let baseline = chip_texts(&app);
     assert!(baseline.contains(&"e:edit".to_string()));
     // Move focus onto a boolean knob — chip disappears.
@@ -990,6 +992,9 @@ mod tests {
     app.focus = Focus::RightPane;
     app.right_tab = RightTab::Settings;
     app.open_launch_picker();
+    // Focus an editable knob (the cursor opens on the Preset row).
+    app.launch_picker.as_mut().unwrap().field =
+      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
     // Baseline: picker open, no inline edit → e:edit visible.
     let baseline = chip_texts(&app);
     assert!(baseline.contains(&"e:edit".to_string()));

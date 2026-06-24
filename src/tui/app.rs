@@ -1597,12 +1597,15 @@ impl App {
   /// gate) and by `Enter`-on-list for idle rows via
   /// [`drill_into_focused_model`](Self::drill_into_focused_model).
   pub fn open_launch_picker(&mut self) {
-    let picker = match self.build_default_picker() {
+    let mut picker = match self.build_default_picker() {
       Some(p) => p,
       None => return,
     };
     // (Extras are seeded inside `build_default_picker`, before the preset
     // cycle captures its `last used` baseline.)
+    // Open with the cursor on the Preset row — it leads the form and is the
+    // first thing a user picks when staging a launch.
+    picker.field = crate::tui::launch_picker::PickerField::Preset;
     self.launch_picker = Some(picker);
     self.running_view_scroll.set(0);
     self.right_tab = RightTab::Settings;

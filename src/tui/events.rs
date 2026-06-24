@@ -4137,6 +4137,7 @@ mod tests {
     app.focus = Focus::RightPane;
     app.right_tab = RightTab::Settings;
 
+    // The cursor opens on the Preset row, so the first ↓ moves onto Ctx.
     pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::RightPane, "↓ must not leave the pane");
     let field = app
@@ -4146,13 +4147,13 @@ mod tests {
       .expect("↓ in Settings should materialise the picker form");
     assert_eq!(
       field,
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Reasoning)
+      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx)
     );
 
     pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(
       app.launch_picker.as_ref().unwrap().field,
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::NGpuLayers)
+      PickerField::Knob(crate::launch::flag_aliases::KnobField::Reasoning)
     );
   }
 
@@ -4167,11 +4168,11 @@ mod tests {
 
     pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::RightPane);
-    // The Preset row always leads the form, so the cursor opens on Ctx
-    // (first knob) and Up from it lands on the Preset row above.
+    // The cursor opens on the Preset row (the form's lead), so Up wraps
+    // backward to the last row (Extras).
     assert_eq!(
       app.launch_picker.as_ref().expect("picker").field,
-      PickerField::Preset
+      PickerField::Extras
     );
   }
 
@@ -4187,20 +4188,20 @@ mod tests {
     app.focus = Focus::RightPane;
     app.right_tab = RightTab::Settings;
 
-    // Auto-stages the picker on first key; cursor lands on Ctx. The
-    // first → stop in the ring is Auto (Inherited → Auto → presets…).
-    pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
+    // Auto-stages the picker on first key; the cursor opens on the Preset
+    // row, so Down moves onto Ctx. Then →/← cycle Ctx's value.
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
     let p = app.launch_picker.as_ref().expect("picker auto-staged");
     assert_eq!(
       p.field,
       PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx)
     );
+    pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(
-      p.user_knobs.ctx,
+      app.launch_picker.as_ref().unwrap().user_knobs.ctx,
       Some(KnobValue::Auto),
       "→ advances Ctx to the Auto stop"
     );
-
     pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
     assert_eq!(
       app.launch_picker.as_ref().unwrap().user_knobs.ctx,
@@ -4300,9 +4301,12 @@ mod tests {
     pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(
       app.launch_picker.as_ref().expect("picker").field,
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx),
-      "default focus lands on the ctx row"
+      PickerField::Preset,
+      "default focus leads on the preset row"
     );
+    // Move down to the ctx row to exercise its inline edit.
+    app.launch_picker.as_mut().unwrap().field =
+      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
     // `e` opens inline edit; type a fresh value; Enter commits.
     pump_input(&mut app, key(KeyCode::Char('e'), KeyModifiers::NONE));
     {
