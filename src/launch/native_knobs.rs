@@ -120,9 +120,14 @@ fn push_checked(out: &mut Vec<OsString>, flag: &str, value: Option<&str>) {
     return;
   }
   if let Some(v) = value {
-    // A free-text value could itself smuggle a forbidden flag head.
-    let head = v.split_whitespace().next().unwrap_or(v);
-    if is_forbidden_head(head) {
+    // A free-text value could smuggle a forbidden flag as a space- OR
+    // `=`-separated token (`--host 0.0.0.0`, `--host=0.0.0.0`). Mirror
+    // `compose`'s head extraction exactly — split each whitespace token on
+    // `=` before the denylist check — so the two strips can't diverge.
+    let smuggles = v
+      .split_whitespace()
+      .any(|tok| is_forbidden_head(tok.split('=').next().unwrap_or(tok)));
+    if smuggles {
       log::warn!("native_knobs: stripping forbidden value head in {v:?}");
       return;
     }
@@ -211,13 +216,33 @@ mod tests {
 
   #[test]
   fn translate_strips_value_smuggling_a_forbidden_flag() {
-    // A free-text value that tries to rebind off loopback is dropped.
+    // A free-text value that tries to rebind off loopback is dropped — in
+    // the space form, the `=` form, mixed case, and as a non-leading token,
+    // so the native strip matches `compose`'s extras strip byte-for-byte.
     let flags = &[("adapter_path", "--adapter")];
-    let mut values = BTreeMap::new();
-    values.insert("adapter_path".to_string(), set("--host 0.0.0.0"));
-    assert!(
-      translate(STUB, flags, &values).is_empty(),
-      "value with a forbidden head must be stripped"
+    for smuggle in [
+      "--host 0.0.0.0",
+      "--host=0.0.0.0",
+      "--HOST=0.0.0.0",
+      "--listen=0.0.0.0:8080",
+      "--bind=0.0.0.0",
+      "--api-key=leak",
+      "--ssl-key-file=/tmp/k",
+      "ok --api-key=leak", // forbidden head as a non-leading token
+    ] {
+      let mut values = BTreeMap::new();
+      values.insert("adapter_path".to_string(), set(smuggle));
+      assert!(
+        translate(STUB, flags, &values).is_empty(),
+        "value {smuggle:?} must be stripped"
+      );
+    }
+    // A benign value with no forbidden head still emits.
+    let mut ok = BTreeMap::new();
+    ok.insert("adapter_path".to_string(), set("./lora"));
+    assert_eq!(
+      translate(STUB, flags, &ok),
+      vec![OsString::from("--adapter"), OsString::from("./lora")]
     );
   }
 

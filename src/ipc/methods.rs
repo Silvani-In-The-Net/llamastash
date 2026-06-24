@@ -974,6 +974,31 @@ mod tests {
     MethodContext::new(ShutdownToken::new())
   }
 
+  #[test]
+  fn launch_params_row_omits_empty_backend_knobs_and_emits_when_set() {
+    use crate::config::KnobValue;
+    use crate::launch::mode::LaunchMode;
+    use std::path::PathBuf;
+    // Empty → the key is absent (byte-stable for every shipping backend).
+    let lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    let row = launch_params_row(&lp);
+    assert!(
+      row.get("backend_knobs").is_none(),
+      "empty backend_knobs must not appear: {row}"
+    );
+    // Set → the key carries the map, with the same shape the TUI parses back.
+    let mut lp2 = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    lp2
+      .backend_knobs
+      .insert("kv_bits".into(), KnobValue::Set("8".into()));
+    let row2 = launch_params_row(&lp2);
+    assert_eq!(
+      row2["backend_knobs"]["kv_bits"],
+      serde_json::json!("8"),
+      "set backend_knobs round-trips into the row"
+    );
+  }
+
   #[tokio::test]
   async fn ping_returns_pong() {
     let req = Request::new(1, "ping", None);

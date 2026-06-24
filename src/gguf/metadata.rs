@@ -379,9 +379,8 @@ fn parameter_count(header: &GgufHeader, arch: Option<&str>) -> Option<u64> {
 
 /// Round a raw parameter count to a familiar "0.5B / 1B / 3B / 7B / 13B"
 /// bucket. Returns `None` if the count is too small to label confidently.
-/// Shared with the backend-neutral safetensors substrate
-/// ([`crate::discovery::hf_repos::config_to_metadata`]) so a config-dim
-/// param estimate buckets to the same labels GGUF rows use.
+/// `pub(crate)` so the safetensors substrate's config-dim estimate buckets to
+/// the same labels GGUF rows use ([`crate::discovery::hf_repos`]).
 pub(crate) fn label_for_param_count(count: u64) -> Option<String> {
   const G: u64 = 1_000_000_000;
   const M: u64 = 1_000_000;

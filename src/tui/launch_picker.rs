@@ -545,40 +545,43 @@ impl LaunchPickerState {
     }
   }
 
+  /// The model's concrete backend, resolved from `model_backend`. The single
+  /// `BackendChoice` dispatch in the picker — `knob_supported`,
+  /// `seed_native_descriptors`, and `active_backend_id` all go through it, so
+  /// adding a backend means editing one **exhaustive** match (no wildcard), a
+  /// compile error until every variant is handled.
+  fn resolved_backend(&self) -> crate::backend::Backends {
+    use crate::backend::lemonade::LemonadeBackend;
+    use crate::backend::llama_cpp::LlamaCppBackend;
+    use crate::backend::Backends;
+    match self.model_backend {
+      BackendChoice::Lemonade => Backends::Lemonade(LemonadeBackend::new()),
+      BackendChoice::Auto | BackendChoice::LlamaCpp => Backends::LlamaCpp(LlamaCppBackend::new()),
+    }
+  }
+
   /// Whether the model's backend honors `field`.
   /// [`Self::field_visible`] hides rows the backend can't honor.
   /// llama.cpp honors every typed knob; Lemonade honors `ctx` only
   /// (lemond's `ctx_size` load option).
   pub fn knob_supported(&self, field: KnobField) -> bool {
-    use crate::backend::lemonade::LemonadeBackend;
-    use crate::backend::llama_cpp::LlamaCppBackend;
     use crate::backend::Backend;
-    match self.model_backend {
-      BackendChoice::Lemonade => LemonadeBackend::new().capabilities().supports(field),
-      _ => LlamaCppBackend::new().capabilities().supports(field),
-    }
+    self.resolved_backend().capabilities().supports(field)
   }
 
   /// Resolve [`Self::native_descriptors`] from the model's backend. Called
-  /// once the backend is known; mirrors [`Self::knob_supported`]'s backend
-  /// resolution. Empty for every shipping backend, so no native rows render
-  /// today — a backend opts in by overriding `native_knobs()`.
+  /// once the backend is known. Empty for every shipping backend, so no
+  /// native rows render today — a backend opts in by overriding
+  /// `native_knobs()`.
   pub fn seed_native_descriptors(&mut self) {
-    use crate::backend::lemonade::LemonadeBackend;
-    use crate::backend::llama_cpp::LlamaCppBackend;
     use crate::backend::Backend;
-    self.native_descriptors = match self.model_backend {
-      BackendChoice::Lemonade => LemonadeBackend::new().native_knobs(),
-      _ => LlamaCppBackend::new().native_knobs(),
-    };
+    self.native_descriptors = self.resolved_backend().native_knobs();
   }
 
   /// The model's backend id for log / label use.
   pub fn active_backend_id(&self) -> &'static str {
-    match self.model_backend {
-      BackendChoice::Lemonade => "lemonade",
-      _ => "llamacpp",
-    }
+    use crate::backend::Backend;
+    self.resolved_backend().id()
   }
 
   fn cycle_knob(&mut self, field: KnobField, forward: bool) {
@@ -1771,6 +1774,50 @@ mod tests {
     assert_eq!(s.backend_knobs["trust"], KnobValue::Set("false".into()));
     s.cycle_focused_value_next();
     assert!(!s.backend_knobs.contains_key("trust"), "wraps to inherited");
+  }
+
+  #[test]
+  fn cycle_native_backward_walks_the_ring_in_reverse() {
+    let mut s = LaunchPickerState::for_model("m");
+    s.native_descriptors = STUB_NATIVE;
+    // Cycle knob ←: inherited → last preset (8) → 4 → inherited.
+    s.field = PickerField::NativeKnob(0);
+    s.cycle_focused_value_prev();
+    assert_eq!(s.backend_knobs["kv_bits"], KnobValue::Set("8".into()));
+    s.cycle_focused_value_prev();
+    assert_eq!(s.backend_knobs["kv_bits"], KnobValue::Set("4".into()));
+    s.cycle_focused_value_prev();
+    assert!(
+      !s.backend_knobs.contains_key("kv_bits"),
+      "wraps to inherited"
+    );
+    // Bool ←: inherited → off → on → inherited.
+    s.field = PickerField::NativeKnob(2);
+    s.cycle_focused_value_prev();
+    assert_eq!(s.backend_knobs["trust"], KnobValue::Set("false".into()));
+    s.cycle_focused_value_prev();
+    assert_eq!(s.backend_knobs["trust"], KnobValue::Set("true".into()));
+  }
+
+  #[test]
+  fn seed_native_descriptors_is_empty_for_every_shipping_backend() {
+    // Each BackendChoice resolves to a backend that declares no native knobs,
+    // so the picker stays byte-identical. (A future backend with knobs must
+    // extend the exhaustive `resolved_backend` match — a compile error until
+    // it does.)
+    for choice in [
+      BackendChoice::Auto,
+      BackendChoice::LlamaCpp,
+      BackendChoice::Lemonade,
+    ] {
+      let mut s = LaunchPickerState::for_model("m");
+      s.model_backend = choice;
+      s.seed_native_descriptors();
+      assert!(
+        s.native_descriptors.is_empty(),
+        "{choice:?} must surface no native knobs"
+      );
+    }
   }
 
   #[test]
