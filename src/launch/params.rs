@@ -240,10 +240,12 @@ pub struct LaunchParams {
   pub backend: BackendChoice,
   /// Per-backend native-knob values, keyed by descriptor id (see
   /// [`crate::launch::native_knobs`]). Parallel to `knobs` (the llama.cpp
-  /// IR): a backend whose tunables live outside the IR stores them here and
-  /// translates them in `prepare_launch`. Empty for every shipping backend,
-  /// so `skip_serializing_if` keeps the persisted shape byte-stable when no
-  /// native knob is set.
+  /// IR): a backend whose tunables live outside the IR stores them here, and
+  /// *will* translate them to argv in its `prepare_launch` via
+  /// [`crate::launch::native_knobs::translate`] — no shipping backend wires
+  /// that path yet (MLX is the first, follow-up plan). Empty for every
+  /// shipping backend, so `skip_serializing_if` keeps the persisted shape
+  /// byte-stable when no native knob is set.
   #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
   pub backend_knobs: BTreeMap<String, KnobValue<String>>,
 }

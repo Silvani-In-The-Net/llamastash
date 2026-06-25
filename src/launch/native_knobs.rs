@@ -121,9 +121,11 @@ fn push_checked(out: &mut Vec<OsString>, flag: &str, value: Option<&str>) {
   }
   if let Some(v) = value {
     // A free-text value could smuggle a forbidden flag as a space- OR
-    // `=`-separated token (`--host 0.0.0.0`, `--host=0.0.0.0`). Mirror
-    // `compose`'s head extraction exactly — split each whitespace token on
-    // `=` before the denylist check — so the two strips can't diverge.
+    // `=`-separated token (`--host 0.0.0.0`, `--host=0.0.0.0`). A native value
+    // is one untokenized string (unlike `compose`'s pre-split argv extras), so
+    // split on whitespace first, then on `=`. The denylist itself is the shared
+    // `is_forbidden_head` leaf `compose` uses — that single source is what keeps
+    // the two strips in lockstep.
     let smuggles = v
       .split_whitespace()
       .any(|tok| is_forbidden_head(tok.split('=').next().unwrap_or(tok)));
