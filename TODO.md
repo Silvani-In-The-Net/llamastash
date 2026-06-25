@@ -165,10 +165,8 @@ places.
 
 ## R5 (v0.0.5 checklist)
 
-- [ ] MLX as a native peer backend (the generic `ModelIdentity` seam already supports it; would drop in alongside llama.cpp/Lemonade).
 - [x] ~~Fix "unable to follow symlinks" issue~~ — config writes now follow a symlinked `config.yaml` to its canonical target (the link is preserved) instead of refusing with `TargetIsSymlink`. `config::writer::preflight` resolves the link chain and the security check runs on the resolved parent; `state.json` keeps its non-following behavior. (the presets writer, init wizard, and `daemon` proxy-key/server-path persistence all go through this)
 - [x] help legends as new row with 1 column
-- [ ] a keybinding to switch left/right pane ratio (configurable in config.yaml)
 - [x] ~~Presets feature from PR #18~~ — shipped. Plan: `docs/plans/2026-06-22-001-feat-config-presets-per-model-plan.md` (config.yaml as the writable source of truth, `yamlpath`+`yamlpatch` comment-safe writes, per-model/arch keys, in-memory store + write-through, one-time `state.json`→config migration, TUI preset cycle row + `Ctrl+P` save). Remaining follow-ups below.
   - [x] ~~Deferred follow-ups (plan Unit 8): move config **reads** off archived `serde_yaml` onto a maintained parser; move the init wizard's config **writes** onto `yamlpatch` so wizard runs stop stripping comments.~~ — done. Reads consolidated on `yaml_serde` (the maintained serde_yaml fork, already pulled by `yamlpatch`; `serde_yaml` dropped from the dep tree). All `config.yaml` writes now funnel through one comment-safe primitive `config::yaml_edit` (the presets writer + the init/cli `merge_and_write`), so wizard/cli runs preserve hand-written comments.
 - [x] Architecture/UX improvements
@@ -197,6 +195,13 @@ places.
 - [x] ~~More colors in CLI outs, including the --help.~~ — `--help` now carries clap `Styles` (green headers, cyan literals), gated by clap's `ColorChoice` so it honors `NO_COLOR` / non-TTY and flips to `Never` under `--no-colors`; piped help stays byte-stable plain. `show` routed through the shared `format::section_header` / `kv_block` so it matches the `status` / `presets` tables. (Unit 8: `docs/plans/2026-06-20-001-refactor-codebase-audit-improvements-plan.md`)
 - [x] ~~Make custom UI components reusable and consistent.~~ — consolidated the duplicated TUI helpers onto single sources: one `layout::centered_rect` (deleted the byte-identical `hf_dialog` fork) plus one parameterized `layout::centered_abs` replacing the two divergent overlay `centred` helpers; promoted `settings::kv`/`kv_focused` to `tui/fmt::kv_row`/`kv_row_focused`; centralized truncation in `tui/fmt` (`truncate_end` + `truncate_start`). Follow-up (panel_block unification) tracked under General Roadmap → Low priority. (Unit 7: `docs/plans/2026-06-20-001-refactor-codebase-audit-improvements-plan.md`)
 - [x] ~~No glyphs fallback.~~ — opt-in ASCII glyph set (`src/tui/glyphs.rs`) selected once at startup via `LLAMASTASH_ASCII=1` (env) or `ascii_glyphs` (config, env wins). Routes status icons, severity markers (double-encoded shape+colour so warning vs critical stay distinct), spinner frames, ellipsis, gauge bars, dividers, and box borders through the set; the default render stays byte-identical. Keyboard-symbol hint labels (arrows/enter/shift/tab) stay Unicode by design (keybinding-label source-of-truth; universal in monospace fonts). Documented in `docs/usage.md`. (Unit 9: `docs/plans/2026-06-20-001-refactor-codebase-audit-improvements-plan.md`)
+
+## R6 (v0.0.6 checklist)
+
+- [ ] MLX as a native peer backend (the generic `ModelIdentity` seam already supports it; would drop in alongside llama.cpp/Lemonade).
+- [ ] a keybinding (shift+l) to switch left/right pane ratio (configurable in config.yaml. 4 slots with defaults current/50/70/90)
+- [x] ~~The (model/server default) label for setting knobs should not wrap; cut off what doesn't fit and show `…`.~~ — Settings rows clip to the pane width with `…` (no `Wrap`); the running view and editable form now share one render path (`fmt::clip_line` is the shared primitive), so both truncate identically. (821c26b)
+- [ ] show a label (N) near the prest knob in settings to indicate how many presets are available for the current model. (N=0 if none)
 
 ## General Roadmap
 
