@@ -209,6 +209,7 @@ places.
 - [ ] a keybinding (shift+l) to switch left/right pane ratio (configurable in config.yaml. 4 slots with defaults current/50/70/90)
 - [x] ~~The (model/server default) label for setting knobs should not wrap; cut off what doesn't fit and show `…`.~~ — Settings rows clip to the pane width with `…` (no `Wrap`); the running view and editable form now share one render path (`fmt::clip_line` is the shared primitive), so both truncate identically. (821c26b)
 - [ ] show a label (N) near the prest knob in settings to indicate how many presets are available for the current model. (N=0 if none)
+- [ ] named preset in TUI: remove the default value and instead just show a label like 'performance (default)' or 'balanced (default)' or 'memory (default)' to indicate which preset is the default for the current model. The default preset should be the first in the named preset list vals.
 
 ## General Roadmap
 
