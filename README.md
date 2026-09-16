@@ -388,15 +388,13 @@ llama.cpp has no semantic versioning, no stable branch, and no stability policy 
 
 Tracked in detail in [`TODO.md`](https://github.com/llamastash/llamastash/blob/main/TODO.md). The headline items on deck:
 
+- **MLX backend** — if the surface area lands cheaply alongside llama.cpp.
 - **llama.cpp version pinning** — prevent silent drift / incompatibility on `brew upgrade`.
 - **MCP and LAN-exposed HTTP surfaces** — Model Context Protocol, plus auth + TLS + LAN binding for the proxy. The loopback OpenAI-compatible proxy ships today (see [Drop-in OpenAI + Ollama proxy](#drop-in-openai--ollama-proxy)); the rest of the v1 R34 deferral (Anthropic compat, MCP, network exposure) stays on the roadmap.
-- **Anthropic API compatibility** — `/v1/messages` shim on top of the existing OpenAI-compatible endpoints.
 - **Per-PID VRAM attribution** via NVML's `nvmlDeviceGetComputeRunningProcesses`. Today the right pane shows per-model RAM + CPU%; VRAM is reported only at the host level.
-- **GPU/CPU offload split UI** — first-class control over which layers go where.
+- **Docker-ready packaging** — official images plus a documented `docker run` path.
 - **Windows AMD GPU detection** — pick a probe path (DXGI / WMI / ADLX). 0.0.2 shows "GPU detection unavailable" on Windows AMD hosts.
 - **`aarch64-pc-windows-msvc`** — Snapdragon X / Surface Pro coverage. Deferred from 0.0.2.
-- **MLX backend** — if the surface area lands cheaply alongside llama.cpp.
-- **Docker-ready packaging** — official images plus a documented `docker run` path.
 
 ## Contributing
 
