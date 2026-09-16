@@ -13,6 +13,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 - **A pool fraction you set yourself was priced against free memory, not the pool.** `gpu_memory_utilization` / `mem_fraction_static` are shares of the whole pool and cover the weights as well as the cache, but the admission gate projected `free × fraction` and then added the weights again. Free is always the smaller number, so the projection understated what the engine takes: `0.9` on a 121 GiB host with 52 GiB free was priced at 47 GiB and admitted, when the launch would take ~109 GiB. Both engines now price the pool and net off the weights the gate already counts. (#79 review, RV7)
 - **The vLLM unified-memory guard could not launch beside a tenant, and its reserve was spent on engine overhead.** vLLM 0.28 checks `total × gpu_memory_utilization` against its own free reading before honouring the byte cap, so the capped launch only started on a ~92%-free host; the launcher now passes a utilization sized to the launch. The flat 8 GiB reserve left ~1.3 GiB at ready once the engine's own 5.4–6.7 GiB footprint came out of it (measured on a DGX Spark); the reserve now covers the OS, the engine overhead and the gate's compute band, or 15% of the pool if that is more. (#80)
 
+### Security
+
+- rustls 0.23.40 → 0.23.45, clearing [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285): TLS 1.3 handshake messages were accepted across encryption level boundaries. Transitive via reqwest.
+
 ## [0.3.0] — 2026-09-10
 
 This release lets one model run more than once. **Named launches** give every copy its own address: `start qwen3 --name coder` and that launch answers to `qwen3@coder` on the proxy, the CLI and the TUI, so a long-context copy and a fast copy can sit side by side. A request for a name that has stopped starts it again under the preset of that name, so an OpenAI-shaped client can pick a configuration without a CLI round trip. **Run preset files** are the other half: `llamastash run model.yml` starts one model with its own preset from a file you can commit next to a project, and nothing is written back to `config.yaml`.
