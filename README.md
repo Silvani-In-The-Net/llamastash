@@ -19,7 +19,7 @@
 
 **Zero-overhead, terminal-native local-LLM manager.**
 
-A fast TUI **and** CLI with init wizard for managing local LLMs. One Rust binary that's a TUI, a CLI, a daemon, and an OpenAI-compatible proxy. [llama.cpp](https://github.com/ggml-org/llama.cpp) is the direct, zero-overhead default backend (vs raw `llama-server`), plus [Lemonade](https://github.com/lemonade-sdk/lemonade) for NPU / multi-engine inference, [vLLM](https://github.com/vllm-project/vllm) for safetensors, and [ds4](https://github.com/antirez/ds4) for DeepSeek-V4. See [benchmarks](docs/benchmarks.md).
+A fast TUI **and** CLI with init wizard for managing local LLMs. One Rust binary that's a TUI, a CLI, a daemon, and an OpenAI-compatible proxy. [llama.cpp](https://github.com/ggml-org/llama.cpp) is the direct, zero-overhead default backend (vs raw `llama-server`), plus [Lemonade](https://github.com/lemonade-sdk/lemonade) for NPU / multi-engine inference, [vLLM](https://github.com/vllm-project/vllm) and [SGLang](https://github.com/sgl-project/sglang) for safetensors, and [ds4](https://github.com/antirez/ds4) for DeepSeek-V4. See [benchmarks](docs/benchmarks.md).
 
 ![TUI Gif](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/tui.gif)
 
@@ -395,7 +395,7 @@ Tracked in detail in [`TODO.md`](https://github.com/llamastash/llamastash/blob/m
 - **GPU/CPU offload split UI** — first-class control over which layers go where.
 - **Windows AMD GPU detection** — pick a probe path (DXGI / WMI / ADLX). 0.0.2 shows "GPU detection unavailable" on Windows AMD hosts.
 - **`aarch64-pc-windows-msvc`** — Snapdragon X / Surface Pro coverage. Deferred from 0.0.2.
-- **MLX and vLLM backends** — if the surface area lands cheaply alongside llama.cpp.
+- **MLX backend** — if the surface area lands cheaply alongside llama.cpp.
 - **Docker-ready packaging** — official images plus a documented `docker run` path.
 
 ## Contributing
